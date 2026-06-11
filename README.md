@@ -3,6 +3,9 @@
 Your personal Datadog sidekick that lives in the menu bar and makes alerts
 **impossible to ignore** — because emails and Teams messages get lost.
 
+> ⚠️ Unofficial personal tool — not affiliated with or endorsed by Datadog,
+> Inc. or Atlassian. You bring your own API keys.
+
 ## ✨ What it does
 
 | | |
