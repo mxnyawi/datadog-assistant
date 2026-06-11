@@ -22,8 +22,10 @@ Features
 Config lives at ~/.config/datadog-assistant/config.json
 """
 
+import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -78,6 +80,39 @@ DEFAULT_CONFIG = {
         "show_ok_monitors": True,
         "max_per_group": 25,
         "group_order": ["Alert", "Warn", "No Data", "OK", "Muted"]
+    },
+    "severity": {
+        # Per-priority notification rules (monitor priority P1..P5, detected
+        # from the monitor's priority field, a priority:pN tag, or "[P1]" in
+        # the name). Fields omitted here fall back to "notifications".
+        "rules": {
+            "p1": {"style": "both", "renotify_minutes": 10, "icon": "‼️"},
+            "p2": {"style": "both", "renotify_minutes": 30, "icon": "🚨"},
+            "p3": {"style": "banner", "renotify_minutes": 60},
+            "default": {}
+        }
+    },
+    "context": {
+        "show_triggered_groups": True,   # which hosts/groups are firing
+        "max_groups_shown": 3,
+        "show_sparkline": True,          # 📈 live metric trend on alerts
+        "sparkline_window_minutes": 60,
+        "show_incidents": True,          # 🔥 active Datadog incidents
+        "auto_dashboard_links": True,    # 📊 your dashboards in Quick Links
+        "max_dashboards": 8
+    },
+    "digest_hour": None,                 # e.g. 9 = morning summary at 9am
+    "jira": {
+        "enabled": False,
+        "base_url": "",                  # https://yourcompany.atlassian.net
+        "email": "",                     # your Atlassian account email
+        "api_token": "",                 # or Keychain: datadog-assistant-jira-token
+        "project_key": "OPS",
+        "issue_type": "Task",
+        "labels": ["datadog-alert"],
+        "auto_create": False,            # auto-ticket on new alerts
+        "auto_create_max_p": 2,          # only P1/P2 alerts auto-create
+        "dedupe": True                   # skip if an open ticket exists
     },
     "quick_links": [
         {"name": "📊 Dashboards", "path": "/dashboard/lists"},
@@ -156,6 +191,87 @@ def keychain_get(service):
         return ""
 
 
+STATE_PATH = os.path.join(CONFIG_DIR, "state.json")
+
+
+def load_state():
+    try:
+        with open(STATE_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_state(state):
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(STATE_PATH, "w") as f:
+            json.dump(state, f, indent=2)
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------
+# Severity & context helpers
+# --------------------------------------------------------------------------
+
+def parse_priority(m):
+    """Monitor priority 1..5 from the priority field, tags, or '[P1]' name."""
+    p = m.get("priority")
+    if isinstance(p, int) and 1 <= p <= 5:
+        return p
+    for t in m.get("tags") or []:
+        mt = re.match(r"priority:p?([1-5])$", str(t).lower())
+        if mt:
+            return int(mt.group(1))
+    mt = re.search(r"\[P([1-5])\]", m.get("name", ""), re.IGNORECASE)
+    return int(mt.group(1)) if mt else None
+
+
+SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+
+
+def sparkline(values, width=14):
+    vals = [v for v in values if v is not None]
+    if not vals:
+        return ""
+    if len(vals) > width:
+        step = len(vals) / width
+        vals = [vals[int(i * step)] for i in range(width)]
+    lo, hi = min(vals), max(vals)
+    if hi == lo:
+        return SPARK_BLOCKS[3] * len(vals)
+    return "".join(SPARK_BLOCKS[int((v - lo) / (hi - lo) * 7)] for v in vals)
+
+
+def fmt_duration(secs):
+    secs = int(secs)
+    if secs < 3600:
+        return f"{max(1, secs // 60)}m"
+    if secs < 86400:
+        return f"{secs // 3600}h {(secs % 3600) // 60:02d}m"
+    return f"{secs // 86400}d {(secs % 86400) // 3600}h"
+
+
+def fmt_num(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if abs(v) >= 1000:
+        return f"{v:,.0f}"
+    return f"{v:.4g}"
+
+
+def extract_metric_query(monitor_query):
+    """'avg(last_5m):avg:system.cpu.user{env:prod} by {host} > 90'
+       -> 'avg:system.cpu.user{env:prod} by {host}'  ('' if not parseable)"""
+    mt = re.match(
+        r"^[a-z0-9_]+\(last_[^)]*\):(.*?)\s*(?:[<>]=?|==|!=)\s*[-\d.]+\s*$",
+        (monitor_query or "").strip())
+    return mt.group(1).strip() if mt else ""
+
+
 # --------------------------------------------------------------------------
 # Datadog API client (stdlib only — no extra deps)
 # --------------------------------------------------------------------------
@@ -188,9 +304,9 @@ class DatadogClient:
         api, app = self._keys()
         return bool(api and app)
 
-    def _request(self, method, path, params=None, body=None):
+    def _request(self, method, path, params=None, body=None, version="v1"):
         api, app = self._keys()
-        url = self.api_base + path
+        url = f"https://api.{self.site}/api/{version}" + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
         data = json.dumps(body).encode() if body is not None else None
@@ -237,6 +353,104 @@ class DatadogClient:
 
     def monitor_url(self, monitor_id):
         return f"{self.app_base}/monitors/{monitor_id}"
+
+    def incident_url(self, public_id):
+        return f"{self.app_base}/incidents/{public_id}"
+
+    def get_incidents(self):
+        """Active (non-resolved) incidents, newest first."""
+        data = self._request("GET", "/incidents",
+                             params={"page[size]": 25}, version="v2")
+        out = []
+        for inc in data.get("data", []):
+            a = inc.get("attributes", {})
+            if (a.get("state") or "").lower() == "resolved":
+                continue
+            fields = a.get("fields") or {}
+            sev = (fields.get("severity") or {}).get("value") or "UNKNOWN"
+            out.append({
+                "public_id": a.get("public_id"),
+                "title": a.get("title", "incident"),
+                "severity": sev,
+                "state": (a.get("state") or "").lower(),
+                "created": a.get("created"),
+            })
+        return out
+
+    def list_dashboards(self):
+        data = self._request("GET", "/dashboard")
+        return [{"title": d.get("title", "dashboard"),
+                 "url": self.app_base + d.get("url", "")}
+                for d in data.get("dashboards", [])]
+
+    def query_metrics(self, query, window_minutes=60):
+        now = int(time.time())
+        return self._request("GET", "/query", params={
+            "from": now - window_minutes * 60, "to": now, "query": query})
+
+
+# --------------------------------------------------------------------------
+# Jira client (Cloud REST v3, API-token auth)
+#
+# Works even when your Jira uses Okta SSO: Atlassian API tokens
+# (id.atlassian.com → Security → API tokens) authenticate directly against
+# Atlassian and bypass the SSO browser flow. A full Okta OAuth flow is only
+# needed for self-hosted Jira Data Center — not implemented here.
+# --------------------------------------------------------------------------
+
+class JiraClient:
+    def __init__(self, cfg):
+        self.cfg = cfg or {}
+
+    def enabled(self):
+        return bool(self.cfg.get("enabled"))
+
+    def _token(self):
+        return (self.cfg.get("api_token")
+                or keychain_get("datadog-assistant-jira-token"))
+
+    def configured(self):
+        return bool(self.cfg.get("base_url") and self.cfg.get("email")
+                    and self._token())
+
+    def _request(self, method, path, params=None, body=None):
+        url = self.cfg["base_url"].rstrip("/") + path
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(url, data=data, method=method)
+        raw = f"{self.cfg.get('email', '')}:{self._token()}".encode()
+        req.add_header("Authorization", "Basic " + base64.b64encode(raw).decode())
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "application/json")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            payload = resp.read().decode()
+            return json.loads(payload) if payload else {}
+
+    def browse_url(self, key):
+        return self.cfg["base_url"].rstrip("/") + "/browse/" + key
+
+    def find_open_issue(self, monitor_id):
+        jql = f'labels = "dd-monitor-{monitor_id}" AND statusCategory != Done'
+        data = self._request("GET", "/rest/api/3/search",
+                             params={"jql": jql, "maxResults": 1, "fields": "key"})
+        issues = data.get("issues", [])
+        return issues[0]["key"] if issues else None
+
+    def create_issue(self, monitor_id, name, dd_url, context=""):
+        text = f"Datadog monitor alert: {name}\n\n{dd_url}"
+        if context:
+            text += f"\n\nContext at creation: {context}"
+        body = {"fields": {
+            "project": {"key": self.cfg.get("project_key", "OPS")},
+            "issuetype": {"name": self.cfg.get("issue_type", "Task")},
+            "summary": f"[Datadog] 🔴 {name}"[:254],
+            "labels": list(self.cfg.get("labels", [])) + [f"dd-monitor-{monitor_id}"],
+            "description": {"type": "doc", "version": 1, "content": [
+                {"type": "paragraph",
+                 "content": [{"type": "text", "text": text}]}]},
+        }}
+        return self._request("POST", "/rest/api/3/issue", body=body).get("key")
 
 
 # --------------------------------------------------------------------------
@@ -305,10 +519,16 @@ class DatadogAssistant(rumps.App):
     def __init__(self):
         self.cfg = load_config()
         self.client = DatadogClient(self.cfg)
+        self.jira = JiraClient(self.cfg.get("jira", {}))
         icons = self.cfg["icons"]
         super().__init__(APP_NAME, title=icons["ok"], quit_button=None)
 
         self.monitors = []
+        self.incidents = []
+        self.dashboards = []
+        self.enrich = {}             # monitor id -> {spark, now, crit}
+        self.state = load_state()    # persists jira tickets + digest date
+        self._dash_ts = 0
         self.prev_states = {}        # id -> overall_state
         self.last_notified = {}      # id -> unix ts (for renotify)
         self.snooze_until = 0
@@ -340,8 +560,23 @@ class DatadogAssistant(rumps.App):
             if not self.client.has_keys():
                 self.results.put(("error", "No API/APP keys configured"))
             else:
-                monitors = self.client.get_monitors()
-                self.results.put(("monitors", monitors))
+                payload = {"monitors": self.client.get_monitors()}
+                ctx = self.cfg.get("context", {})
+                if ctx.get("show_incidents", True):
+                    try:
+                        payload["incidents"] = self.client.get_incidents()
+                    except Exception:
+                        pass  # e.g. key lacks incidents scope — hide section
+                if ctx.get("auto_dashboard_links", True) and \
+                        time.time() - self._dash_ts > 3600:
+                    try:
+                        payload["dashboards"] = self.client.list_dashboards()
+                        self._dash_ts = time.time()
+                    except Exception:
+                        pass
+                if ctx.get("show_sparkline", True):
+                    payload["enrich"] = self._fetch_enrichment(payload["monitors"])
+                self.results.put(("data", payload))
         except urllib.error.HTTPError as e:
             self.results.put(("error", f"HTTP {e.code} from Datadog API"))
         except Exception as e:
@@ -356,16 +591,95 @@ class DatadogAssistant(rumps.App):
                 kind, payload = self.results.get_nowait()
             except queue.Empty:
                 break
-            if kind == "monitors":
+            if kind == "data":
                 self.last_error = None
                 self.last_refresh = datetime.now()
-                self._handle_new_monitors(payload)
+                if "incidents" in payload:
+                    self.incidents = payload["incidents"]
+                if "dashboards" in payload:
+                    self.dashboards = payload["dashboards"]
+                self.enrich = payload.get("enrich") or {}
+                self._handle_new_monitors(payload["monitors"])
+                self._maybe_digest()
             else:
                 self.last_error = payload
             updated = True
         if updated:
             self._rebuild_menu()
             self._update_title()
+
+    def _fetch_enrichment(self, monitors):
+        """Live metric values + sparklines for the hottest alerting monitors."""
+        window = int(self.cfg["context"].get("sparkline_window_minutes", 60))
+        out = {}
+        hot = [m for m in monitors
+               if m.get("overall_state") in ("Alert", "Warn")
+               and m.get("type") in ("metric alert", "query alert")]
+        hot.sort(key=lambda m: parse_priority(m) or 9)
+        for m in hot[:8]:
+            q = extract_metric_query(m.get("query", ""))
+            if not q:
+                continue
+            try:
+                series = self.client.query_metrics(q, window).get("series", [])
+                if not series:
+                    continue
+                points = [p[1] for p in series[0].get("pointlist", [])]
+                lasts = []
+                for s in series:
+                    pl = s.get("pointlist") or []
+                    if pl and pl[-1][1] is not None:
+                        lasts.append(pl[-1][1])
+                thr = (m.get("options", {}).get("thresholds") or {}).get("critical")
+                out[m["id"]] = {"spark": sparkline(points),
+                                "now": max(lasts) if lasts else None,
+                                "crit": thr}
+            except Exception:
+                continue
+        return out
+
+    # -------------------- severity & context --------------------
+
+    def _severity_rule(self, m):
+        rules = self.cfg.get("severity", {}).get("rules", {})
+        rule = dict(rules.get("default", {}))
+        p = parse_priority(m)
+        if p:
+            rule.update(rules.get(f"p{p}", {}))
+        return rule
+
+    def _alert_duration(self, m):
+        groups = (m.get("state") or {}).get("groups") or {}
+        ts = [g.get("last_triggered_ts") for g in groups.values()
+              if g.get("status") in ("Alert", "Warn", "No Data")
+              and g.get("last_triggered_ts")]
+        return max(0, time.time() - min(ts)) if ts else None
+
+    def _triggered_groups(self, m):
+        groups = (m.get("state") or {}).get("groups") or {}
+        return [name for name, g in groups.items()
+                if g.get("status") in ("Alert", "Warn", "No Data")
+                and name != "*"]
+
+    def _context_line(self, m):
+        """'P1 · ⏱ 23m · 📟 3 groups · 📈 97.2 (crit 90)' — the severity TLDR."""
+        parts = []
+        p = parse_priority(m)
+        if p:
+            parts.append(f"P{p}")
+        dur = self._alert_duration(m)
+        if dur:
+            parts.append(f"⏱ {fmt_duration(dur)}")
+        grps = self._triggered_groups(m)
+        if grps:
+            parts.append(f"📟 {len(grps)} group{'s' if len(grps) != 1 else ''}")
+        e = self.enrich.get(m.get("id"))
+        if e and e.get("now") is not None:
+            s = f"📈 {fmt_num(e['now'])}"
+            if e.get("crit") is not None:
+                s += f" (crit {fmt_num(e['crit'])})"
+            parts.append(s)
+        return " · ".join(parts)
 
     # -------------------- state transitions & notifications --------------------
 
@@ -403,24 +717,101 @@ class DatadogAssistant(rumps.App):
                         and ncfg.get("notify_on_recovery", True):
                     should = True
                     title, body = "🟢 Recovered — Datadog", name
-            elif state == "Alert" and ncfg.get("renotify_minutes", 0):
-                last = self.last_notified.get(mid, 0)
-                if now - last > ncfg["renotify_minutes"] * 60:
-                    should = True
-                    title, body = "🔴 STILL ALERTING — Datadog", name
+            else:
+                rule = self._severity_rule(m)
+                renotify = rule.get("renotify_minutes",
+                                    ncfg.get("renotify_minutes", 0))
+                if state == "Alert" and renotify:
+                    last = self.last_notified.get(mid, 0)
+                    if now - last > renotify * 60:
+                        should = True
+                        title, body = "🔴 STILL ALERTING — Datadog", name
 
             self.prev_states[mid] = state
 
             if should and ncfg.get("enabled", True) and not snoozed and not muted:
                 self.last_notified[mid] = now
-                style = ncfg.get("style", "both")
-                sound = ncfg.get("sound_name") if ncfg.get("sound", True) else None
+                rule = self._severity_rule(m)
+                style = rule.get("style", ncfg.get("style", "both"))
+                sound = (rule.get("sound_name", ncfg.get("sound_name"))
+                         if ncfg.get("sound", True) else None)
+                ctx = self._context_line(m)
                 if style in ("banner", "both"):
-                    notify_banner(title, "Datadog Assistant 🐶", body, sound)
+                    banner_body = f"{body} — {ctx}" if ctx else body
+                    notify_banner(title, "Datadog Assistant 🐶", banner_body, sound)
                 if style in ("modal", "both") and state == "Alert":
-                    notify_modal(title, body, url)
+                    modal_body = body + (f"\n{ctx}" if ctx else "")
+                    grps = self._triggered_groups(m)
+                    if grps:
+                        modal_body += "\n" + ", ".join(grps[:5])
+                    notify_modal(title, modal_body, url)
                 if sound and style == "modal":
                     play_sound(sound)
+
+            # auto-create a Jira ticket on a fresh transition into Alert
+            if state == "Alert" and prev is not None and prev != "Alert" \
+                    and not muted:
+                self._maybe_auto_jira(m)
+
+    # -------------------- jira --------------------
+
+    def _maybe_auto_jira(self, m):
+        jcfg = self.cfg.get("jira", {})
+        if not (jcfg.get("enabled") and jcfg.get("auto_create")):
+            return
+        if (parse_priority(m) or 9) > int(jcfg.get("auto_create_max_p", 2)):
+            return
+        self._create_jira(m, auto=True)
+
+    def _create_jira(self, m, auto=False):
+        mid, name = m.get("id"), m.get("name", "")
+        url = self.client.monitor_url(mid)
+        ctx = self._context_line(m)
+
+        def run():
+            try:
+                if not self.jira.configured():
+                    notify_banner("🎫 Jira not configured", "Datadog Assistant 🐶",
+                                  "Fill in the jira section of config.json")
+                    return
+                if self.cfg["jira"].get("dedupe", True):
+                    key = self.jira.find_open_issue(mid)
+                    if key:
+                        if not auto:
+                            notify_banner("🎫 Ticket already open",
+                                          "Datadog Assistant 🐶",
+                                          f"{key} covers this monitor")
+                        return
+                key = self.jira.create_issue(mid, name, url, ctx)
+                self.state.setdefault("jira_created", {})[str(mid)] = key
+                save_state(self.state)
+                notify_banner("🎫 Jira ticket created" + (" (auto)" if auto else ""),
+                              "Datadog Assistant 🐶", f"{key} — {name[:60]}")
+            except Exception as e:
+                notify_banner("❌ Jira failed", "Datadog Assistant 🐶", str(e)[:100])
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _make_jira_creator(self, m):
+        def cb(_):
+            self._create_jira(m)
+        return cb
+
+    # -------------------- daily digest --------------------
+
+    def _maybe_digest(self):
+        hour = self.cfg.get("digest_hour")
+        if hour is None:
+            return
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self.state.get("digest_date") == today or datetime.now().hour < int(hour):
+            return
+        g = self._grouped()
+        notify_banner("🌅 Datadog daily digest", "Datadog Assistant 🐶",
+                      f"{len(g['Alert'])} alerting · {len(g['Warn'])} warn · "
+                      f"{len(g['OK'])} ok · {len(self.incidents)} incidents 🔥")
+        self.state["digest_date"] = today
+        save_state(self.state)
 
     # -------------------- title (menu bar icon) --------------------
 
@@ -447,8 +838,11 @@ class DatadogAssistant(rumps.App):
             return
         g = self._grouped()
         if g["Alert"]:
+            best = min((parse_priority(m) or 9) for m in g["Alert"])
+            rules = self.cfg.get("severity", {}).get("rules", {})
+            icon = rules.get(f"p{best}", {}).get("icon", icons["alert"])
             n = f" {len(g['Alert'])}" if icons.get("show_count", True) else ""
-            self.title = f"{icons['alert']}{n}"
+            self.title = f"{icon}{n}"
         elif g["Warn"]:
             n = f" {len(g['Warn'])}" if icons.get("show_count", True) else ""
             self.title = f"{icons['warn']}{n}"
@@ -486,6 +880,19 @@ class DatadogAssistant(rumps.App):
             items.append(rumps.MenuItem(f"😴 Snoozed until {until} — wake up",
                                         callback=self._unsnooze))
         items.append(None)  # separator
+
+        # ---- active incidents ----
+        if self.incidents and self.cfg["context"].get("show_incidents", True):
+            items.append(rumps.MenuItem(f"🔥 INCIDENTS ({len(self.incidents)})"))
+            for inc in self.incidents[:10]:
+                label = f"🔥 {inc['severity']} · {inc['title']}"
+                if len(label) > 60:
+                    label = label[:57] + "…"
+                items.append(rumps.MenuItem(
+                    label,
+                    callback=self._make_opener(
+                        self.client.incident_url(inc.get("public_id")))))
+            items.append(None)
 
         # ---- monitor groups ----
         show_ok = self.cfg["menu"].get("show_ok_monitors", True)
@@ -526,6 +933,13 @@ class DatadogAssistant(rumps.App):
             for link in custom:
                 links.add(rumps.MenuItem(link["name"],
                                          callback=self._make_opener(link["url"])))
+        if self.dashboards and self.cfg["context"].get("auto_dashboard_links", True):
+            links.add(None)
+            links.add(rumps.MenuItem("📊 MY DASHBOARDS"))
+            for d in self.dashboards[:int(self.cfg["context"].get("max_dashboards", 8))]:
+                t = d["title"] if len(d["title"]) <= 45 else d["title"][:42] + "…"
+                links.add(rumps.MenuItem(f"📊 {t}",
+                                         callback=self._make_opener(d["url"])))
         items.append(links)
         items.append(None)
 
@@ -547,7 +961,42 @@ class DatadogAssistant(rumps.App):
             label = label[:57] + "…"
         item = rumps.MenuItem(label)
         url = self.client.monitor_url(mid)
+
+        # severity context — why should you care, at a glance
+        if group in ("Alert", "Warn", "No Data"):
+            ctx_cfg = self.cfg["context"]
+            p = parse_priority(m)
+            if p:
+                sev_name = {1: "critical", 2: "high", 3: "moderate",
+                            4: "low", 5: "info"}.get(p, "")
+                item.add(rumps.MenuItem(f"🎯 Priority P{p} — {sev_name}"))
+            dur = self._alert_duration(m)
+            if dur:
+                item.add(rumps.MenuItem(f"⏱ Triggered {fmt_duration(dur)} ago"))
+            e = self.enrich.get(mid)
+            if e and e.get("spark"):
+                val = f"  now {fmt_num(e['now'])}" if e.get("now") is not None else ""
+                crit = f" (crit {fmt_num(e['crit'])})" if e.get("crit") is not None else ""
+                item.add(rumps.MenuItem(f"📈 {e['spark']}{val}{crit}"))
+            grps = self._triggered_groups(m)
+            if grps and ctx_cfg.get("show_triggered_groups", True):
+                maxg = int(ctx_cfg.get("max_groups_shown", 3))
+                item.add(rumps.MenuItem(f"📟 Triggered on {len(grps)} group(s):"))
+                for gname in grps[:maxg]:
+                    item.add(rumps.MenuItem(f"      {gname}"))
+                if len(grps) > maxg:
+                    item.add(rumps.MenuItem(f"      … +{len(grps) - maxg} more"))
+            item.add(None)
+
         item.add(rumps.MenuItem("🔗 Open in Datadog", callback=self._make_opener(url)))
+        if self.jira.enabled():
+            key = self.state.get("jira_created", {}).get(str(mid))
+            if key:
+                item.add(rumps.MenuItem(f"🎫 Open {key}",
+                                        callback=self._make_opener(
+                                            self.jira.browse_url(key))))
+            item.add(rumps.MenuItem("🎫 Create Jira ticket",
+                                    callback=self._make_jira_creator(m)))
         item.add(None)
         item.add(rumps.MenuItem("🔇 Mute 1 hour", callback=self._make_muter(mid, 1)))
         item.add(rumps.MenuItem("🔇 Mute 4 hours", callback=self._make_muter(mid, 4)))
@@ -599,6 +1048,20 @@ class DatadogAssistant(rumps.App):
                                callback=self._toggle_show_ok)
         okmon.state = 1 if self.cfg["menu"].get("show_ok_monitors", True) else 0
         prefs.add(okmon)
+        inc = rumps.MenuItem("🔥 Show incidents", callback=self._toggle_incidents)
+        inc.state = 1 if self.cfg["context"].get("show_incidents", True) else 0
+        prefs.add(inc)
+        spark = rumps.MenuItem("📈 Sparklines on alerts",
+                               callback=self._toggle_sparkline)
+        spark.state = 1 if self.cfg["context"].get("show_sparkline", True) else 0
+        prefs.add(spark)
+        dash = rumps.MenuItem("📊 Auto dashboard links",
+                              callback=self._toggle_dashboards)
+        dash.state = 1 if self.cfg["context"].get("auto_dashboard_links", True) else 0
+        prefs.add(dash)
+        jira = rumps.MenuItem("🎫 Jira integration", callback=self._toggle_jira)
+        jira.state = 1 if self.cfg["jira"].get("enabled", False) else 0
+        prefs.add(jira)
         prefs.add(None)
 
         # snooze
@@ -736,6 +1199,19 @@ class DatadogAssistant(rumps.App):
 
     def _toggle_show_ok(self, _):
         self._toggle("menu", "show_ok_monitors")
+
+    def _toggle_incidents(self, _):
+        self._toggle("context", "show_incidents")
+
+    def _toggle_sparkline(self, _):
+        self._toggle("context", "show_sparkline")
+
+    def _toggle_dashboards(self, _):
+        self._toggle("context", "auto_dashboard_links")
+
+    def _toggle_jira(self, _):
+        self._toggle("jira", "enabled", default=False)
+        self.jira = JiraClient(self.cfg.get("jira", {}))
 
     def _make_snoozer(self, mins):
         def cb(_):

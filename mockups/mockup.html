@@ -168,17 +168,20 @@
     <span class="m">Go</span><span class="m">Window</span><span class="m">Help</span>
     <span class="spacer"></span>
     <div class="status">
-      <span class="ddicon active">🚨 2</span>
+      <span class="ddicon active">‼️ 2</span>
       <span class="icon">📶</span><span class="icon">🔋</span>
       <span class="icon">🔍</span><span class="icon">🎛</span>
       <span>Thu 11 Jun&nbsp;&nbsp;09:41</span>
     </div>
   </div>
-  <div class="callout point-up-right" style="top:46px; right:480px;">menu bar icon flips 🐶 → 🚨 2 when monitors alert</div>
+  <div class="callout point-up-right" style="top:46px; right:480px;">icon shows severity: 🐶 ok → 🚨 alert → ‼️ when a P1 fires</div>
 
   <div class="menu" style="top:36px; right:118px;">
     <div class="mi"><span class="grow">📊 2 alerting · 1 warn · 47 ok · 1 muted</span></div>
     <div class="mi dim"><span class="grow">🔄 Refresh now (last: 09:41:12)</span><span class="kbd">⌘R</span></div>
+    <div class="sep"></div>
+    <div class="mi header"><span class="grow">🔥 INCIDENTS (1)</span></div>
+    <div class="mi"><span class="grow">🔥 SEV-1 · Checkout flow down</span></div>
     <div class="sep"></div>
     <div class="mi header"><span class="grow">🔴 ALERTING (2)</span></div>
     <div class="mi hover"><span class="grow">🔴 High CPU on prod-web</span><span>▸</span></div>
@@ -200,8 +203,16 @@
   </div>
 
   <!-- flyout for hovered monitor -->
-  <div class="flyout" style="top:144px; right:18px; width:215px;">
+  <div class="flyout" style="top:150px; right:14px; width:252px;">
+    <div class="mi dim"><span class="grow">🎯 Priority P1 — critical</span></div>
+    <div class="mi dim"><span class="grow">⏱ Triggered 23m ago</span></div>
+    <div class="mi dim"><span class="grow">📈 ▂▂▃▃▅▆▇█  now 97.2 (crit 90)</span></div>
+    <div class="mi dim"><span class="grow">📟 Triggered on 2 group(s):</span></div>
+    <div class="mi dim"><span class="grow">&nbsp;&nbsp;&nbsp;&nbsp;host:prod-web-1</span></div>
+    <div class="mi dim"><span class="grow">&nbsp;&nbsp;&nbsp;&nbsp;host:prod-web-2</span></div>
+    <div class="sep"></div>
     <div class="mi hover"><span class="grow">🔗 Open in Datadog</span></div>
+    <div class="mi"><span class="grow">🎫 Create Jira ticket</span></div>
     <div class="sep"></div>
     <div class="mi"><span class="grow">🔇 Mute 1 hour</span></div>
     <div class="mi"><span class="grow">🔇 Mute 4 hours</span></div>

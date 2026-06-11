@@ -30,6 +30,36 @@
     "max_per_group": 25,
     "group_order": ["Alert", "Warn", "No Data", "OK", "Muted"]
   },
+  "severity": {
+    "rules": {
+      "p1": {"style": "both", "renotify_minutes": 10, "icon": "‼️", "sound_name": "Sosumi"},
+      "p2": {"style": "both", "renotify_minutes": 30, "icon": "🚨"},
+      "p3": {"style": "banner", "renotify_minutes": 60},
+      "default": {}
+    }
+  },
+  "context": {
+    "show_triggered_groups": true,
+    "max_groups_shown": 3,
+    "show_sparkline": true,
+    "sparkline_window_minutes": 60,
+    "show_incidents": true,
+    "auto_dashboard_links": true,
+    "max_dashboards": 8
+  },
+  "digest_hour": 9,
+  "jira": {
+    "enabled": false,
+    "base_url": "https://yourcompany.atlassian.net",
+    "email": "you@company.com",
+    "api_token": "",
+    "project_key": "OPS",
+    "issue_type": "Task",
+    "labels": ["datadog-alert"],
+    "auto_create": false,
+    "auto_create_max_p": 2,
+    "dedupe": true
+  },
   "quick_links": [
     {"name": "📊 Dashboards", "path": "/dashboard/lists"},
     {"name": "📟 Monitors", "path": "/monitors/manage"},

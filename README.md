@@ -19,6 +19,13 @@ Your personal Datadog sidekick that lives in the menu bar and makes alerts
 | 🟢 | Recovery notifications when things go back to OK |
 | 🔐 | Keys via macOS Keychain (recommended), config file, or env vars |
 | 🌐 | Works with every Datadog site (US1/EU/US3/US5/AP1/Gov) |
+| 🎯 | **Severity engine** — per-priority (P1–P5) notification rules: P1 gets modal + 10-min nag, P3 just a banner |
+| 📈 | **Live context on every alert**: sparkline of the metric, current value vs critical threshold |
+| ⏱ | How long it's been alerting + 📟 which hosts/groups triggered |
+| 🔥 | Active Datadog **incidents** (SEV-1…5) right in the menu |
+| 📊 | Your real dashboards auto-populated into Quick Links |
+| 🌅 | Optional daily digest notification (`digest_hour`) |
+| 🎫 | **Jira integration** — create tickets per alert from the menu, or auto-create for P1/P2, with open-ticket dedupe |
 
 ## 🚀 Install (on your Mac)
 
@@ -61,8 +68,46 @@ Everything is configurable (see `config.example.json` for a full example):
 - **`menu.group_order`**, **`menu.show_ok_monitors`**, **`menu.max_per_group`**
 - **`refresh_seconds`** — poll interval (min 15s; mind your API rate limits)
 
+New in v0.2:
+
+- **`severity.rules`** — per-priority behavior. Priority is read from the
+  monitor's priority field, a `priority:p1` tag, or `[P1]` in the name.
+  Each rule can set `style`, `renotify_minutes`, `icon` (menu bar), `sound_name`.
+- **`context`** — toggles for sparklines 📈, triggered groups 📟,
+  incidents 🔥, and auto dashboard links 📊.
+- **`digest_hour`** — e.g. `9` for a morning summary banner; `null` to disable.
+- **`jira`** — see below.
+
 Most common settings are also flippable live from **⚙️ Preferences** in the
 menu — no editing or restart needed.
+
+## 🎫 Jira integration (works with Okta SSO)
+
+Tickets are created via the Jira Cloud REST API using an **Atlassian API
+token** — these authenticate directly against Atlassian, so they work even
+when your company logs into Jira through Okta. (A full Okta OAuth flow is
+only needed for self-hosted Jira Data Center, which this doesn't support yet.)
+
+1. Create a token at **id.atlassian.com → Security → API tokens**
+2. Store it (Keychain recommended):
+   ```bash
+   security add-generic-password -U -s datadog-assistant-jira-token -a "$USER" -w "<token>"
+   ```
+3. In config: set `jira.enabled: true`, your `base_url`, `email`, `project_key`
+4. Optional: `auto_create: true` auto-files a ticket whenever a monitor with
+   priority ≤ `auto_create_max_p` (default P1/P2) newly alerts
+
+Every ticket gets a `dd-monitor-<id>` label; with `dedupe: true` a new ticket
+is skipped while one for that monitor is still open. Each alerting monitor's
+submenu shows **🎫 Create Jira ticket** (and **🎫 Open OPS-123** once one exists).
+
+## 🗺 Roadmap ideas (API already supports these)
+
+- 🪵 Recent error logs per alerting service (Logs Search API)
+- 🎯 SLO error-budget section (SLO API)
+- 🌐 Failing Synthetics checks
+- 📰 Event stream (deploys correlated with alerts)
+- 🖥 Host up/down counts, 💸 usage/cost watch
 
 ## 🧯 Troubleshooting
 

@@ -35,7 +35,6 @@ rumps.quit_application = lambda *a: None
 rumps.notification = lambda *a, **k: None
 sys.modules["rumps"] = rumps
 
-# patch menu.clear since list has clear but App.menu returns list — fine.
 import unittest.mock as mock
 
 # ---- isolate config dir ----
@@ -45,26 +44,57 @@ os.environ["HOME"] = tmp
 import datadog_assistant as da
 da.CONFIG_DIR = os.path.join(tmp, "cfg")
 da.CONFIG_PATH = os.path.join(da.CONFIG_DIR, "config.json")
+da.STATE_PATH = os.path.join(da.CONFIG_DIR, "state.json")
 
 notifications = []
 da.notify_banner = lambda t, s, m, sound=None: notifications.append(("banner", t, m))
 da.notify_modal = lambda t, m, url=None: notifications.append(("modal", t, m))
 da.play_sound = lambda n: None
 
+# ---- pure helper units ----
+assert da.parse_priority({"priority": 1}) == 1
+assert da.parse_priority({"tags": ["env:prod", "priority:p2"]}) == 2
+assert da.parse_priority({"name": "[P3] disk space"}) == 3
+assert da.parse_priority({"name": "no priority"}) is None
+assert da.extract_metric_query(
+    "avg(last_5m):avg:system.cpu.user{env:prod} by {host} > 90") == \
+    "avg:system.cpu.user{env:prod} by {host}"
+assert da.extract_metric_query("logs query weird") == ""
+assert da.sparkline([1, 2, 3, 8]) == "▁▂▃█"
+assert da.fmt_duration(125) == "2m"
+assert da.fmt_duration(7300) == "2h 01m"
+assert da.fmt_num(97.234) == "97.23"
+assert da.fmt_num(125000) == "125,000"
+
+NOW = time.time()
 FAKE = [
-    {"id": 1, "name": "High CPU on prod-web", "overall_state": "Alert", "options": {}},
-    {"id": 2, "name": "P95 latency checkout-api", "overall_state": "Alert", "options": {}},
+    {"id": 1, "name": "High CPU on prod-web", "overall_state": "Alert",
+     "priority": 1, "type": "metric alert",
+     "query": "avg(last_5m):avg:system.cpu.user{*} > 90",
+     "options": {"thresholds": {"critical": 90}},
+     "state": {"groups": {"host:web-1": {"status": "Alert",
+                                         "last_triggered_ts": NOW - 1380},
+                          "host:web-2": {"status": "Alert",
+                                         "last_triggered_ts": NOW - 900}}}},
+    {"id": 2, "name": "P95 latency checkout-api", "overall_state": "Alert",
+     "options": {}},
     {"id": 3, "name": "Disk space db-primary", "overall_state": "Warn", "options": {}},
     {"id": 4, "name": "Healthcheck payments svc", "overall_state": "OK", "options": {}},
     {"id": 5, "name": "Kafka consumer lag", "overall_state": "OK",
      "options": {"silenced": {"*": None}}},
     {"id": 6, "name": "Agent reporting (staging)", "overall_state": "No Data", "options": {}},
 ]
+FAKE_INCIDENTS = [{"public_id": "42", "title": "Checkout down", "severity": "SEV-1",
+                   "state": "active", "created": ""}]
+FAKE_DASHBOARDS = [{"title": "Payments Overview", "url": "https://x/dash/1"}]
+FAKE_SERIES = {"series": [{"pointlist": [[0, 50], [1, 80], [2, 97.2]]}]}
 
 with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
+     mock.patch.object(da.DatadogClient, "get_incidents", return_value=FAKE_INCIDENTS), \
+     mock.patch.object(da.DatadogClient, "list_dashboards", return_value=FAKE_DASHBOARDS), \
+     mock.patch.object(da.DatadogClient, "query_metrics", return_value=FAKE_SERIES), \
      mock.patch.object(da.DatadogClient, "has_keys", return_value=True):
     app = da.DatadogAssistant()
-    # first fetch was kicked off in a thread; wait for it then drain
     for _ in range(50):
         if not app.results.empty(): break
         time.sleep(0.05)
@@ -73,9 +103,32 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
     g = app._grouped()
     assert len(g["Alert"]) == 2 and len(g["Warn"]) == 1, g
     assert len(g["Muted"]) == 1 and len(g["No Data"]) == 1, g
-    assert app.title == "🚨 2", repr(app.title)
+    # P1 alert present -> severity icon from p1 rule
+    assert app.title == "‼️ 2", repr(app.title)
     # first poll: no prev state -> no notifications (avoids spam at launch)
     assert notifications == [], notifications
+
+    # enrichment + context line for the P1 monitor
+    e = app.enrich.get(1)
+    assert e and e["spark"] and e["now"] == 97.2 and e["crit"] == 90, e
+    ctx = app._context_line(FAKE[0])
+    assert "P1" in ctx and "⏱ 23m" in ctx and "2 groups" in ctx \
+        and "97.2 (crit 90)" in ctx, ctx
+
+    # menu: incidents section + enriched monitor submenu
+    titles = [getattr(i, "title", None) for i in app.menu if i]
+    assert any("🔥 INCIDENTS (1)" in t for t in titles), titles
+    assert any("SEV-1" in t for t in titles), titles
+    mon_item = next(i for i in app.menu
+                    if i and getattr(i, "title", "").startswith("🔴 High CPU"))
+    sub = [c.title for c in mon_item.children if c]
+    assert any("Priority P1" in t for t in sub), sub
+    assert any("📈" in t and "97.2" in t for t in sub), sub
+    assert any("host:web-1" in t for t in sub), sub
+    # dashboards inside quick links
+    ql = next(i for i in app.menu if i and "Quick Links" in getattr(i, "title", ""))
+    qsub = [c.title for c in ql.children if c]
+    assert any("Payments Overview" in t for t in qsub), qsub
 
     # second poll: monitor 4 goes Alert, monitor 1 recovers
     FAKE2 = json.loads(json.dumps(FAKE))
@@ -87,20 +140,46 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
     assert ("modal", "🔴 ALERT — Datadog") in kinds, notifications
     assert ("banner", "🟢 Recovered — Datadog") in kinds, notifications
 
-    # menu sanity: has add-monitor, quick links, prefs, quit
-    titles = [getattr(i, "title", "---sep---") for i in app.menu if i]
-    assert any("➕ Add Monitor" in t for t in titles), titles
-    assert any("🔗 Quick Links" in t for t in titles), titles
-    assert any("⚙️ Preferences" in t for t in titles), titles
-    assert any("🔴 ALERTING (2)" in t for t in titles), titles
+    # P1 renotify: pretend last notice was 11 min ago (p1 rule = 10 min)
+    notifications.clear()
+    FAKE3 = json.loads(json.dumps(FAKE2))
+    FAKE3[0]["overall_state"] = "Alert"
+    app._handle_new_monitors(FAKE3)          # OK -> Alert transition
+    notifications.clear()
+    app.last_notified[1] = time.time() - 11 * 60
+    app._handle_new_monitors(FAKE3)          # still alerting
+    assert any("STILL ALERTING" in t for k, t, m in notifications), notifications
+    # banner body carries the severity context
+    body = next(m for k, t, m in notifications if k == "banner")
+    assert "P1" in body, body
+
+    # jira: manual create with dedupe miss -> issue created
+    created = {}
+    with mock.patch.object(da.JiraClient, "configured", return_value=True), \
+         mock.patch.object(da.JiraClient, "find_open_issue", return_value=None), \
+         mock.patch.object(da.JiraClient, "create_issue",
+                           side_effect=lambda mid, n, u, c: created.update(
+                               {"mid": mid, "ctx": c}) or "OPS-7"):
+        app.cfg["jira"]["enabled"] = True
+        notifications.clear()
+        app._create_jira(FAKE3[0])
+        time.sleep(0.3)
+        assert created["mid"] == 1 and "P1" in created["ctx"], created
+        assert app.state["jira_created"]["1"] == "OPS-7"
+        assert any("OPS-7" in m for k, t, m in notifications), notifications
+        # auto-create respects max priority (P3 monitor -> no ticket)
+        app.cfg["jira"]["auto_create"] = True
+        app._maybe_auto_jira({"id": 9, "name": "x", "priority": 3})
+        time.sleep(0.2)
+        assert "9" not in app.state.get("jira_created", {})
 
     # snooze suppresses notifications
     notifications.clear()
     app._make_snoozer(30)(None)
     assert app.title == "😴", repr(app.title)
-    FAKE3 = json.loads(json.dumps(FAKE2))
-    FAKE3[2]["overall_state"] = "Alert"  # warn -> alert
-    app._handle_new_monitors(FAKE3)
+    FAKE4 = json.loads(json.dumps(FAKE3))
+    FAKE4[2]["overall_state"] = "Alert"  # warn -> alert
+    app._handle_new_monitors(FAKE4)
     assert notifications == [], notifications
 
 print("SMOKE TEST PASSED ✅")
