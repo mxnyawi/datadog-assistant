@@ -1,0 +1,45 @@
+{
+  "api_key": "",
+  "app_key": "",
+  "use_keychain": true,
+  "site": "datadoghq.com",
+  "refresh_seconds": 60,
+  "tag_filter": "team:payments env:prod",
+  "name_filter": "",
+  "notifications": {
+    "enabled": true,
+    "style": "both",
+    "sound": true,
+    "sound_name": "Sosumi",
+    "notify_on_warn": true,
+    "notify_on_no_data": true,
+    "notify_on_recovery": true,
+    "renotify_minutes": 30
+  },
+  "icons": {
+    "ok": "🐶",
+    "alert": "🚨",
+    "warn": "⚠️",
+    "no_data": "🤷",
+    "snoozed": "😴",
+    "error": "🔌",
+    "show_count": true
+  },
+  "menu": {
+    "show_ok_monitors": true,
+    "max_per_group": 25,
+    "group_order": ["Alert", "Warn", "No Data", "OK", "Muted"]
+  },
+  "quick_links": [
+    {"name": "📊 Dashboards", "path": "/dashboard/lists"},
+    {"name": "📟 Monitors", "path": "/monitors/manage"},
+    {"name": "🪵 Logs", "path": "/logs"},
+    {"name": "🧵 APM Traces", "path": "/apm/traces"},
+    {"name": "🔥 Incidents", "path": "/incidents"},
+    {"name": "🏠 Infrastructure", "path": "/infrastructure"}
+  ],
+  "custom_links": [
+    {"name": "💳 Payments Dashboard", "url": "https://app.datadoghq.com/dashboard/abc-123"},
+    {"name": "📕 Runbook (Confluence)", "url": "https://example.atlassian.net/wiki/runbooks"}
+  ]
+}
