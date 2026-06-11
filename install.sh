@@ -55,6 +55,7 @@ cat > "$PLIST" <<EOF
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Interactive</string>
   <key>StandardErrorPath</key><string>$APP_DIR/stderr.log</string>
   <key>StandardOutPath</key><string>$APP_DIR/stdout.log</string>
 </dict>

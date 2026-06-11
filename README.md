@@ -109,6 +109,25 @@ submenu shows **🎫 Create Jira ticket** (and **🎫 Open OPS-123** once one ex
 - 📰 Event stream (deploys correlated with alerts)
 - 🖥 Host up/down counts, 💸 usage/cost watch
 
+## 🛡 macOS hardening (built in)
+
+- **App Nap immunity** — macOS throttles timers of "idle" background apps,
+  which would delay alert polling. The app holds an `NSProcessInfo` activity
+  token, and the LaunchAgent runs with `ProcessType: Interactive`.
+- **Single instance** — an `flock` lockfile prevents a manual run + the
+  LaunchAgent from producing two menu bar icons.
+- **No stale-alert blind spots** — a transient API/network error shows a
+  🔌 row in the menu but never replaces a known alerting icon in the menu bar.
+- **Leak-safe menu updates** — the menu only rebuilds when content actually
+  changes (rumps leaks Cocoa objects on rebuild), with a 5-minute cap while
+  anything is alerting so "triggered Xm ago" stays fresh.
+- **Duplicate-name safe** — rumps menus key items by title; identical monitor
+  names are disambiguated invisibly so none vanish.
+- **Permission-free critical alerts** — banners need notification permission
+  (they attribute to "Python" in System Settings), but the modal popup uses
+  `display alert`, which macOS always shows. Your unmissable path can't be
+  silently disabled.
+
 ## 🧯 Troubleshooting
 
 - **🔌 in the menu bar** → API error. Check keys/site; hover the first menu row for the message.

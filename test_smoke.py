@@ -173,6 +173,47 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
         time.sleep(0.2)
         assert "9" not in app.state.get("jira_created", {})
 
+    # duplicate monitor names must NOT collide (rumps keys menus by title)
+    FAKE_DUP = json.loads(json.dumps(FAKE3))
+    FAKE_DUP.append({"id": 7, "name": "High CPU on prod-web",
+                     "overall_state": "Alert", "options": {}})
+    app._handle_new_monitors(FAKE_DUP)
+    app._rebuild_menu()
+    dup_titles = [getattr(i, "title", "") for i in app.menu
+                  if i and getattr(i, "title", "").startswith("🔴 High CPU")]
+    assert len(dup_titles) == 2 and len(set(dup_titles)) == 2, dup_titles
+
+    # fingerprint: same data -> no rebuild, only the timestamp row updates
+    app._handle_new_monitors(FAKE_DUP)
+    fp1 = app._menu_fingerprint()
+    assert fp1 == app._menu_fp, "fingerprint should be stable on same data"
+    marker = rumps.MenuItem("marker")
+    app.menu.append(marker)
+    app.results.put(("data", {"monitors": FAKE_DUP, "enrich": dict(app.enrich)}))
+    app._drain_results(None)
+    assert marker in app.menu, "menu must not rebuild when nothing changed"
+    assert "Refresh now" in app._refresh_item.title
+    # ...but a state change does rebuild
+    FAKE_CHG = json.loads(json.dumps(FAKE_DUP))
+    FAKE_CHG[5]["overall_state"] = "OK"   # No Data -> OK
+    app.results.put(("data", {"monitors": FAKE_CHG, "enrich": dict(app.enrich)}))
+    app._drain_results(None)
+    assert marker not in app.menu, "menu should rebuild on state change"
+
+    # transient API error must not hide alert state in the title
+    app.results.put(("error", "HTTP 503 from Datadog API"))
+    app._drain_results(None)
+    assert app.title != "🔌", repr(app.title)
+    titles = [getattr(i, "title", "") for i in app.menu if i]
+    assert any("🔌 Error" in t for t in titles), titles
+    assert any("📊" in t for t in titles), "summary should still show"
+    app.last_error = None
+
+    # unique_title helper
+    s = set()
+    a, b = da.unique_title("x", s), da.unique_title("x", s)
+    assert a != b and b.startswith("x"), (a, b)
+
     # snooze suppresses notifications
     notifications.clear()
     app._make_snoozer(30)(None)

@@ -272,6 +272,29 @@ def extract_metric_query(monitor_query):
     return mt.group(1).strip() if mt else ""
 
 
+def unique_title(label, seen):
+    """rumps menus are dicts keyed by title — identical titles collide and
+    one item silently disappears. Pad with zero-width spaces to keep every
+    label visually identical but unique as a key."""
+    while label in seen:
+        label += "​"
+    seen.add(label)
+    return label
+
+
+def acquire_single_instance_lock():
+    """flock-based guard so a manual run + the LaunchAgent can't produce two
+    menu bar icons. The lock dies with the process, so no stale-PID issues."""
+    import fcntl
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    lock = open(os.path.join(CONFIG_DIR, "app.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.exit("Datadog Assistant is already running 🐶")
+    return lock  # caller must keep the reference alive
+
+
 # --------------------------------------------------------------------------
 # Datadog API client (stdlib only — no extra deps)
 # --------------------------------------------------------------------------
@@ -537,6 +560,10 @@ class DatadogAssistant(rumps.App):
         self.results = queue.Queue()
         self._fetching = False
 
+        self._menu_fp = None
+        self._refresh_item = None
+        self._activity = self._prevent_app_nap()
+
         self.menu = self._build_static_menu()
         self._rebuild_menu()
 
@@ -546,6 +573,20 @@ class DatadogAssistant(rumps.App):
         self.drain_timer = rumps.Timer(self._drain_results, 2)
         self.drain_timer.start()
         self._poll_tick(None)  # immediate first fetch
+
+    def _prevent_app_nap(self):
+        """App Nap throttles NSTimer for 'idle' background apps — fatal for
+        an alerting tool. Hold the activity token for the process lifetime
+        (App Nap resumes the moment the token is released)."""
+        try:
+            from Foundation import NSProcessInfo
+            # NSActivityUserInitiatedAllowingIdleSystemSleep:
+            # no timer throttling, but the Mac may still sleep normally.
+            options = 0x00FFFFFF & ~(1 << 20)
+            return NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
+                options, "Polling Datadog for alerts")
+        except Exception:
+            return None  # non-macOS / no pyobjc — nothing to do
 
     # -------------------- polling --------------------
 
@@ -605,8 +646,37 @@ class DatadogAssistant(rumps.App):
                 self.last_error = payload
             updated = True
         if updated:
-            self._rebuild_menu()
+            # Rebuilding leaks Cocoa objects over time (rumps #64), so only
+            # rebuild when menu-relevant content actually changed; otherwise
+            # just refresh the timestamp row in place.
+            fp = self._menu_fingerprint()
+            if fp != self._menu_fp:
+                self._rebuild_menu()
+            elif self._refresh_item is not None and self.last_refresh:
+                self._refresh_item.title = (
+                    f"🔄 Refresh now (last: "
+                    f"{self.last_refresh.strftime('%H:%M:%S')})")
             self._update_title()
+
+    def _menu_fingerprint(self):
+        mons = tuple(sorted(
+            (m.get("id"), m.get("name"), m.get("overall_state"),
+             parse_priority(m) or 0,
+             bool(m.get("options", {}).get("silenced")),
+             len(self._triggered_groups(m)))
+            for m in self.monitors))
+        enr = tuple(sorted(
+            (k, v.get("spark"), v.get("now")) for k, v in self.enrich.items()))
+        inc = tuple((i.get("public_id"), i.get("title"), i.get("severity"))
+                    for i in self.incidents)
+        dash = tuple(d["title"] for d in self.dashboards)
+        # while anything is firing, refresh at most every 5 min anyway so
+        # the "triggered Xm ago" rows don't go stale
+        hot = any(m.get("overall_state") in ("Alert", "Warn", "No Data")
+                  for m in self.monitors)
+        bucket = int(time.time() // 300) if hot else 0
+        return (self.last_error, time.time() < self.snooze_until,
+                mons, enr, inc, dash, bucket)
 
     def _fetch_enrichment(self, monitors):
         """Live metric values + sparklines for the hottest alerting monitors."""
@@ -830,7 +900,9 @@ class DatadogAssistant(rumps.App):
 
     def _update_title(self):
         icons = self.cfg["icons"]
-        if self.last_error:
+        if self.last_error and not self.monitors:
+            # only show the plug when we have no data at all — a transient
+            # network blip must not hide a known alerting state
             self.title = icons["error"]
             return
         if time.time() < self.snooze_until:
@@ -858,13 +930,15 @@ class DatadogAssistant(rumps.App):
 
     def _rebuild_menu(self):
         self.menu.clear()
+        self._menu_fp = self._menu_fingerprint()
+        seen = set()  # rumps keys menus by title — keep them unique
         items = []
 
         # ---- status header ----
         g = self._grouped()
         if self.last_error:
             items.append(rumps.MenuItem(f"🔌 Error: {self.last_error}"))
-        else:
+        if self.monitors or not self.last_error:
             summary = (
                 f"📊 {len(g['Alert'])} alerting · {len(g['Warn'])} warn · "
                 f"{len(g['OK'])} ok · {len(g['Muted'])} muted"
@@ -873,8 +947,9 @@ class DatadogAssistant(rumps.App):
             items.append(hdr)
 
         ts = self.last_refresh.strftime("%H:%M:%S") if self.last_refresh else "never"
-        items.append(rumps.MenuItem(f"🔄 Refresh now (last: {ts})",
-                                    callback=self._manual_refresh, key="r"))
+        self._refresh_item = rumps.MenuItem(f"🔄 Refresh now (last: {ts})",
+                                            callback=self._manual_refresh, key="r")
+        items.append(self._refresh_item)
         if time.time() < self.snooze_until:
             until = datetime.fromtimestamp(self.snooze_until).strftime("%H:%M")
             items.append(rumps.MenuItem(f"😴 Snoozed until {until} — wake up",
@@ -889,7 +964,7 @@ class DatadogAssistant(rumps.App):
                 if len(label) > 60:
                     label = label[:57] + "…"
                 items.append(rumps.MenuItem(
-                    label,
+                    unique_title(label, seen),
                     callback=self._make_opener(
                         self.client.incident_url(inc.get("public_id")))))
             items.append(None)
@@ -909,11 +984,12 @@ class DatadogAssistant(rumps.App):
                 # top-level, always visible
                 items.append(header)
                 for m in monitors[:max_per]:
-                    items.append(self._monitor_item(m, group))
+                    items.append(self._monitor_item(m, group, seen))
             else:
-                # collapsed into a submenu
+                # collapsed into a submenu (its own title namespace)
+                sub_seen = set()
                 for m in monitors[:max_per]:
-                    header.add(self._monitor_item(m, group))
+                    header.add(self._monitor_item(m, group, sub_seen))
                 if len(monitors) > max_per:
                     header.add(rumps.MenuItem(f"… {len(monitors) - max_per} more"))
                 items.append(header)
@@ -923,22 +999,23 @@ class DatadogAssistant(rumps.App):
         items.append(rumps.MenuItem("➕ Add Monitor…", callback=self._add_monitor, key="n"))
 
         links = rumps.MenuItem("🔗 Quick Links")
+        link_seen = set()
         for link in self.cfg.get("quick_links", []):
             links.add(rumps.MenuItem(
-                link["name"],
+                unique_title(link["name"], link_seen),
                 callback=self._make_opener(self.client.app_base + link["path"])))
         custom = self.cfg.get("custom_links", [])
         if custom:
             links.add(None)
             for link in custom:
-                links.add(rumps.MenuItem(link["name"],
+                links.add(rumps.MenuItem(unique_title(link["name"], link_seen),
                                          callback=self._make_opener(link["url"])))
         if self.dashboards and self.cfg["context"].get("auto_dashboard_links", True):
             links.add(None)
             links.add(rumps.MenuItem("📊 MY DASHBOARDS"))
             for d in self.dashboards[:int(self.cfg["context"].get("max_dashboards", 8))]:
                 t = d["title"] if len(d["title"]) <= 45 else d["title"][:42] + "…"
-                links.add(rumps.MenuItem(f"📊 {t}",
+                links.add(rumps.MenuItem(unique_title(f"📊 {t}", link_seen),
                                          callback=self._make_opener(d["url"])))
         items.append(links)
         items.append(None)
@@ -951,7 +1028,7 @@ class DatadogAssistant(rumps.App):
 
         self.menu = items
 
-    def _monitor_item(self, m, group):
+    def _monitor_item(self, m, group, seen=None):
         mid = m.get("id")
         name = m.get("name", f"monitor {mid}")
         emoji = STATE_EMOJI.get("Muted" if group == "Muted" else
@@ -959,6 +1036,8 @@ class DatadogAssistant(rumps.App):
         label = f"{emoji} {name}"
         if len(label) > 60:
             label = label[:57] + "…"
+        if seen is not None:
+            label = unique_title(label, seen)
         item = rumps.MenuItem(label)
         url = self.client.monitor_url(mid)
 
@@ -1266,4 +1345,5 @@ class DatadogAssistant(rumps.App):
 
 
 if __name__ == "__main__":
+    _lock = acquire_single_instance_lock()
     DatadogAssistant().run()
