@@ -554,6 +554,13 @@ class JiraClient:
         issues = data.get("issues", [])
         return issues[0]["key"] if issues else None
 
+    def list_projects(self):
+        """(key, name) of projects visible to this token."""
+        data = self._request("GET", "/rest/api/3/project/search",
+                             params={"maxResults": 50, "orderBy": "key"})
+        return [(p.get("key", ""), p.get("name", ""))
+                for p in data.get("values", [])]
+
     def create_issue(self, monitor_id, name, dd_url, context=""):
         text = f"Datadog monitor alert: {name}\n\n{dd_url}"
         if context:
@@ -1520,7 +1527,7 @@ class DatadogAssistant(rumps.App):
              "Stored in the macOS Keychain. Leave blank to keep the\n"
              "current token.", True),
             ("project_key", "Jira project key",
-             "Tickets are created in this project, e.g. OPS", False),
+             "The ticket-number prefix — OPS for tickets like OPS-123.", False),
             ("issue_type", "Issue type",
              "Must exist in your project: Task, Bug, Story…\n"
              "(team-managed projects often don't have \"Task\")", False),
@@ -1530,6 +1537,17 @@ class DatadogAssistant(rumps.App):
              "Point your board's filter at your team's label.", False),
         ]
         for key, title, message, secret in steps:
+            if key == "project_key":
+                # url/email/token are saved by now — show what's accessible
+                try:
+                    projs = JiraClient(self.cfg["jira"]).list_projects()
+                    if projs:
+                        shown = ", ".join(k for k, _ in projs[:15])
+                        if len(projs) > 15:
+                            shown += f" … +{len(projs) - 15} more"
+                        message += f"\nYour projects: {shown}"
+                except Exception:
+                    pass  # listing is a nicety; the step still works without
             if key == "labels":
                 prefill = " ".join(self.cfg["jira"].get("labels") or [])
             elif secret:
