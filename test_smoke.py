@@ -82,7 +82,14 @@ FAKE = [
     {"id": 4, "name": "Healthcheck payments svc", "overall_state": "OK", "options": {}},
     {"id": 5, "name": "Kafka consumer lag", "overall_state": "OK",
      "options": {"silenced": {"*": None}}},
-    {"id": 6, "name": "Agent reporting (staging)", "overall_state": "No Data", "options": {}},
+    # broken No Data: wants no-data alerts + probe sees the metric flowed then stopped
+    {"id": 6, "name": "Agent reporting (staging)", "overall_state": "No Data",
+     "type": "metric alert",
+     "query": "avg(last_5m):avg:system.cpu.user{env:staging} > 90",
+     "options": {"notify_no_data": True}},
+    # quiet No Data: event-stream monitor — zero matching logs is normal
+    {"id": 8, "name": "Nightly batch error logs", "overall_state": "No Data",
+     "type": "log alert", "options": {"notify_no_data": True}},
 ]
 FAKE_INCIDENTS = [{"public_id": "42", "title": "Checkout down", "severity": "SEV-1",
                    "state": "active", "created": ""}]
@@ -103,6 +110,22 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
     g = app._grouped()
     assert len(g["Alert"]) == 2 and len(g["Warn"]) == 1, g
     assert len(g["Muted"]) == 1 and len(g["No Data"]) == 1, g
+    # no-data triage: probe saw data then silence -> broken; log alert -> quiet
+    assert len(g["Quiet"]) == 1 and g["Quiet"][0]["id"] == 8, g
+    assert g["No Data"][0]["id"] == 6, g
+    v, r = app._triage_no_data(FAKE[5])
+    assert v == "broken" and "stopped" in r, (v, r)
+    v, r = app._triage_no_data(FAKE[6])
+    assert v == "quiet" and "event-stream" in r, (v, r)
+    v, r = app._triage_no_data({"id": 9, "overall_state": "No Data",
+                                "type": "metric alert", "options": {}})
+    assert v == "quiet" and "off" in r, (v, r)        # author opted out
+    v, r = app._triage_no_data(
+        {"id": 10, "overall_state": "No Data", "type": "metric alert",
+         "options": {"notify_no_data": True},
+         "state": {"groups": {"host:old": {"status": "No Data",
+                                           "last_nodata_ts": NOW - 3 * 86400}}}})
+    assert v == "quiet" and "retired" in r, (v, r)    # stale for days
     # P1 alert present -> severity icon from p1 rule
     assert app.title == "‼️ 2", repr(app.title)
     # first poll: no prev state -> no notifications (avoids spam at launch)
@@ -139,6 +162,23 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
     assert ("banner", "🔴 ALERT — Datadog") in kinds, notifications
     assert ("modal", "🔴 ALERT — Datadog") in kinds, notifications
     assert ("banner", "🟢 Recovered — Datadog") in kinds, notifications
+
+    # triage gates No Data notifications: broken notifies (with the reason),
+    # quiet stays silent
+    base = json.loads(json.dumps(FAKE2))
+    base[3]["overall_state"] = "OK"
+    base[5]["overall_state"] = "OK"
+    base[6]["overall_state"] = "OK"
+    app._handle_new_monitors(base)            # baseline: everything calm
+    notifications.clear()
+    nd = json.loads(json.dumps(base))
+    nd[5]["overall_state"] = "No Data"        # broken (probe: stopped)
+    nd[6]["overall_state"] = "No Data"        # quiet (log alert)
+    app._handle_new_monitors(nd)
+    nd_msgs = [m for k, t, m in notifications if "No Data" in t]
+    assert nd_msgs and all("Agent reporting" in m for m in nd_msgs), notifications
+    assert all("stopped" in m for m in nd_msgs), notifications
+    assert not any("Nightly batch" in m for k, t, m in notifications), notifications
 
     # P1 renotify: pretend last notice was 11 min ago (p1 rule = 10 min)
     notifications.clear()

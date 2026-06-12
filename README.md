@@ -13,6 +13,7 @@ Your personal Datadog sidekick that lives in the menu bar and makes alerts
 | 🚨 | Menu bar icon flips from 🐶 to **🚨 2** the second a monitor alerts |
 | 🛑 | Optional **modal popup** (critical alert you must dismiss) + 🪧 banner + 🔊 sound |
 | 🔴🟡🟢 | All monitors grouped by state — Alert / Warn / No Data / OK / Muted |
+| 🤫 | **No Data triage** — splits No Data into *likely broken* (metric was flowing then stopped, monitor wants no-data alerts) vs *expected quiet* (no-data notifications off, event-stream monitors, stale/retired, metric silent for 24h+). Only broken ones notify; quiet ones collapse into a 🤫 submenu with the reason |
 | 🔇 | Mute any monitor for 1h / 4h / 24h / forever, unmute, 🗑 delete (type-DELETE confirm) |
 | ➕ | Create new metric monitors from the menu bar |
 | 🔗 | Quick links: Dashboards, Monitors, Logs, APM, Incidents + your own custom links |
@@ -80,6 +81,19 @@ New in v0.2:
   incidents 🔥, and auto dashboard links 📊.
 - **`digest_hour`** — e.g. `9` for a morning summary banner; `null` to disable.
 - **`jira`** — see below.
+- **`no_data_triage`** — smart No Data classification. A monitor in No Data is
+  *quiet* (🤫 collapsed submenu, no notification) when: its author turned
+  no-data notifications off / set it to resolve on missing data; it watches an
+  event stream (log/event/RUM/CI monitors — zero events is usually healthy);
+  it's been silent longer than `stale_hours` (default 48 — retired host,
+  seasonal job); or a live probe finds zero datapoints across the last
+  `probe_lookback_hours` (default 24). It's *likely broken* (top-level ⚪
+  group + notification, with the reason attached) when the monitor wants
+  no-data alerts — especially when the probe shows the metric **was flowing
+  and then stopped** (dead agent/host). Probes are capped at `max_probes`
+  metric queries per refresh; set `"enabled": false` for the old flat
+  behavior. Ambiguity defaults to *broken* — a dead service looks exactly
+  like No Data.
 
 Most common settings are also flippable live from **⚙️ Preferences** in the
 menu — no editing or restart needed.

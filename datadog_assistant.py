@@ -103,6 +103,15 @@ DEFAULT_CONFIG = {
         "auto_dashboard_links": True,    # 📊 your dashboards in Quick Links
         "max_dashboards": 8
     },
+    "no_data_triage": {
+        # Split No Data into "likely broken" (top-level, notifies) and
+        # "quiet" (collapsed 🤫 submenu, silent) using monitor settings,
+        # monitor type, staleness, and a live metric-history probe.
+        "enabled": True,
+        "stale_hours": 48,           # silent longer than this = quiet (retired/seasonal)
+        "probe_lookback_hours": 24,  # metric history window for flowing-then-stopped check
+        "max_probes": 6              # metric-history queries per refresh
+    },
     "digest_hour": None,                 # e.g. 9 = morning summary at 9am
     "jira": {
         "enabled": False,
@@ -134,6 +143,7 @@ STATE_EMOJI = {
     "Warn": "🟡",
     "OK": "🟢",
     "No Data": "⚪",
+    "Quiet": "🤫",
     "Muted": "🔇",
     "Unknown": "❓",
     "Skipped": "⏭",
@@ -143,9 +153,18 @@ STATE_EMOJI = {
 GROUP_HEADERS = {
     "Alert": "🔴 ALERTING",
     "Warn": "🟡 WARNING",
-    "No Data": "⚪ NO DATA",
+    "No Data": "⚪ NO DATA (likely broken)",
+    "Quiet": "🤫 QUIET (no data, expected)",
     "OK": "🟢 OK",
     "Muted": "🔇 MUTED",
+}
+
+# Monitor types watching event streams: zero matching events is usually the
+# healthy state, so No Data on these rarely means anything is broken.
+EVENT_MONITOR_TYPES = {
+    "log alert", "event alert", "event-v2 alert", "rum alert",
+    "trace-analytics alert", "error-tracking alert",
+    "ci-pipelines alert", "ci-tests alert", "audit alert",
 }
 
 
@@ -572,6 +591,7 @@ class DatadogAssistant(rumps.App):
         self.incidents = []
         self.dashboards = []
         self.enrich = {}             # monitor id -> {spark, now, crit}
+        self.nodata_probe = {}       # monitor id -> "stopped" | "silent"
         self.state = load_state()    # persists jira tickets + digest date
         self._dash_ts = 0
         self.prev_states = {}        # id -> overall_state
@@ -639,6 +659,7 @@ class DatadogAssistant(rumps.App):
                         pass
                 if ctx.get("show_sparkline", True):
                     payload["enrich"] = self._fetch_enrichment(payload["monitors"])
+                payload["nodata_probe"] = self._probe_no_data(payload["monitors"])
                 self.results.put(("data", payload))
         except urllib.error.HTTPError as e:
             self.results.put(("error", f"HTTP {e.code} from Datadog API"))
@@ -662,6 +683,14 @@ class DatadogAssistant(rumps.App):
                 if "dashboards" in payload:
                     self.dashboards = payload["dashboards"]
                 self.enrich = payload.get("enrich") or {}
+                # keep probe verdicts for monitors still in No Data, fold in
+                # the new ones (only a capped batch is probed per refresh)
+                nodata_ids = {m.get("id") for m in payload["monitors"]
+                              if m.get("overall_state") == "No Data"}
+                self.nodata_probe = {
+                    **{k: v for k, v in self.nodata_probe.items()
+                       if k in nodata_ids},
+                    **payload.get("nodata_probe", {})}
                 self._handle_new_monitors(payload["monitors"])
                 self._maybe_digest()
             else:
@@ -685,7 +714,9 @@ class DatadogAssistant(rumps.App):
             (m.get("id"), m.get("name"), m.get("overall_state"),
              parse_priority(m) or 0,
              bool(m.get("options", {}).get("silenced")),
-             len(self._triggered_groups(m)))
+             len(self._triggered_groups(m)),
+             self._triage_no_data(m)[0]
+             if m.get("overall_state") == "No Data" else "")
             for m in self.monitors))
         enr = tuple(sorted(
             (k, v.get("spark"), v.get("now")) for k, v in self.enrich.items()))
@@ -729,6 +760,84 @@ class DatadogAssistant(rumps.App):
             except Exception:
                 continue
         return out
+
+    def _probe_no_data(self, monitors):
+        """For No Data metric monitors: query the metric's recent history.
+        Data in the window then nothing now → 'stopped' (agent/host likely
+        died). No datapoints in the whole window → 'silent' (was never
+        flowing — retired host, seasonal job). Runs in the fetch thread;
+        capped per refresh, already-probed monitors are skipped."""
+        tcfg = self.cfg.get("no_data_triage", {})
+        if not tcfg.get("enabled", True):
+            return {}
+        lookback = int(tcfg.get("probe_lookback_hours", 24)) * 60
+        budget = int(tcfg.get("max_probes", 6))
+        out = {}
+        for m in monitors:
+            if budget <= 0:
+                break
+            if (m.get("overall_state") != "No Data"
+                    or m.get("type") not in ("metric alert", "query alert")
+                    or m.get("id") in self.nodata_probe):
+                continue
+            q = extract_metric_query(m.get("query", ""))
+            if not q:
+                continue
+            budget -= 1
+            try:
+                series = self.client.query_metrics(q, lookback).get("series", [])
+                has_data = any(p[1] is not None
+                               for s in series
+                               for p in (s.get("pointlist") or []))
+                out[m["id"]] = "stopped" if has_data else "silent"
+            except Exception:
+                continue
+        return out
+
+    # -------------------- No Data triage --------------------
+
+    def _nodata_age(self, m):
+        groups = (m.get("state") or {}).get("groups") or {}
+        ts = [g.get("last_nodata_ts") for g in groups.values()
+              if g.get("status") == "No Data" and g.get("last_nodata_ts")]
+        if ts:
+            return max(0, time.time() - min(ts))
+        mod = m.get("overall_state_modified")
+        if mod:
+            try:
+                dt = datetime.fromisoformat(str(mod).replace("Z", "+00:00"))
+                return max(0, time.time() - dt.timestamp())
+            except ValueError:
+                pass
+        return None
+
+    def _triage_no_data(self, m):
+        """('broken' | 'quiet', reason) — is this No Data an outage or just
+        an expected silence? Defaults to 'broken' when signals are ambiguous:
+        a dead service looks exactly like No Data."""
+        if not self.cfg.get("no_data_triage", {}).get("enabled", True):
+            return "broken", ""
+        opts = m.get("options") or {}
+        omd = str(opts.get("on_missing_data") or "")
+        if omd in ("resolve", "show_ok"):
+            return "quiet", "monitor resolves on missing data"
+        wants_nodata = bool(opts.get("notify_no_data")) \
+            or omd.startswith("show_and_notify")
+        if not wants_nodata:
+            return "quiet", "no-data notifications are off on this monitor"
+        if (m.get("type") or "") in EVENT_MONITOR_TYPES:
+            return "quiet", "event-stream monitor — silence is usually normal"
+        age = self._nodata_age(m)
+        stale = int(self.cfg["no_data_triage"].get("stale_hours", 48)) * 3600
+        if age and age > stale:
+            return "quiet", f"silent for {fmt_duration(age)} — likely retired"
+        probe = self.nodata_probe.get(m.get("id"))
+        if probe == "stopped":
+            return "broken", "metric was flowing, then stopped"
+        if probe == "silent":
+            window = self.cfg["no_data_triage"].get("probe_lookback_hours", 24)
+            return "quiet", f"no datapoints in the last {window}h"
+        return "broken", "monitor wants no-data alerts"
 
     # -------------------- severity & context --------------------
 
@@ -803,8 +912,11 @@ class DatadogAssistant(rumps.App):
                     should = True
                     title, body = "🟡 Warning — Datadog", name
                 elif state == "No Data" and ncfg.get("notify_on_no_data", True):
-                    should = True
-                    title, body = "⚪ No Data — Datadog", name
+                    verdict, reason = self._triage_no_data(m)
+                    if verdict == "broken":
+                        should = True
+                        title = "⚪ No Data — Datadog"
+                        body = f"{name} ({reason})" if reason else name
                 elif state == "OK" and prev in ("Alert", "Warn", "No Data") \
                         and ncfg.get("notify_on_recovery", True):
                     should = True
@@ -908,12 +1020,16 @@ class DatadogAssistant(rumps.App):
     # -------------------- title (menu bar icon) --------------------
 
     def _grouped(self):
-        groups = {"Alert": [], "Warn": [], "No Data": [], "OK": [], "Muted": []}
+        groups = {"Alert": [], "Warn": [], "No Data": [], "Quiet": [],
+                  "OK": [], "Muted": []}
         for m in self.monitors:
             muted = bool(m.get("options", {}).get("silenced"))
             state = m.get("overall_state", "Unknown")
             if muted:
                 groups["Muted"].append(m)
+            elif state == "No Data":
+                verdict, _ = self._triage_no_data(m)
+                groups["Quiet" if verdict == "quiet" else "No Data"].append(m)
             elif state in groups:
                 groups[state].append(m)
             else:
@@ -965,6 +1081,9 @@ class DatadogAssistant(rumps.App):
                 f"📊 {len(g['Alert'])} alerting · {len(g['Warn'])} warn · "
                 f"{len(g['OK'])} ok · {len(g['Muted'])} muted"
             )
+            if g["No Data"] or g["Quiet"]:
+                summary += (f" · {len(g['No Data'])} no-data"
+                            f" ({len(g['Quiet'])} quiet)")
             hdr = rumps.MenuItem(summary, callback=self._open_manage_monitors)
             items.append(hdr)
 
@@ -994,8 +1113,12 @@ class DatadogAssistant(rumps.App):
         # ---- monitor groups ----
         show_ok = self.cfg["menu"].get("show_ok_monitors", True)
         max_per = int(self.cfg["menu"].get("max_per_group", 25))
-        for group in self.cfg["menu"].get("group_order",
-                                          ["Alert", "Warn", "No Data", "OK", "Muted"]):
+        order = list(self.cfg["menu"].get("group_order",
+                                          ["Alert", "Warn", "No Data", "OK", "Muted"]))
+        if "Quiet" not in order:  # configs predating no-data triage
+            order.insert(order.index("No Data") + 1 if "No Data" in order
+                         else len(order), "Quiet")
+        for group in order:
             monitors = g.get(group, [])
             if not monitors:
                 continue
@@ -1053,7 +1176,7 @@ class DatadogAssistant(rumps.App):
     def _monitor_item(self, m, group, seen=None):
         mid = m.get("id")
         name = m.get("name", f"monitor {mid}")
-        emoji = STATE_EMOJI.get("Muted" if group == "Muted" else
+        emoji = STATE_EMOJI.get(group if group in ("Muted", "Quiet") else
                                 m.get("overall_state", "Unknown"), "❓")
         label = f"{emoji} {name}"
         if len(label) > 60:
@@ -1064,8 +1187,12 @@ class DatadogAssistant(rumps.App):
         url = self.client.monitor_url(mid)
 
         # severity context — why should you care, at a glance
-        if group in ("Alert", "Warn", "No Data"):
+        if group in ("Alert", "Warn", "No Data", "Quiet"):
             ctx_cfg = self.cfg["context"]
+            if group in ("No Data", "Quiet"):
+                _, reason = self._triage_no_data(m)
+                if reason:
+                    item.add(rumps.MenuItem(f"🔍 {reason}"))
             p = parse_priority(m)
             if p:
                 sev_name = {1: "critical", 2: "high", 3: "moderate",
