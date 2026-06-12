@@ -119,7 +119,12 @@ and ticket labels. The token goes into the macOS Keychain, not the config file.
 Labels are added to every ticket — give each team its own (e.g.
 `team-payments`) so their board filters pick up the right tickets. To fix a wrong token or
 change any value later, use **Preferences → 🎫 Edit Jira settings…** (leave
-the token blank to keep the current one).
+the token blank to keep the current one). **Preferences → 🎫 Test Jira
+connection** shows who the token authenticates as and whether your project
+key is accessible — run it first when tickets fail. "Project does not
+exist" + no visible projects = the token was created on the wrong Atlassian
+account (id.atlassian.com keeps you logged into whichever you used last) or
+your admin blocks API tokens.
 
 Manual setup instead:
 

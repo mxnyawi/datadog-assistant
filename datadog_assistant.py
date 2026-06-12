@@ -561,6 +561,17 @@ class JiraClient:
         return [(p.get("key", ""), p.get("name", ""))
                 for p in data.get("values", [])]
 
+    def project_exists(self, key):
+        """Targeted check — list_projects caps at 50, this doesn't."""
+        data = self._request("GET", "/rest/api/3/project/search",
+                             params={"keys": key})
+        return any(p.get("key") == key for p in data.get("values", []))
+
+    def whoami(self):
+        """Who does Jira think this token is? Empty project lists +
+        'project does not exist' usually mean the wrong account's token."""
+        return self._request("GET", "/rest/api/3/myself")
+
     def create_issue(self, monitor_id, name, dd_url, context=""):
         text = f"Datadog monitor alert: {name}\n\n{dd_url}"
         if context:
@@ -1356,6 +1367,8 @@ class DatadogAssistant(rumps.App):
         prefs.add(jira)
         prefs.add(rumps.MenuItem("🎫 Edit Jira settings…",
                                  callback=self._edit_jira))
+        prefs.add(rumps.MenuItem("🎫 Test Jira connection",
+                                 callback=self._test_jira))
         prefs.add(None)
 
         # snooze
@@ -1546,8 +1559,12 @@ class DatadogAssistant(rumps.App):
                         if len(projs) > 15:
                             shown += f" … +{len(projs) - 15} more"
                         message += f"\nYour projects: {shown}"
-                except Exception:
-                    pass  # listing is a nicety; the step still works without
+                    else:
+                        message += ("\n⚠️ This token sees NO projects — "
+                                    "token from the wrong Atlassian account, "
+                                    "or your admin blocks API tokens.")
+                except Exception as e:
+                    message += f"\n⚠️ Couldn't list projects: {str(e)[:120]}"
             if key == "labels":
                 prefill = " ".join(self.cfg["jira"].get("labels") or [])
             elif secret:
@@ -1576,14 +1593,43 @@ class DatadogAssistant(rumps.App):
             else:
                 self.cfg["jira"][key] = value
         save_config(self.cfg)
+        threading.Thread(target=self._jira_connection_test, daemon=True).start()
         return True
 
     def _edit_jira(self, _):
         if self._jira_setup():
             self.jira = JiraClient(self.cfg.get("jira", {}))
-            notify_banner("🎫 Jira settings saved", "Datadog Assistant 🐶",
-                          f"Tickets go to project "
-                          f"{self.cfg['jira'].get('project_key', '?')}")
+
+    def _test_jira(self, _):
+        threading.Thread(target=self._jira_connection_test, daemon=True).start()
+
+    def _jira_connection_test(self):
+        """Definitive who-am-I-and-what-can-I-see check. 'Project does not
+        exist' + an empty project list = the token authenticates an identity
+        without access (wrong Atlassian account, or admin-blocked tokens)."""
+        client = JiraClient(self.cfg.get("jira", {}))
+        try:
+            me = client.whoami()
+            projs = client.list_projects()
+            pk = self.cfg["jira"].get("project_key", "")
+            lines = [f"Connected as {me.get('displayName', '?')} "
+                     f"({me.get('emailAddress') or 'email hidden'})"]
+            if projs:
+                lines.append(f"{len(projs)} project(s) visible")
+            else:
+                lines.append("⚠️ NO projects visible — token from the wrong "
+                             "Atlassian account, or API tokens are blocked "
+                             "by your admin")
+            if pk:
+                if client.project_exists(pk):
+                    lines.append(f"✅ Project {pk} is accessible")
+                else:
+                    keys = ", ".join(k for k, _ in projs[:12]) or "none"
+                    lines.append(f"❌ Project {pk} NOT accessible. "
+                                 f"Visible keys: {keys}")
+            notify_modal("🎫 Jira connection test", "\n".join(lines))
+        except Exception as e:
+            notify_modal("❌ Jira connection failed", str(e)[:300])
 
     def _make_snoozer(self, mins):
         def cb(_):
