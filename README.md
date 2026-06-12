@@ -134,6 +134,7 @@ submenu shows **🎫 Create Jira ticket** (and **🎫 Open OPS-123** once one ex
 ## 🧯 Troubleshooting
 
 - **🔌 in the menu bar** → API error. Check keys/site; hover the first menu row for the message.
+- **403 Forbidden** → almost always the wrong region: your keys belong to a different Datadog site than `site` in the config. Re-run `install.sh` and pick your region, or set `site` (e.g. `datadoghq.eu`) in `~/.config/datadog-assistant/config.json` / via 🌐 in Preferences.
 - **No banners** → System Settings → Notifications → allow alerts for the script/Terminal.
 - **Logs** → `~/.datadog-assistant/stderr.log`
 - **Uninstall** →

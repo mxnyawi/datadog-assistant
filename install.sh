@@ -20,7 +20,34 @@ fi
 "$APP_DIR/venv/bin/pip" install --quiet --upgrade pip rumps
 echo "✅ Python environment ready"
 
-# 2. Keys → macOS Keychain (recommended; skips if already present)
+# 2. Datadog site/region (wrong region = 403 from the API)
+echo ""
+echo "🌐 Which Datadog site is your org on? (check your browser URL, e.g. app.datadoghq.eu)"
+echo "   1) US1  — datadoghq.com (app.datadoghq.com)"
+echo "   2) EU   — datadoghq.eu"
+echo "   3) US3  — us3.datadoghq.com"
+echo "   4) US5  — us5.datadoghq.com"
+echo "   5) AP1  — ap1.datadoghq.com"
+echo "   6) GOV  — ddog-gov.com"
+read -r -p "   Choice [1-6, default 1]: " region
+case "${region:-1}" in
+  2) SITE="datadoghq.eu" ;;
+  3) SITE="us3.datadoghq.com" ;;
+  4) SITE="us5.datadoghq.com" ;;
+  5) SITE="ap1.datadoghq.com" ;;
+  6) SITE="ddog-gov.com" ;;
+  *) SITE="datadoghq.com" ;;
+esac
+python3 - "$CONFIG_DIR/config.json" "$SITE" <<'EOF'
+import json, sys, os
+p, site = sys.argv[1], sys.argv[2]
+cfg = json.load(open(p)) if os.path.exists(p) else {}
+cfg["site"] = site
+json.dump(cfg, open(p, "w"), indent=2)
+EOF
+echo "✅ Site set to $SITE"
+
+# 3. Keys → macOS Keychain (recommended; skips if already present)
 read -r -p "🔐 Store your Datadog keys in the macOS Keychain now? [y/N] " yn
 if [[ "$yn" =~ ^[Yy]$ ]]; then
   read -r -s -p "   Datadog API key: " API_KEY; echo
@@ -40,7 +67,7 @@ else
   echo "ℹ️  OK — put your keys in $CONFIG_DIR/config.json (api_key / app_key)"
 fi
 
-# 3. LaunchAgent (start at login, keep alive)
+# 4. LaunchAgent (start at login, keep alive)
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
