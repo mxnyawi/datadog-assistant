@@ -529,7 +529,9 @@ class JiraClient:
 
     def find_open_issue(self, monitor_id):
         jql = f'labels = "dd-monitor-{monitor_id}" AND statusCategory != Done'
-        data = self._request("GET", "/rest/api/3/search",
+        # /rest/api/3/search was removed by Atlassian (returns 410 Gone);
+        # its replacement is /search/jql with the same shape for our use
+        data = self._request("GET", "/rest/api/3/search/jql",
                              params={"jql": jql, "maxResults": 1, "fields": "key"})
         issues = data.get("issues", [])
         return issues[0]["key"] if issues else None
