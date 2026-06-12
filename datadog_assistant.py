@@ -56,6 +56,10 @@ DEFAULT_CONFIG = {
     "app_key": "",                 # or set DD_APP_KEY env var, or use keychain
     "use_keychain": False,         # read keys from macOS Keychain (see README)
     "site": "datadoghq.com",       # datadoghq.eu, us3.datadoghq.com, us5..., ap1...
+    "app_subdomain": "app",        # orgs with a custom subdomain: "yourorg" (else links re-ask login)
+    "browser": "",                 # open links in a specific browser, e.g. "Google Chrome"
+                                   # — "" uses the system default (often Safari, where
+                                   # you may not have a Datadog session)
     "refresh_seconds": 60,
     "tag_filter": "",              # e.g. "team:payments env:prod" — only show matching monitors
     "name_filter": "",             # substring match on monitor names
@@ -201,6 +205,34 @@ def save_config(cfg):
         json.dump(cfg, f, indent=2)
 
 
+OPEN_BROWSER = ""  # set from cfg at startup; "" = system default browser
+
+
+def open_url(url):
+    """Open url in the configured browser (cfg "browser", e.g. "Google
+    Chrome") so links land where your Datadog session lives, instead of
+    the system-default browser asking you to log in every time."""
+    if OPEN_BROWSER and sys.platform == "darwin":
+        try:
+            subprocess.run(["open", "-a", OPEN_BROWSER, url],
+                           check=False, timeout=10)
+            return
+        except Exception:
+            pass  # unknown app name etc. — fall back to default
+    webbrowser.open(url)
+
+
+def keychain_set(service, value):
+    try:
+        out = subprocess.run(
+            ["security", "add-generic-password", "-U", "-s", service,
+             "-a", os.environ.get("USER", "datadog-assistant"), "-w", value],
+            capture_output=True, timeout=5)
+        return out.returncode == 0
+    except Exception:
+        return False
+
+
 def keychain_get(service):
     try:
         out = subprocess.run(
@@ -334,7 +366,8 @@ class DatadogClient:
 
     @property
     def app_base(self):
-        return f"https://app.{self.site}"
+        sub = self.cfg.get("app_subdomain") or "app"
+        return f"https://{sub}.{self.site}"
 
     def _keys(self):
         api = self.cfg.get("api_key") or os.environ.get("DD_API_KEY", "")
@@ -568,7 +601,7 @@ def notify_modal(title, message, url=None):
                 capture_output=True, text=True, timeout=320
             )
             if url and "Open in Datadog" in (out.stdout or ""):
-                webbrowser.open(url)
+                open_url(url)
         except Exception:
             pass
 
@@ -582,6 +615,8 @@ def notify_modal(title, message, url=None):
 class DatadogAssistant(rumps.App):
     def __init__(self):
         self.cfg = load_config()
+        global OPEN_BROWSER
+        OPEN_BROWSER = self.cfg.get("browser", "")
         self.client = DatadogClient(self.cfg)
         self.jira = JiraClient(self.cfg.get("jira", {}))
         icons = self.cfg["icons"]
@@ -1319,11 +1354,11 @@ class DatadogAssistant(rumps.App):
 
     def _make_opener(self, url):
         def cb(_):
-            webbrowser.open(url)
+            open_url(url)
         return cb
 
     def _open_manage_monitors(self, _):
-        webbrowser.open(self.client.app_base + "/monitors/manage")
+        open_url(self.client.app_base + "/monitors/manage")
 
     def _manual_refresh(self, _):
         self._poll_tick(None)
@@ -1438,8 +1473,46 @@ class DatadogAssistant(rumps.App):
         self._toggle("context", "auto_dashboard_links")
 
     def _toggle_jira(self, _):
+        enabling = not self.cfg["jira"].get("enabled", False)
+        if enabling and not self.jira.configured():
+            if not self._jira_setup():
+                return  # wizard cancelled — stay disabled
         self._toggle("jira", "enabled", default=False)
         self.jira = JiraClient(self.cfg.get("jira", {}))
+        if self.cfg["jira"].get("enabled"):
+            notify_banner("🎫 Jira enabled", "Datadog Assistant 🐶",
+                          "Create tickets from any alert's submenu")
+
+    def _jira_setup(self):
+        """First-enable wizard — without it the Jira toggle silently flips a
+        config flag that can't do anything until base_url/email/token exist."""
+        steps = [
+            ("base_url", "Jira base URL",
+             "e.g. https://yourcompany.atlassian.net", False),
+            ("email", "Atlassian account email",
+             "The email you log into Jira with", False),
+            ("api_token", "Jira API token",
+             "Create one at id.atlassian.com → Security → API tokens.\n"
+             "Stored in the macOS Keychain.", True),
+            ("project_key", "Jira project key",
+             "Tickets are created in this project, e.g. OPS", False),
+        ]
+        for key, title, message, secret in steps:
+            win = rumps.Window(
+                title=f"🎫 Jira setup — {title}", message=message,
+                default_text="" if secret else (self.cfg["jira"].get(key) or ""),
+                ok="Next", cancel="Cancel", dimensions=(320, 24), secure=secret)
+            resp = win.run()
+            if not resp.clicked:
+                return False
+            value = resp.text.strip()
+            if key == "api_token" and value \
+                    and keychain_set("datadog-assistant-jira-token", value):
+                self.cfg["jira"]["api_token"] = ""  # keychain wins; keep file clean
+            else:
+                self.cfg["jira"][key] = value
+        save_config(self.cfg)
+        return True
 
     def _make_snoozer(self, mins):
         def cb(_):

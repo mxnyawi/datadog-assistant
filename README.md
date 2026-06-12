@@ -67,6 +67,13 @@ Everything is configurable (see `config.example.json` for a full example):
 - **`notifications.sound_name`** — any macOS sound: `Sosumi`, `Glass`, `Hero`, `Submarine`, `Funk`…
 - **`notifications.renotify_minutes`** — nag interval while still alerting (0 = off)
 - **`tag_filter`** / **`name_filter`** — scope to your team, e.g. `"team:payments env:prod"`
+- **`browser`** — open links in a specific browser, e.g. `"Google Chrome"`,
+  `"Firefox"`, `"Arc"`. Empty = system default. Set this if every link asks
+  you to log in: links were opening in the default browser (often Safari)
+  instead of the one holding your Datadog session.
+- **`app_subdomain`** — orgs with a custom subdomain (you normally browse
+  `yourorg.datadoghq.eu`) should set `"yourorg"`, otherwise deep links to
+  `app.<site>` bounce you to the login page.
 - **`quick_links`** — Datadog pages (relative paths, follow your `site`)
 - **`custom_links`** — any URL: dashboards, runbooks, wikis
 - **`menu.group_order`**, **`menu.show_ok_monitors`**, **`menu.max_per_group`**
@@ -104,6 +111,13 @@ Tickets are created via the Jira Cloud REST API using an **Atlassian API
 token** — these authenticate directly against Atlassian, so they work even
 when your company logs into Jira through Okta. (A full Okta OAuth flow is
 only needed for self-hosted Jira Data Center, which this doesn't support yet.)
+
+**Easiest setup:** click **Preferences → 🎫 Jira integration** in the menu —
+a wizard asks for your Jira URL, email, API token (create one at
+**id.atlassian.com → Security → API tokens**), and project key. The token
+goes into the macOS Keychain, not the config file.
+
+Manual setup instead:
 
 1. Create a token at **id.atlassian.com → Security → API tokens**
 2. Store it (Keychain recommended):
@@ -150,6 +164,10 @@ submenu shows **🎫 Create Jira ticket** (and **🎫 Open OPS-123** once one ex
 - **🔌 in the menu bar** → API error. Check keys/site; hover the first menu row for the message.
 - **403 Forbidden** → almost always the wrong region: your keys belong to a different Datadog site than `site` in the config. Re-run `install.sh` and pick your region, or set `site` (e.g. `datadoghq.eu`) in `~/.config/datadog-assistant/config.json` / via 🌐 in Preferences.
 - **No banners** → System Settings → Notifications → allow alerts for the script/Terminal.
+- **Every link asks me to log in** → links open in your *default* browser, which may not
+  hold your Datadog session. Set `"browser": "Google Chrome"` (or wherever you're logged
+  in) in the config. If your org uses a custom subdomain (`yourorg.datadoghq.eu`), also
+  set `"app_subdomain": "yourorg"`.
 - **Logs** → `~/.datadog-assistant/stderr.log`
 - **Uninstall** →
   ```bash
