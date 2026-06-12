@@ -97,6 +97,25 @@ assert captured["url"] == \
     "https://api.atlassian.com/ex/jira/abc123/rest/api/3/myself", captured
 assert captured["auth"] == "Bearer tok", captured
 
+# create_issue merges cfg labels + per-monitor labels + dd-monitor-<id>, deduped
+cap = {}
+
+def fake_urlopen2(req, timeout=None):
+    cap["body"] = json.loads(req.data.decode())
+    class R(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+    return R(b'{"key": "OPS-9"}')
+
+jc2 = da.JiraClient({"base_url": "https://x.atlassian.net", "email": "e",
+                     "api_token": "t", "labels": ["datadog-alert"]})
+with mock.patch.object(da.urllib.request, "urlopen", fake_urlopen2):
+    k = jc2.create_issue(5, "mon", "https://dd/x", "",
+                         ["datadog-alert-team-payments", "datadog-alert"])
+assert k == "OPS-9"
+assert cap["body"]["fields"]["labels"] == \
+    ["datadog-alert", "datadog-alert-team-payments", "dd-monitor-5"], cap
+
 NOW = time.time()
 FAKE = [
     {"id": 1, "name": "High CPU on prod-web", "overall_state": "Alert",
@@ -224,13 +243,27 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
     body = next(m for k, t, m in notifications if k == "banner")
     assert "P1" in body, body
 
+    # labels derived from monitor tags: datadog-alert-<tag>
+    assert da.jira_label("team:payments") == "team-payments"
+    assert da.jira_label("env: prod ") == "env-prod"
+    tagged = {"id": 1, "tags": ["team:payments", "env:prod"]}
+    assert app._monitor_auto_labels(tagged) == \
+        ["datadog-alert-team-payments", "datadog-alert-env-prod"], \
+        app._monitor_auto_labels(tagged)
+    app.cfg["tag_filter"] = "team:payments"          # filter narrows labels
+    assert app._monitor_auto_labels(tagged) == ["datadog-alert-team-payments"]
+    app.cfg["tag_filter"] = ""
+    app.cfg["jira"]["auto_label_from_tags"] = False  # opt-out
+    assert app._monitor_auto_labels(tagged) == []
+    app.cfg["jira"]["auto_label_from_tags"] = True
+
     # jira: manual create with dedupe miss -> issue created
     created = {}
     with mock.patch.object(da.JiraClient, "configured", return_value=True), \
          mock.patch.object(da.JiraClient, "find_open_issue", return_value=None), \
          mock.patch.object(da.JiraClient, "create_issue",
-                           side_effect=lambda mid, n, u, c: created.update(
-                               {"mid": mid, "ctx": c}) or "OPS-7"):
+                           side_effect=lambda mid, n, u, c, extra=None: created.update(
+                               {"mid": mid, "ctx": c, "extra": extra}) or "OPS-7"):
         app.cfg["jira"]["enabled"] = True
         notifications.clear()
         app._create_jira(FAKE3[0])

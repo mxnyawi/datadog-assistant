@@ -138,8 +138,13 @@ Tips:
 - Secrets (API token / OAuth client secret + refresh token) live in the
   macOS Keychain, not the config file. Re-running the wizard with a blank
   token keeps the stored one.
-- Labels are added to every ticket — give each team its own (e.g.
-  `team-payments`) so their board filters pick up the right tickets.
+- **Per-team routing is automatic**: each monitor tag becomes a ticket label
+  `datadog-alert-<tag>` (`team:payments` → `datadog-alert-team-payments`),
+  so one shared config files every team's tickets onto their own board —
+  point each board's filter at `labels = datadog-alert-team-<x>`. If a
+  `tag_filter` is set, only those tags are used. Disable with
+  `jira.auto_label_from_tags: false`; static `jira.labels` are still added
+  on top.
 - **Preferences → 🎫 Test Jira connection** shows who you authenticate as
   and whether your project key is accessible — run it first when tickets
   fail. "Project does not exist" + no visible projects = wrong account's

@@ -129,6 +129,7 @@ DEFAULT_CONFIG = {
         "project_key": "OPS",
         "issue_type": "Task",
         "labels": ["datadog-alert"],
+        "auto_label_from_tags": True,    # + datadog-alert-<monitor tag> per tag
         "auto_create": False,            # auto-ticket on new alerts
         "auto_create_max_p": 2,          # only P1/P2 alerts auto-create
         "dedupe": True                   # skip if an open ticket exists
@@ -490,6 +491,12 @@ class DatadogClient:
             "from": now - window_minutes * 60, "to": now, "query": query})
 
 
+def jira_label(s):
+    """Jira labels can't contain spaces (and ':' reads badly in JQL) —
+    normalize 'team:payments' → 'team-payments'."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", s.strip()).strip("-")
+
+
 def http_error_detail(e):
     """Jira (and most JSON APIs) put the actual problem in the error body,
     e.g. {"errors": {"issuetype": "The issue type selected is invalid."}} —
@@ -644,15 +651,20 @@ class JiraClient:
         'project does not exist' usually mean the wrong account's token."""
         return self._request("GET", "/rest/api/3/myself")
 
-    def create_issue(self, monitor_id, name, dd_url, context=""):
+    def create_issue(self, monitor_id, name, dd_url, context="",
+                     extra_labels=None):
         text = f"Datadog monitor alert: {name}\n\n{dd_url}"
         if context:
             text += f"\n\nContext at creation: {context}"
+        labels = list(dict.fromkeys(            # dedupe, keep order
+            list(self.cfg.get("labels", []))
+            + list(extra_labels or [])
+            + [f"dd-monitor-{monitor_id}"]))
         body = {"fields": {
             "project": {"key": self.cfg.get("project_key", "OPS")},
             "issuetype": {"name": self.cfg.get("issue_type", "Task")},
             "summary": f"[Datadog] 🔴 {name}"[:254],
-            "labels": list(self.cfg.get("labels", [])) + [f"dd-monitor-{monitor_id}"],
+            "labels": labels,
             "description": {"type": "doc", "version": 1, "content": [
                 {"type": "paragraph",
                  "content": [{"type": "text", "text": text}]}]},
@@ -1151,10 +1163,24 @@ class DatadogAssistant(rumps.App):
             return
         self._create_jira(m, auto=True)
 
+    def _monitor_auto_labels(self, m):
+        """datadog-alert-<tag> per monitor tag, so one shared config routes
+        tickets to each team's board (filter: labels = datadog-alert-team-x)
+        without per-ticket label customisation. If a tag_filter is set, only
+        those tags are used; otherwise every monitor tag becomes a label."""
+        if not self.cfg["jira"].get("auto_label_from_tags", True):
+            return []
+        tags = m.get("tags") or []
+        flt = set(self.cfg.get("tag_filter", "").split())
+        if flt:
+            tags = [t for t in tags if t in flt]
+        return [jira_label(f"datadog-alert-{t}") for t in tags]
+
     def _create_jira(self, m, auto=False):
         mid, name = m.get("id"), m.get("name", "")
         url = self.client.monitor_url(mid)
         ctx = self._context_line(m)
+        auto_labels = self._monitor_auto_labels(m)
 
         def run():
             try:
@@ -1170,7 +1196,7 @@ class DatadogAssistant(rumps.App):
                                           "Datadog Assistant 🐶",
                                           f"{key} covers this monitor")
                         return
-                key = self.jira.create_issue(mid, name, url, ctx)
+                key = self.jira.create_issue(mid, name, url, ctx, auto_labels)
                 self.state.setdefault("jira_created", {})[str(mid)] = key
                 save_state(self.state)
                 notify_banner("🎫 Jira ticket created" + (" (auto)" if auto else ""),
@@ -1759,8 +1785,9 @@ class DatadogAssistant(rumps.App):
                  "(team-managed projects often don't have \"Task\")"),
                 ("labels", "Ticket labels",
                  "Space- or comma-separated Jira labels added to every\n"
-                 "ticket, e.g.: team-payments datadog-alert\n"
-                 "Point your board's filter at your team's label.")]:
+                 "ticket. Monitor tags are ALSO added automatically as\n"
+                 "datadog-alert-<tag> (e.g. datadog-alert-team-payments),\n"
+                 "so per-team routing usually needs nothing here.")]:
             if key == "labels":
                 default = " ".join(jc.get("labels") or [])
             else:

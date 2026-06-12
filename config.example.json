@@ -67,6 +67,7 @@
     "project_key": "OPS",
     "issue_type": "Task",
     "labels": ["datadog-alert"],
+    "auto_label_from_tags": true,
     "auto_create": false,
     "auto_create_max_p": 2,
     "dedupe": true
