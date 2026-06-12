@@ -107,10 +107,23 @@ menu — no editing or restart needed.
 
 ## 🎫 Jira integration (works with Okta SSO)
 
-Tickets are created via the Jira Cloud REST API using an **Atlassian API
-token** — these authenticate directly against Atlassian, so they work even
-when your company logs into Jira through Okta. (A full Okta OAuth flow is
-only needed for self-hosted Jira Data Center, which this doesn't support yet.)
+Two auth modes:
+
+- **API token** (default) — authenticates directly against Atlassian, works
+  with Okta SSO. Use this unless your admin blocks API tokens.
+- **OAuth (Okta-friendly)** — when API tokens are blocked by your org
+  (Atlassian Guard), use **Preferences → 🎫 Connect Jira via Okta (OAuth)…**.
+  You log in once in your browser (through Okta), and the app keeps a
+  refresh token in the Keychain. One-time prerequisite — create a free
+  OAuth app at **developer.atlassian.com → Console → Create → OAuth 2.0
+  integration**:
+  1. **Permissions → Jira API** → add scopes `read:jira-work`,
+     `write:jira-work`, `read:jira-user`, `offline_access`
+  2. **Authorization** → callback URL `http://localhost:8917/callback`
+  3. Copy the **Client ID** and **Secret** from Settings — the connect
+     wizard asks for both, then opens the browser to authorize.
+  Note: some orgs require admin approval the first time an OAuth app is
+  authorized; if so, Jira shows a "request access" screen instead.
 
 **Easiest setup:** click **Preferences → 🎫 Jira integration** in the menu —
 a wizard asks for your Jira URL, email, API token (create one at

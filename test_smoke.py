@@ -75,6 +75,28 @@ assert da.http_error_detail(fake_err) == "boom; issuetype: invalid"
 fake_err2 = types.SimpleNamespace(read=lambda: b"<html>", reason="Bad Request")
 assert da.http_error_detail(fake_err2) == "Bad Request"
 
+# OAuth-mode Jira client hits api.atlassian.com with a Bearer token
+import io
+oauth_jc = da.JiraClient({"auth": "oauth", "cloud_id": "abc123",
+                          "oauth_client_id": "cid"})
+oauth_jc._access = {"token": "tok", "expires": time.time() + 3600}
+captured = {}
+
+def fake_urlopen(req, timeout=None):
+    captured["url"] = req.full_url
+    captured["auth"] = req.get_header("Authorization")
+    class R(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+    return R(b'{"ok": true}')
+
+with mock.patch.object(da.urllib.request, "urlopen", fake_urlopen):
+    out = oauth_jc._request("GET", "/rest/api/3/myself")
+assert out == {"ok": True}, out
+assert captured["url"] == \
+    "https://api.atlassian.com/ex/jira/abc123/rest/api/3/myself", captured
+assert captured["auth"] == "Bearer tok", captured
+
 NOW = time.time()
 FAKE = [
     {"id": 1, "name": "High CPU on prod-web", "overall_state": "Alert",

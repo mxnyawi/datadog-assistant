@@ -25,6 +25,7 @@ Config lives at ~/.config/datadog-assistant/config.json
 import base64
 import gzip
 import http.client
+import http.server
 import json
 import os
 import re
@@ -119,9 +120,12 @@ DEFAULT_CONFIG = {
     "digest_hour": None,                 # e.g. 9 = morning summary at 9am
     "jira": {
         "enabled": False,
+        "auth": "token",                 # "token" (API token) or "oauth" (Okta/SSO-friendly)
         "base_url": "",                  # https://yourcompany.atlassian.net
         "email": "",                     # your Atlassian account email
         "api_token": "",                 # or Keychain: datadog-assistant-jira-token
+        "oauth_client_id": "",           # OAuth mode: from developer.atlassian.com
+        "cloud_id": "",                  # OAuth mode: set automatically on connect
         "project_key": "OPS",
         "issue_type": "Task",
         "labels": ["datadog-alert"],
@@ -502,37 +506,105 @@ def http_error_detail(e):
 
 
 # --------------------------------------------------------------------------
-# Jira client (Cloud REST v3, API-token auth)
+# Jira client (Cloud REST v3)
 #
-# Works even when your Jira uses Okta SSO: Atlassian API tokens
-# (id.atlassian.com → Security → API tokens) authenticate directly against
-# Atlassian and bypass the SSO browser flow. A full Okta OAuth flow is only
-# needed for self-hosted Jira Data Center — not implemented here.
+# Two auth modes:
+#   "token" — Atlassian API token + Basic auth against your site. Works with
+#             Okta SSO since tokens authenticate directly against Atlassian.
+#   "oauth" — OAuth 2.0 (3LO): you log in once in the browser (where the
+#             Okta session lives), the app keeps a refresh token in the
+#             Keychain and calls api.atlassian.com with Bearer tokens.
+#             Use this when your admin BLOCKS API tokens.
 # --------------------------------------------------------------------------
+
+JIRA_OAUTH_AUTH_URL = "https://auth.atlassian.com/authorize"
+JIRA_OAUTH_TOKEN_URL = "https://auth.atlassian.com/oauth/token"
+JIRA_OAUTH_RESOURCES_URL = \
+    "https://api.atlassian.com/oauth/token/accessible-resources"
+JIRA_OAUTH_SCOPES = "read:jira-work write:jira-work read:jira-user offline_access"
+JIRA_OAUTH_PORT = 8917  # must match the app's registered callback URL
+
 
 class JiraClient:
     def __init__(self, cfg):
         self.cfg = cfg or {}
+        self._access = {"token": "", "expires": 0}  # cached OAuth access token
 
     def enabled(self):
         return bool(self.cfg.get("enabled"))
+
+    def auth_mode(self):
+        return self.cfg.get("auth", "token")
 
     def _token(self):
         return (self.cfg.get("api_token")
                 or keychain_get("datadog-assistant-jira-token"))
 
+    def _oauth_blob(self):
+        raw = (keychain_get("datadog-assistant-jira-oauth")
+               or self.cfg.get("oauth_blob", ""))
+        try:
+            return json.loads(raw) if raw else {}
+        except ValueError:
+            return {}
+
+    def _save_oauth_blob(self, blob):
+        raw = json.dumps(blob)
+        if not keychain_set("datadog-assistant-jira-oauth", raw):
+            self.cfg["oauth_blob"] = raw  # non-Keychain fallback
+
     def configured(self):
+        if self.auth_mode() == "oauth":
+            return bool(self.cfg.get("oauth_client_id")
+                        and self.cfg.get("cloud_id")
+                        and self._oauth_blob().get("refresh_token"))
         return bool(self.cfg.get("base_url") and self.cfg.get("email")
                     and self._token())
 
+    def _access_token(self):
+        """Valid OAuth access token, refreshed via the (rotating) refresh
+        token when the cached one is about to expire."""
+        if self._access["token"] and time.time() < self._access["expires"] - 60:
+            return self._access["token"]
+        blob = self._oauth_blob()
+        body = {"grant_type": "refresh_token",
+                "client_id": self.cfg.get("oauth_client_id", ""),
+                "client_secret": blob.get("client_secret", ""),
+                "refresh_token": blob.get("refresh_token", "")}
+        req = urllib.request.Request(JIRA_OAUTH_TOKEN_URL,
+                                     data=json.dumps(body).encode(),
+                                     method="POST")
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                tok = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(
+                f"Jira OAuth refresh failed ({e.code}): "
+                f"{http_error_detail(e)} — reconnect via Preferences") from e
+        self._access = {"token": tok["access_token"],
+                        "expires": time.time() + int(tok.get("expires_in", 3600))}
+        if tok.get("refresh_token"):  # Atlassian rotates refresh tokens
+            blob["refresh_token"] = tok["refresh_token"]
+            self._save_oauth_blob(blob)
+        return self._access["token"]
+
     def _request(self, method, path, params=None, body=None):
-        url = self.cfg["base_url"].rstrip("/") + path
+        if self.auth_mode() == "oauth":
+            url = (f"https://api.atlassian.com/ex/jira/"
+                   f"{self.cfg.get('cloud_id', '')}" + path)
+        else:
+            url = self.cfg["base_url"].rstrip("/") + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, method=method)
-        raw = f"{self.cfg.get('email', '')}:{self._token()}".encode()
-        req.add_header("Authorization", "Basic " + base64.b64encode(raw).decode())
+        if self.auth_mode() == "oauth":
+            req.add_header("Authorization", "Bearer " + self._access_token())
+        else:
+            raw = f"{self.cfg.get('email', '')}:{self._token()}".encode()
+            req.add_header("Authorization",
+                           "Basic " + base64.b64encode(raw).decode())
         req.add_header("Content-Type", "application/json")
         req.add_header("Accept", "application/json")
         try:
@@ -1369,6 +1441,8 @@ class DatadogAssistant(rumps.App):
                                  callback=self._edit_jira))
         prefs.add(rumps.MenuItem("🎫 Test Jira connection",
                                  callback=self._test_jira))
+        prefs.add(rumps.MenuItem("🎫 Connect Jira via Okta (OAuth)…",
+                                 callback=self._connect_jira_oauth))
         prefs.add(None)
 
         # snooze
@@ -1602,6 +1676,125 @@ class DatadogAssistant(rumps.App):
 
     def _test_jira(self, _):
         threading.Thread(target=self._jira_connection_test, daemon=True).start()
+
+    def _connect_jira_oauth(self, _):
+        """OAuth 2.0 (3LO): the login happens in the browser where the Okta
+        session lives, so this works when admins block API tokens."""
+        win = rumps.Window(
+            title="🎫 Jira via Okta/OAuth — Client ID",
+            message=("One-time setup at developer.atlassian.com → Console →\n"
+                     "Create → OAuth 2.0 integration:\n"
+                     "  • Permissions → Jira API → scopes: read:jira-work,\n"
+                     "    write:jira-work, read:jira-user, offline_access\n"
+                     f"  • Authorization → callback URL:\n"
+                     f"    http://localhost:{JIRA_OAUTH_PORT}/callback\n"
+                     "Then paste the app's Client ID here."),
+            default_text=self.cfg["jira"].get("oauth_client_id") or "",
+            ok="Next", cancel="Cancel", dimensions=(360, 24))
+        resp = win.run()
+        if not resp.clicked or not resp.text.strip():
+            return
+        client_id = resp.text.strip()
+        win = rumps.Window(
+            title="🎫 Jira via Okta/OAuth — Client Secret",
+            message="From the same app's Settings page.\n"
+                    "Stored in the macOS Keychain. Your browser will open\n"
+                    "for the Okta/Atlassian login after this.",
+            default_text="", ok="Connect", cancel="Cancel",
+            dimensions=(360, 24), secure=True)
+        resp = win.run()
+        if not resp.clicked or not resp.text.strip():
+            return
+        secret = resp.text.strip()
+        self.cfg["jira"]["oauth_client_id"] = client_id
+        save_config(self.cfg)
+        threading.Thread(target=self._jira_oauth_flow,
+                         args=(client_id, secret), daemon=True).start()
+
+    def _jira_oauth_flow(self, client_id, secret):
+        state = base64.urlsafe_b64encode(os.urandom(16)).decode().rstrip("=")
+        redirect = f"http://localhost:{JIRA_OAUTH_PORT}/callback"
+        got = {}
+
+        class Callback(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                got["code"] = (q.get("code") or [""])[0]
+                got["state"] = (q.get("state") or [""])[0]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write("<h2>🐶 Connected — close this tab and "
+                                 "return to the menu bar.</h2>".encode())
+
+            def log_message(self, *a):
+                pass
+
+        try:
+            srv = http.server.HTTPServer(("127.0.0.1", JIRA_OAUTH_PORT), Callback)
+        except OSError as e:
+            notify_modal("❌ Jira OAuth failed",
+                         f"Can't listen on port {JIRA_OAUTH_PORT}: {e}")
+            return
+        srv.timeout = 240
+        open_url(JIRA_OAUTH_AUTH_URL + "?" + urllib.parse.urlencode({
+            "audience": "api.atlassian.com",
+            "client_id": client_id,
+            "scope": JIRA_OAUTH_SCOPES,
+            "redirect_uri": redirect,
+            "state": state,
+            "response_type": "code",
+            "prompt": "consent",
+        }))
+        srv.handle_request()  # one shot: blocks until the redirect or timeout
+        srv.server_close()
+        if not got.get("code") or got.get("state") != state:
+            notify_modal("❌ Jira OAuth failed",
+                         "No authorization code received "
+                         "(timed out or cancelled in the browser).")
+            return
+        try:
+            req = urllib.request.Request(
+                JIRA_OAUTH_TOKEN_URL, method="POST",
+                data=json.dumps({"grant_type": "authorization_code",
+                                 "client_id": client_id,
+                                 "client_secret": secret,
+                                 "code": got["code"],
+                                 "redirect_uri": redirect}).encode())
+            req.add_header("Content-Type", "application/json")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                tok = json.loads(resp.read().decode())
+            req = urllib.request.Request(JIRA_OAUTH_RESOURCES_URL)
+            req.add_header("Authorization", "Bearer " + tok["access_token"])
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                sites = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            notify_modal("❌ Jira OAuth failed",
+                         f"{e.code}: {http_error_detail(e)}")
+            return
+        except Exception as e:
+            notify_modal("❌ Jira OAuth failed", str(e)[:300])
+            return
+        if not sites:
+            notify_modal("❌ Jira OAuth failed",
+                         "This login has access to no Jira sites.")
+            return
+        base = (self.cfg["jira"].get("base_url") or "").rstrip("/")
+        site = next((s for s in sites
+                     if s.get("url", "").rstrip("/") == base), sites[0])
+        jc = self.cfg["jira"]
+        jc["auth"] = "oauth"
+        jc["cloud_id"] = site["id"]
+        jc["base_url"] = site.get("url") or jc.get("base_url", "")
+        jc["enabled"] = True
+        self.jira = JiraClient(jc)
+        self.jira._save_oauth_blob({
+            "client_secret": secret,
+            "refresh_token": tok.get("refresh_token", "")})
+        save_config(self.cfg)
+        notify_banner("🎫 Jira connected via OAuth", "Datadog Assistant 🐶",
+                      site.get("name") or site.get("url", ""))
+        self._jira_connection_test()
 
     def _jira_connection_test(self):
         """Definitive who-am-I-and-what-can-I-see check. 'Project does not

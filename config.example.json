@@ -58,9 +58,12 @@
   "digest_hour": 9,
   "jira": {
     "enabled": false,
+    "auth": "token",
     "base_url": "https://yourcompany.atlassian.net",
     "email": "you@company.com",
     "api_token": "",
+    "oauth_client_id": "",
+    "cloud_id": "",
     "project_key": "OPS",
     "issue_type": "Task",
     "labels": ["datadog-alert"],
