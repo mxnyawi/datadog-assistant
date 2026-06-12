@@ -115,7 +115,11 @@ only needed for self-hosted Jira Data Center, which this doesn't support yet.)
 **Easiest setup:** click **Preferences → 🎫 Jira integration** in the menu —
 a wizard asks for your Jira URL, email, API token (create one at
 **id.atlassian.com → Security → API tokens**), project key, issue type,
-and ticket labels. The token goes into the macOS Keychain, not the config file.
+and ticket labels. If you create a **scoped** token, it needs
+`read:jira-work` (project list + dedupe search), `write:jira-work`
+(create tickets), and `read:jira-user` (connection test) — a scoped token
+missing these shows an empty project list and "project does not exist"
+on create. The token goes into the macOS Keychain, not the config file.
 Labels are added to every ticket — give each team its own (e.g.
 `team-payments`) so their board filters pick up the right tickets. To fix a wrong token or
 change any value later, use **Preferences → 🎫 Edit Jira settings…** (leave
