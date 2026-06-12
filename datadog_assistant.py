@@ -486,6 +486,21 @@ class DatadogClient:
             "from": now - window_minutes * 60, "to": now, "query": query})
 
 
+def http_error_detail(e):
+    """Jira (and most JSON APIs) put the actual problem in the error body,
+    e.g. {"errors": {"issuetype": "The issue type selected is invalid."}} —
+    'HTTP 400: Bad Request' alone is undebuggable from a notification."""
+    try:
+        body = json.loads(e.read().decode())
+        msgs = list(body.get("errorMessages") or [])
+        msgs += [f"{k}: {v}" for k, v in (body.get("errors") or {}).items()]
+        if msgs:
+            return "; ".join(msgs)
+    except Exception:
+        pass
+    return getattr(e, "reason", None) or "request failed"
+
+
 # --------------------------------------------------------------------------
 # Jira client (Cloud REST v3, API-token auth)
 #
@@ -520,9 +535,12 @@ class JiraClient:
         req.add_header("Authorization", "Basic " + base64.b64encode(raw).decode())
         req.add_header("Content-Type", "application/json")
         req.add_header("Accept", "application/json")
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            payload = resp.read().decode()
-            return json.loads(payload) if payload else {}
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                payload = resp.read().decode()
+                return json.loads(payload) if payload else {}
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"Jira {e.code}: {http_error_detail(e)}") from e
 
     def browse_url(self, key):
         return self.cfg["base_url"].rstrip("/") + "/browse/" + key
@@ -1029,7 +1047,9 @@ class DatadogAssistant(rumps.App):
                 notify_banner("🎫 Jira ticket created" + (" (auto)" if auto else ""),
                               "Datadog Assistant 🐶", f"{key} — {name[:60]}")
             except Exception as e:
-                notify_banner("❌ Jira failed", "Datadog Assistant 🐶", str(e)[:100])
+                # modal, not banner: banners truncate and their "Show"
+                # action goes nowhere, so the error was unreadable
+                notify_modal("❌ Jira ticket failed", str(e)[:400])
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -1501,6 +1521,9 @@ class DatadogAssistant(rumps.App):
              "current token.", True),
             ("project_key", "Jira project key",
              "Tickets are created in this project, e.g. OPS", False),
+            ("issue_type", "Issue type",
+             "Must exist in your project: Task, Bug, Story…\n"
+             "(team-managed projects often don't have \"Task\")", False),
             ("labels", "Ticket labels",
              "Space- or comma-separated Jira labels added to every\n"
              "ticket, e.g.: team-payments datadog-alert\n"

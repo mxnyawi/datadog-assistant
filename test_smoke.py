@@ -66,6 +66,15 @@ assert da.fmt_duration(7300) == "2h 01m"
 assert da.fmt_num(97.234) == "97.23"
 assert da.fmt_num(125000) == "125,000"
 
+# Jira error bodies surface the actual field problem
+fake_err = types.SimpleNamespace(
+    read=lambda: json.dumps({"errorMessages": ["boom"],
+                             "errors": {"issuetype": "invalid"}}).encode(),
+    reason="Bad Request")
+assert da.http_error_detail(fake_err) == "boom; issuetype: invalid"
+fake_err2 = types.SimpleNamespace(read=lambda: b"<html>", reason="Bad Request")
+assert da.http_error_detail(fake_err2) == "Bad Request"
+
 NOW = time.time()
 FAKE = [
     {"id": 1, "name": "High CPU on prod-web", "overall_state": "Alert",
