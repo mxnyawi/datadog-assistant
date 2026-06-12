@@ -1325,6 +1325,8 @@ class DatadogAssistant(rumps.App):
         jira = rumps.MenuItem("🎫 Jira integration", callback=self._toggle_jira)
         jira.state = 1 if self.cfg["jira"].get("enabled", False) else 0
         prefs.add(jira)
+        prefs.add(rumps.MenuItem("🎫 Edit Jira settings…",
+                                 callback=self._edit_jira))
         prefs.add(None)
 
         # snooze
@@ -1493,7 +1495,8 @@ class DatadogAssistant(rumps.App):
              "The email you log into Jira with", False),
             ("api_token", "Jira API token",
              "Create one at id.atlassian.com → Security → API tokens.\n"
-             "Stored in the macOS Keychain.", True),
+             "Stored in the macOS Keychain. Leave blank to keep the\n"
+             "current token.", True),
             ("project_key", "Jira project key",
              "Tickets are created in this project, e.g. OPS", False),
         ]
@@ -1506,13 +1509,24 @@ class DatadogAssistant(rumps.App):
             if not resp.clicked:
                 return False
             value = resp.text.strip()
-            if key == "api_token" and value \
-                    and keychain_set("datadog-assistant-jira-token", value):
-                self.cfg["jira"]["api_token"] = ""  # keychain wins; keep file clean
+            if key == "api_token":
+                if not value:
+                    continue  # keep whatever token is already stored
+                if keychain_set("datadog-assistant-jira-token", value):
+                    self.cfg["jira"]["api_token"] = ""  # keychain wins
+                else:
+                    self.cfg["jira"][key] = value
             else:
                 self.cfg["jira"][key] = value
         save_config(self.cfg)
         return True
+
+    def _edit_jira(self, _):
+        if self._jira_setup():
+            self.jira = JiraClient(self.cfg.get("jira", {}))
+            notify_banner("🎫 Jira settings saved", "Datadog Assistant 🐶",
+                          f"Tickets go to project "
+                          f"{self.cfg['jira'].get('project_key', '?')}")
 
     def _make_snoozer(self, mins):
         def cb(_):
