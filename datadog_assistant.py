@@ -453,6 +453,9 @@ class DatadogClient:
         }
         return self._request("POST", "/monitor", body=body)
 
+    def get_orgs(self):
+        return self._request("GET", "/org").get("orgs") or []
+
     def monitor_url(self, monitor_id):
         return f"{self.app_base}/monitors/{monitor_id}"
 
@@ -1527,6 +1530,8 @@ class DatadogAssistant(rumps.App):
             it.state = 1 if s == self.cfg.get("site") else 0
             site.add(it)
         prefs.add(site)
+        prefs.add(rumps.MenuItem("🏢 Company subdomain…",
+                                 callback=self._set_subdomain))
 
         prefs.add(rumps.MenuItem("📝 Open config file", callback=self._open_config))
         return prefs
@@ -1969,6 +1974,43 @@ class DatadogAssistant(rumps.App):
             self.cfg["tag_filter"] = resp.text.strip()
             save_config(self.cfg)
             self._poll_tick(None)
+
+    def _set_subdomain(self, _):
+        threading.Thread(target=self._set_subdomain_flow, daemon=True).start()
+
+    def _set_subdomain_flow(self):
+        """Orgs with a custom subdomain (<company>.datadoghq.eu) get a login
+        page from generic app.<site> links — the session cookie lives on the
+        company host. The API doesn't expose the subdomain, so ask, with the
+        org name (which usually matches) as a suggested guess."""
+        cur = self.cfg.get("app_subdomain") or "app"
+        guess = "" if cur == "app" else cur
+        if not guess:
+            try:
+                orgs = self.client.get_orgs()
+                if orgs:
+                    guess = re.sub(r"[^a-z0-9-]+", "-",
+                                   (orgs[0].get("name") or "").lower()).strip("-")
+            except Exception:
+                pass
+        value = ask_text(
+            "🏢 Datadog company subdomain",
+            "If you normally browse <company>.datadoghq.eu, links must use\n"
+            "that subdomain or Datadog asks you to log in again.\n"
+            "Enter just the company part — the suggestion is a guess from\n"
+            "your org name, so check your browser's address bar.\n"
+            "Leave empty for the generic app.<site>.",
+            default=guess, ok="Save")
+        if value is None:
+            return
+        v = re.sub(r"^https?://", "", value.strip().lower()).split("/")[0]
+        site = self.client.site
+        if v.endswith("." + site):       # pasted the full host? take the prefix
+            v = v[:-(len(site) + 1)]
+        self.cfg["app_subdomain"] = v or "app"
+        save_config(self.cfg)
+        notify_banner("🌐 Links now use", "Datadog Assistant 🐶",
+                      self.client.app_base)
 
     def _make_site_setter(self, s):
         def cb(_):

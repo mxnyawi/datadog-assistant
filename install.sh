@@ -47,6 +47,20 @@ json.dump(cfg, open(p, "w"), indent=2)
 EOF
 echo "✅ Site set to $SITE"
 
+# 2b. Custom company subdomain (links bounce to login without it)
+echo ""
+echo "🏢 Does your org use a custom subdomain? (your browser shows"
+echo "   <company>.$SITE instead of app.$SITE)"
+read -r -p "   Company part (leave empty for app.$SITE): " SUBDOMAIN
+python3 - "$CONFIG_DIR/config.json" "${SUBDOMAIN:-app}" <<'EOF'
+import json, sys, os
+p, sub = sys.argv[1], sys.argv[2].strip() or "app"
+cfg = json.load(open(p)) if os.path.exists(p) else {}
+cfg["app_subdomain"] = sub
+json.dump(cfg, open(p, "w"), indent=2)
+EOF
+[ -n "$SUBDOMAIN" ] && echo "✅ Links will use $SUBDOMAIN.$SITE" || echo "ℹ️  Using app.$SITE"
+
 # 3. Monitor tag filter (server-side — avoids downloading every monitor in the org)
 echo ""
 echo "🏷  Filter monitors by tag? Only matching monitors are fetched and shown."

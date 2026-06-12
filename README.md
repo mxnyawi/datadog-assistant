@@ -197,10 +197,12 @@ submenu shows **🎫 Create Jira ticket** (and **🎫 Open OPS-123** once one ex
 - **🔌 in the menu bar** → API error. Check keys/site; hover the first menu row for the message.
 - **403 Forbidden** → almost always the wrong region: your keys belong to a different Datadog site than `site` in the config. Re-run `install.sh` and pick your region, or set `site` (e.g. `datadoghq.eu`) in `~/.config/datadog-assistant/config.json` / via 🌐 in Preferences.
 - **No banners** → System Settings → Notifications → allow alerts for the script/Terminal.
-- **Every link asks me to log in** → links open in your *default* browser, which may not
-  hold your Datadog session. Set `"browser": "Google Chrome"` (or wherever you're logged
-  in) in the config. If your org uses a custom subdomain (`yourorg.datadoghq.eu`), also
-  set `"app_subdomain": "yourorg"`.
+- **Every link asks me to log in** → two causes. (1) Links open in your *default* browser,
+  which may not hold your Datadog session — set `"browser": "Google Chrome"` (or wherever
+  you're logged in). (2) Your org uses a custom subdomain — if logged-in Datadog shows
+  `yourcompany.datadoghq.eu` in the address bar but links go to `app.datadoghq.eu/login?next=…`,
+  set the subdomain via **Preferences → 🏢 Company subdomain…** (it suggests a guess from
+  your org name) or `"app_subdomain"` in the config / install.sh.
 - **Logs** → `~/.datadog-assistant/stderr.log`
 - **Uninstall** →
   ```bash
