@@ -47,7 +47,25 @@ json.dump(cfg, open(p, "w"), indent=2)
 EOF
 echo "✅ Site set to $SITE"
 
-# 3. Keys → macOS Keychain (recommended; skips if already present)
+# 3. Monitor tag filter (server-side — avoids downloading every monitor in the org)
+echo ""
+echo "🏷  Filter monitors by tag? Only matching monitors are fetched and shown."
+echo "   Strongly recommended for large orgs. Space-separated, e.g.: team:payments env:prod"
+read -r -p "   Tags (leave empty for ALL monitors): " TAGS
+python3 - "$CONFIG_DIR/config.json" "$TAGS" <<'EOF'
+import json, sys, os
+p, tags = sys.argv[1], sys.argv[2].strip()
+cfg = json.load(open(p)) if os.path.exists(p) else {}
+cfg["tag_filter"] = tags
+json.dump(cfg, open(p, "w"), indent=2)
+EOF
+if [ -n "$TAGS" ]; then
+  echo "✅ Tag filter set to: $TAGS"
+else
+  echo "ℹ️  No tag filter — fetching all monitors (you can set tag_filter in config.json later)"
+fi
+
+# 4. Keys → macOS Keychain (recommended; skips if already present)
 read -r -p "🔐 Store your Datadog keys in the macOS Keychain now? [y/N] " yn
 if [[ "$yn" =~ ^[Yy]$ ]]; then
   read -r -s -p "   Datadog API key: " API_KEY; echo
@@ -67,7 +85,7 @@ else
   echo "ℹ️  OK — put your keys in $CONFIG_DIR/config.json (api_key / app_key)"
 fi
 
-# 4. LaunchAgent (start at login, keep alive)
+# 5. LaunchAgent (start at login, keep alive)
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
