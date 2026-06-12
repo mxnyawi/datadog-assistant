@@ -1685,7 +1685,8 @@ class DatadogAssistant(rumps.App):
             message=("One-time setup at developer.atlassian.com → Console →\n"
                      "Create → OAuth 2.0 integration:\n"
                      "  • Permissions → Jira API → scopes: read:jira-work,\n"
-                     "    write:jira-work, read:jira-user, offline_access\n"
+                     "    write:jira-work, read:jira-user\n"
+                     "    (offline_access is requested automatically)\n"
                      f"  • Authorization → callback URL:\n"
                      f"    http://localhost:{JIRA_OAUTH_PORT}/callback\n"
                      "Then paste the app's Client ID here."),

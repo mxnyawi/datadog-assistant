@@ -118,7 +118,9 @@ Two auth modes:
   OAuth app at **developer.atlassian.com → Console → Create → OAuth 2.0
   integration**:
   1. **Permissions → Jira API** → add scopes `read:jira-work`,
-     `write:jira-work`, `read:jira-user`, `offline_access`
+     `write:jira-work`, `read:jira-user`. (`offline_access` is not in the
+     console — it's an OAuth-protocol scope the app requests automatically
+     in the authorize URL.)
   2. **Authorization** → callback URL `http://localhost:8917/callback`
   3. Copy the **Client ID** and **Secret** from Settings — the connect
      wizard asks for both, then opens the browser to authorize.
