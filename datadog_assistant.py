@@ -23,6 +23,8 @@ Config lives at ~/.config/datadog-assistant/config.json
 """
 
 import base64
+import gzip
+import http.client
 import json
 import os
 import re
@@ -333,23 +335,43 @@ class DatadogClient:
         if params:
             url += "?" + urllib.parse.urlencode(params)
         data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(url, data=data, method=method)
-        req.add_header("DD-API-KEY", api)
-        req.add_header("DD-APPLICATION-KEY", app)
-        req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            payload = resp.read().decode()
-            return json.loads(payload) if payload else {}
+        last_err = None
+        for attempt in range(3):
+            req = urllib.request.Request(url, data=data, method=method)
+            req.add_header("DD-API-KEY", api)
+            req.add_header("DD-APPLICATION-KEY", app)
+            req.add_header("Content-Type", "application/json")
+            req.add_header("Accept-Encoding", "gzip")
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    raw = resp.read()
+                    if resp.headers.get("Content-Encoding") == "gzip":
+                        raw = gzip.decompress(raw)
+                    payload = raw.decode()
+                    return json.loads(payload) if payload else {}
+            except (http.client.IncompleteRead, ConnectionResetError,
+                    TimeoutError) as e:
+                last_err = e
+                time.sleep(1 + attempt)
+        raise last_err
 
     def get_monitors(self):
-        params = {"group_states": "all", "page_size": 1000}
+        # Paginate so one giant response can't stall mid-read on large orgs.
+        params = {"group_states": "all", "page_size": 200}
         tag_filter = self.cfg.get("tag_filter", "").strip()
         if tag_filter:
             params["monitor_tags"] = ",".join(tag_filter.split())
         name_filter = self.cfg.get("name_filter", "").strip()
         if name_filter:
             params["name"] = name_filter
-        return self._request("GET", "/monitor", params=params)
+        monitors, page = [], 0
+        while True:
+            batch = self._request("GET", "/monitor",
+                                  params={**params, "page": page})
+            monitors.extend(batch)
+            if len(batch) < params["page_size"]:
+                return monitors
+            page += 1
 
     def mute_monitor(self, monitor_id, hours=None):
         params = {}
