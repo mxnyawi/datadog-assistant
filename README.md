@@ -105,6 +105,34 @@ New in v0.2:
 Most common settings are also flippable live from **⚙️ Preferences** in the
 menu — no editing or restart needed.
 
+## 🔐 Company setups: pull secrets from a password manager
+
+If your security team doesn't want API keys provisioned onto every laptop,
+point the app at your password manager instead — any CLI whose stdout is the
+secret works. Set the `*_cmd` keys in the config and leave the plain values
+empty:
+
+```jsonc
+"api_key_cmd":  "lpass show --password datadog-api-key",        // LastPass
+"app_key_cmd":  "op read op://Engineering/Datadog/app-key",     // 1Password
+// Jira:
+"api_token_cmd": "bw get password jira-api-token"               // Bitwarden
+```
+
+Notes:
+
+- Commands run through `/bin/sh`, so Vault/AWS pipelines work too
+  (`vault kv get -field=key secret/datadog`).
+- Successful lookups are cached in memory for the app's lifetime; if the
+  vault is locked the lookup fails, the menu bar shows 🔌 with a "password
+  manager unlocked?" hint, and it retries on the next poll after you unlock.
+- What this buys you: central rotation (rotate once in the vault, every
+  machine follows), instant revocation, audit logs, and users who never see
+  the key value. What it does *not* do: make the secret unreachable on a
+  compromised machine — the app (and any malware running as you) can still
+  execute the same CLI. At-rest, the macOS Keychain was already encrypted;
+  the win here is management, not stronger local crypto.
+
 ## 🎫 Jira integration (works with Okta SSO)
 
 Click **Preferences → 🎫 Jira integration** (or **🎫 Edit Jira settings…**)

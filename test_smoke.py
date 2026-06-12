@@ -75,6 +75,17 @@ assert da.http_error_detail(fake_err) == "boom; issuetype: invalid"
 fake_err2 = types.SimpleNamespace(read=lambda: b"<html>", reason="Bad Request")
 assert da.http_error_detail(fake_err2) == "Bad Request"
 
+# password-manager secret commands: stdout is the secret, failures retry
+assert da.secret_from_cmd("echo  s3cret ") == "s3cret"
+assert da.secret_from_cmd("exit 3") == ""          # failure -> empty, uncached
+assert "exit 3" not in da._SECRET_CMD_CACHE
+assert "echo  s3cret " in da._SECRET_CMD_CACHE     # success cached
+dd = da.DatadogClient({"api_key": "cfgkey", "app_key": "cfgapp",
+                       "api_key_cmd": "echo vaultkey"})
+assert dd._keys() == ("vaultkey", "cfgapp")        # cmd wins over config
+jt = da.JiraClient({"api_token": "cfgtok", "api_token_cmd": "echo vaulttok"})
+assert jt._token() == "vaulttok"
+
 # OAuth-mode Jira client hits api.atlassian.com with a Bearer token
 import io
 oauth_jc = da.JiraClient({"auth": "oauth", "cloud_id": "abc123",

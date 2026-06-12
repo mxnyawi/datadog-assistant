@@ -56,6 +56,9 @@ DEFAULT_CONFIG = {
     "api_key": "",                 # or set DD_API_KEY env var, or use keychain
     "app_key": "",                 # or set DD_APP_KEY env var, or use keychain
     "use_keychain": False,         # read keys from macOS Keychain (see README)
+    "api_key_cmd": "",             # pull keys from a password manager instead,
+    "app_key_cmd": "",             # e.g. "lpass show --password dd-api-key" or
+                                   # "op read op://Engineering/Datadog/api-key"
     "site": "datadoghq.com",       # datadoghq.eu, us3.datadoghq.com, us5..., ap1...
     "app_subdomain": "app",        # orgs with a custom subdomain: "yourorg" (else links re-ask login)
     "browser": "",                 # open links in a specific browser, e.g. "Google Chrome"
@@ -124,6 +127,7 @@ DEFAULT_CONFIG = {
         "base_url": "",                  # https://yourcompany.atlassian.net
         "email": "",                     # your Atlassian account email
         "api_token": "",                 # or Keychain: datadog-assistant-jira-token
+        "api_token_cmd": "",             # or a password-manager CLI (see api_key_cmd)
         "oauth_client_id": "",           # OAuth mode: from developer.atlassian.com
         "cloud_id": "",                  # OAuth mode: set automatically on connect
         "project_key": "OPS",
@@ -236,6 +240,31 @@ def keychain_set(service, value):
         return out.returncode == 0
     except Exception:
         return False
+
+
+_SECRET_CMD_CACHE = {}
+
+
+def secret_from_cmd(cmd):
+    """Pull a secret from a password-manager CLI (LastPass lpass,
+    1Password op, Bitwarden bw, Vault...) — the command's stdout is the
+    secret. Lets companies centralise rotation/revocation/audit instead of
+    provisioning API keys onto every machine. Successful lookups are cached
+    in memory so the vault isn't hit on every poll; failures (e.g. vault
+    locked) are not cached and retry next poll."""
+    if not cmd:
+        return ""
+    if cmd in _SECRET_CMD_CACHE:
+        return _SECRET_CMD_CACHE[cmd]
+    try:
+        out = subprocess.run(["/bin/sh", "-c", cmd], capture_output=True,
+                             text=True, timeout=30)
+        val = out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:
+        val = ""
+    if val:
+        _SECRET_CMD_CACHE[cmd] = val
+    return val
 
 
 def keychain_get(service):
@@ -380,6 +409,9 @@ class DatadogClient:
         if self.cfg.get("use_keychain"):
             api = keychain_get("datadog-assistant-api-key") or api
             app = keychain_get("datadog-assistant-app-key") or app
+        # password-manager commands win when configured
+        api = secret_from_cmd(self.cfg.get("api_key_cmd")) or api
+        app = secret_from_cmd(self.cfg.get("app_key_cmd")) or app
         return api, app
 
     def has_keys(self):
@@ -547,7 +579,8 @@ class JiraClient:
         return self.cfg.get("auth", "token")
 
     def _token(self):
-        return (self.cfg.get("api_token")
+        return (secret_from_cmd(self.cfg.get("api_token_cmd"))
+                or self.cfg.get("api_token")
                 or keychain_get("datadog-assistant-jira-token"))
 
     def _oauth_blob(self):
@@ -840,7 +873,12 @@ class DatadogAssistant(rumps.App):
     def _fetch(self):
         try:
             if not self.client.has_keys():
-                self.results.put(("error", "No API/APP keys configured"))
+                if self.cfg.get("api_key_cmd") or self.cfg.get("app_key_cmd"):
+                    self.results.put(("error",
+                                      "Secret command returned nothing — "
+                                      "is your password manager unlocked?"))
+                else:
+                    self.results.put(("error", "No API/APP keys configured"))
             else:
                 payload = {"monitors": self.client.get_monitors()}
                 ctx = self.cfg.get("context", {})
