@@ -692,6 +692,45 @@ def notify_banner(title, subtitle, message, sound_name=None):
     _osa(script)
 
 
+def ask_choice(title, message, choices):
+    """Blocking button chooser (max 3 — macOS alert limit). Returns the
+    clicked label, '' on cancel/timeout. osascript-based, so unlike
+    rumps.Window it is safe to call from any thread."""
+    def esc(s):
+        return s.replace("\\", "\\\\").replace('"', '\\"')
+    btns = ", ".join(f'"{esc(c)}"' for c in choices)
+    script = (f'display alert "{esc(title)}" message "{esc(message)}" '
+              f'buttons {{{btns}}} default button "{esc(choices[-1])}"')
+    try:
+        out = subprocess.run(["osascript", "-e", script],
+                             capture_output=True, text=True, timeout=600)
+        m = re.search(r"button returned:(.*)$", (out.stdout or "").strip())
+        return m.group(1).strip() if m else ""
+    except Exception:
+        return ""
+
+
+def ask_text(title, message, default="", secure=False, ok="Next"):
+    """Blocking one-field input dialog. Returns the text ('' allowed) or
+    None on cancel. osascript-based — safe from any thread."""
+    def esc(s):
+        return s.replace("\\", "\\\\").replace('"', '\\"')
+    script = (f'display dialog "{esc(message)}" with title "{esc(title)}" '
+              f'default answer "{esc(default)}" '
+              f'buttons {{"Cancel", "{esc(ok)}"}} default button "{esc(ok)}"')
+    if secure:
+        script += " with hidden answer"
+    try:
+        out = subprocess.run(["osascript", "-e", script],
+                             capture_output=True, text=True, timeout=600)
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None  # Cancel (osascript exits 1 on "User canceled")
+    m = re.search(r"text returned:(.*)$", (out.stdout or "").rstrip("\n"))
+    return m.group(1).strip() if m else None
+
+
 def notify_modal(title, message, url=None):
     """The unmissable one. Blocks until dismissed; can jump to Datadog."""
     def esc(s):
@@ -1441,8 +1480,6 @@ class DatadogAssistant(rumps.App):
                                  callback=self._edit_jira))
         prefs.add(rumps.MenuItem("🎫 Test Jira connection",
                                  callback=self._test_jira))
-        prefs.add(rumps.MenuItem("🎫 Connect Jira via Okta (OAuth)…",
-                                 callback=self._connect_jira_oauth))
         prefs.add(None)
 
         # snooze
@@ -1591,128 +1628,156 @@ class DatadogAssistant(rumps.App):
         self._toggle("context", "auto_dashboard_links")
 
     def _toggle_jira(self, _):
-        enabling = not self.cfg["jira"].get("enabled", False)
-        if enabling and not self.jira.configured():
-            if not self._jira_setup():
-                return  # wizard cancelled — stay disabled
-        self._toggle("jira", "enabled", default=False)
-        self.jira = JiraClient(self.cfg.get("jira", {}))
-        if self.cfg["jira"].get("enabled"):
+        if self.cfg["jira"].get("enabled", False):
+            self._toggle("jira", "enabled", default=False)   # switch off
+            self.jira = JiraClient(self.cfg.get("jira", {}))
+            return
+        if self.jira.configured():
+            self._toggle("jira", "enabled", default=False)   # switch on
+            self.jira = JiraClient(self.cfg.get("jira", {}))
             notify_banner("🎫 Jira enabled", "Datadog Assistant 🐶",
                           "Create tickets from any alert's submenu")
-
-    def _jira_setup(self):
-        """First-enable wizard — without it the Jira toggle silently flips a
-        config flag that can't do anything until base_url/email/token exist."""
-        steps = [
-            ("base_url", "Jira base URL",
-             "e.g. https://yourcompany.atlassian.net", False),
-            ("email", "Atlassian account email",
-             "The email you log into Jira with", False),
-            ("api_token", "Jira API token",
-             "Create one at id.atlassian.com → Security → API tokens.\n"
-             "Stored in the macOS Keychain. Leave blank to keep the\n"
-             "current token.", True),
-            ("project_key", "Jira project key",
-             "The ticket-number prefix — OPS for tickets like OPS-123.", False),
-            ("issue_type", "Issue type",
-             "Must exist in your project: Task, Bug, Story…\n"
-             "(team-managed projects often don't have \"Task\")", False),
-            ("labels", "Ticket labels",
-             "Space- or comma-separated Jira labels added to every\n"
-             "ticket, e.g.: team-payments datadog-alert\n"
-             "Point your board's filter at your team's label.", False),
-        ]
-        for key, title, message, secret in steps:
-            if key == "project_key":
-                # url/email/token are saved by now — show what's accessible
-                try:
-                    projs = JiraClient(self.cfg["jira"]).list_projects()
-                    if projs:
-                        shown = ", ".join(k for k, _ in projs[:15])
-                        if len(projs) > 15:
-                            shown += f" … +{len(projs) - 15} more"
-                        message += f"\nYour projects: {shown}"
-                    else:
-                        message += ("\n⚠️ This token sees NO projects — "
-                                    "token from the wrong Atlassian account, "
-                                    "or your admin blocks API tokens.")
-                except Exception as e:
-                    message += f"\n⚠️ Couldn't list projects: {str(e)[:120]}"
-            if key == "labels":
-                prefill = " ".join(self.cfg["jira"].get("labels") or [])
-            elif secret:
-                prefill = ""
-            else:
-                prefill = self.cfg["jira"].get(key) or ""
-            win = rumps.Window(
-                title=f"🎫 Jira setup — {title}", message=message,
-                default_text=prefill,
-                ok="Next", cancel="Cancel", dimensions=(320, 24), secure=secret)
-            resp = win.run()
-            if not resp.clicked:
-                return False
-            value = resp.text.strip()
-            if key == "api_token":
-                if not value:
-                    continue  # keep whatever token is already stored
-                if keychain_set("datadog-assistant-jira-token", value):
-                    self.cfg["jira"]["api_token"] = ""  # keychain wins
-                else:
-                    self.cfg["jira"][key] = value
-            elif key == "labels":
-                # Jira labels can't contain spaces, so both separators are safe
-                self.cfg["jira"]["labels"] = [
-                    t for t in re.split(r"[,\s]+", value) if t]
-            else:
-                self.cfg["jira"][key] = value
-        save_config(self.cfg)
-        threading.Thread(target=self._jira_connection_test, daemon=True).start()
-        return True
+            return
+        self._jira_setup()  # unconfigured — wizard enables on success
 
     def _edit_jira(self, _):
-        if self._jira_setup():
-            self.jira = JiraClient(self.cfg.get("jira", {}))
+        self._jira_setup()
 
     def _test_jira(self, _):
         threading.Thread(target=self._jira_connection_test, daemon=True).start()
 
-    def _connect_jira_oauth(self, _):
-        """OAuth 2.0 (3LO): the login happens in the browser where the Okta
-        session lives, so this works when admins block API tokens."""
-        win = rumps.Window(
-            title="🎫 Jira via Okta/OAuth — Client ID",
-            message=("One-time setup at developer.atlassian.com → Console →\n"
-                     "Create → OAuth 2.0 integration:\n"
-                     "  • Permissions → Jira API → scopes: read:jira-work,\n"
-                     "    write:jira-work, read:jira-user\n"
-                     "    (offline_access is requested automatically)\n"
-                     f"  • Authorization → callback URL:\n"
-                     f"    http://localhost:{JIRA_OAUTH_PORT}/callback\n"
-                     "Then paste the app's Client ID here."),
-            default_text=self.cfg["jira"].get("oauth_client_id") or "",
-            ok="Next", cancel="Cancel", dimensions=(360, 24))
-        resp = win.run()
-        if not resp.clicked or not resp.text.strip():
-            return
-        client_id = resp.text.strip()
-        win = rumps.Window(
-            title="🎫 Jira via Okta/OAuth — Client Secret",
-            message="From the same app's Settings page.\n"
-                    "Stored in the macOS Keychain. Your browser will open\n"
-                    "for the Okta/Atlassian login after this.",
-            default_text="", ok="Connect", cancel="Cancel",
-            dimensions=(360, 24), secure=True)
-        resp = win.run()
-        if not resp.clicked or not resp.text.strip():
-            return
-        secret = resp.text.strip()
-        self.cfg["jira"]["oauth_client_id"] = client_id
-        save_config(self.cfg)
-        threading.Thread(target=self._jira_oauth_flow,
-                         args=(client_id, secret), daemon=True).start()
+    # -------------------- Jira setup wizard --------------------
 
-    def _jira_oauth_flow(self, client_id, secret):
+    def _jira_setup(self):
+        """One wizard for both auth methods: pick token vs OAuth, run the
+        matching credential steps, then the shared ticket-field steps
+        (project/type/labels) once auth actually works."""
+        choice = ask_choice(
+            "🎫 Jira setup",
+            "How should the app authenticate to Jira?\n\n"
+            "API token — quickest. Needs a token from id.atlassian.com "
+            "(works unless your org blocks API tokens).\n\n"
+            "Okta / OAuth — you log in once in the browser instead; for "
+            "orgs that block API tokens. Needs a one-time app registration "
+            "at developer.atlassian.com (see README).",
+            ["Cancel", "Okta / OAuth", "API token"])
+        if choice == "API token":
+            mode = "token"
+        elif choice == "Okta / OAuth":
+            mode = "oauth"
+        else:
+            return
+        # background thread: the OAuth leg blocks on the browser redirect,
+        # and ask_text/ask_choice are osascript-based so they don't need
+        # the main thread
+        threading.Thread(target=self._jira_setup_flow, args=(mode,),
+                         daemon=True).start()
+
+    def _jira_setup_flow(self, mode):
+        jc = self.cfg["jira"]
+        if mode == "token":
+            for key, title, message, secret in [
+                    ("base_url", "Jira base URL",
+                     "e.g. https://yourcompany.atlassian.net", False),
+                    ("email", "Atlassian account email",
+                     "The email you log into Jira with", False),
+                    ("api_token", "Jira API token",
+                     "Create one at id.atlassian.com → Security → API "
+                     "tokens.\nScoped tokens need read:jira-work, "
+                     "write:jira-work, read:jira-user.\nStored in the macOS "
+                     "Keychain. Leave blank to keep the current token.",
+                     True)]:
+                value = ask_text(f"🎫 Jira setup — {title}", message,
+                                 default="" if secret else (jc.get(key) or ""),
+                                 secure=secret)
+                if value is None:
+                    return  # cancelled
+                if key == "api_token":
+                    if not value:
+                        continue  # keep whatever token is already stored
+                    if keychain_set("datadog-assistant-jira-token", value):
+                        jc["api_token"] = ""  # keychain wins
+                    else:
+                        jc[key] = value
+                else:
+                    jc[key] = value
+            jc["auth"] = "token"
+        else:
+            client_id = ask_text(
+                "🎫 Jira via Okta — Client ID",
+                "One-time setup at developer.atlassian.com → Console →\n"
+                "Create → OAuth 2.0 integration:\n"
+                "• Permissions → Jira API → scopes read:jira-work,\n"
+                "  write:jira-work, read:jira-user\n"
+                "  (offline_access is requested automatically)\n"
+                "• Authorization → callback URL exactly:\n"
+                f"  http://localhost:{JIRA_OAUTH_PORT}/callback\n"
+                "Paste the app's Client ID:",
+                default=jc.get("oauth_client_id") or "")
+            if not client_id:
+                return
+            secret = ask_text(
+                "🎫 Jira via Okta — Client Secret",
+                "From the same app's Settings page. Stored in the macOS\n"
+                "Keychain. Your browser opens for the Okta login next.",
+                secure=True, ok="Connect")
+            if not secret:
+                return
+            jc["oauth_client_id"] = client_id
+            save_config(self.cfg)
+            if not self._jira_oauth_browser_flow(client_id, secret):
+                return  # failure already explained in a modal
+        save_config(self.cfg)
+        if not self._jira_ticket_fields():
+            return
+        jc["enabled"] = True
+        save_config(self.cfg)
+        self.jira = JiraClient(jc)
+        self._jira_connection_test()
+
+    def _jira_ticket_fields(self):
+        """Shared wizard tail: project, issue type, labels. Runs after
+        credentials work in either mode, so the project list is real."""
+        jc = self.cfg["jira"]
+        proj_msg = "The ticket-number prefix — OPS for tickets like OPS-123."
+        try:
+            projs = JiraClient(jc).list_projects()
+            if projs:
+                shown = ", ".join(k for k, _ in projs[:15])
+                if len(projs) > 15:
+                    shown += f" … +{len(projs) - 15} more"
+                proj_msg += f"\nYour projects: {shown}"
+            else:
+                proj_msg += ("\n⚠️ This login sees NO projects — wrong "
+                             "Atlassian account, or no project access yet.")
+        except Exception as e:
+            proj_msg += f"\n⚠️ Couldn't list projects: {str(e)[:120]}"
+        for key, title, message in [
+                ("project_key", "Jira project key", proj_msg),
+                ("issue_type", "Issue type",
+                 "Must exist in your project: Task, Bug, Story…\n"
+                 "(team-managed projects often don't have \"Task\")"),
+                ("labels", "Ticket labels",
+                 "Space- or comma-separated Jira labels added to every\n"
+                 "ticket, e.g.: team-payments datadog-alert\n"
+                 "Point your board's filter at your team's label.")]:
+            if key == "labels":
+                default = " ".join(jc.get("labels") or [])
+            else:
+                default = jc.get(key) or ""
+            value = ask_text(f"🎫 Jira setup — {title}", message,
+                             default=default)
+            if value is None:
+                return False
+            if key == "labels":
+                # Jira labels can't contain spaces, so both separators are safe
+                jc["labels"] = [t for t in re.split(r"[,\s]+", value) if t]
+            else:
+                jc[key] = value
+        save_config(self.cfg)
+        return True
+
+    def _jira_oauth_browser_flow(self, client_id, secret):
         state = base64.urlsafe_b64encode(os.urandom(16)).decode().rstrip("=")
         redirect = f"http://localhost:{JIRA_OAUTH_PORT}/callback"
         got = {}
@@ -1750,7 +1815,7 @@ class DatadogAssistant(rumps.App):
                          "Another app may be using it — or a previous "
                          "attempt is still waiting; try again in a few "
                          "minutes or restart Datadog Assistant.")
-            return
+            return False
         srv._cancelled = False
         self._oauth_srv = srv
         srv.timeout = 240
@@ -1768,7 +1833,7 @@ class DatadogAssistant(rumps.App):
         except Exception:
             pass  # socket yanked from under us by a newer attempt
         if getattr(srv, "_cancelled", False):
-            return  # superseded — let the new attempt own the port + modal
+            return False  # superseded — the new attempt owns the port + modal
         try:
             srv.server_close()
         except Exception:
@@ -1778,7 +1843,7 @@ class DatadogAssistant(rumps.App):
             notify_modal("❌ Jira OAuth failed",
                          "No authorization code received "
                          "(timed out or cancelled in the browser).")
-            return
+            return False
         try:
             req = urllib.request.Request(
                 JIRA_OAUTH_TOKEN_URL, method="POST",
@@ -1797,14 +1862,14 @@ class DatadogAssistant(rumps.App):
         except urllib.error.HTTPError as e:
             notify_modal("❌ Jira OAuth failed",
                          f"{e.code}: {http_error_detail(e)}")
-            return
+            return False
         except Exception as e:
             notify_modal("❌ Jira OAuth failed", str(e)[:300])
-            return
+            return False
         if not sites:
             notify_modal("❌ Jira OAuth failed",
                          "This login has access to no Jira sites.")
-            return
+            return False
         base = (self.cfg["jira"].get("base_url") or "").rstrip("/")
         site = next((s for s in sites
                      if s.get("url", "").rstrip("/") == base), sites[0])
@@ -1812,15 +1877,13 @@ class DatadogAssistant(rumps.App):
         jc["auth"] = "oauth"
         jc["cloud_id"] = site["id"]
         jc["base_url"] = site.get("url") or jc.get("base_url", "")
-        jc["enabled"] = True
-        self.jira = JiraClient(jc)
-        self.jira._save_oauth_blob({
+        JiraClient(jc)._save_oauth_blob({
             "client_secret": secret,
             "refresh_token": tok.get("refresh_token", "")})
         save_config(self.cfg)
         notify_banner("🎫 Jira connected via OAuth", "Datadog Assistant 🐶",
                       site.get("name") or site.get("url", ""))
-        self._jira_connection_test()
+        return True
 
     def _jira_connection_test(self):
         """Definitive who-am-I-and-what-can-I-see check. 'Project does not

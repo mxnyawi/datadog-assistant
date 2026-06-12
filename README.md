@@ -107,16 +107,18 @@ menu — no editing or restart needed.
 
 ## 🎫 Jira integration (works with Okta SSO)
 
-Two auth modes:
+Click **Preferences → 🎫 Jira integration** (or **🎫 Edit Jira settings…**)
+— the wizard first asks how to authenticate, then walks the matching steps
+and finishes with project key (it lists the projects you can access), issue
+type, and ticket labels, ending in a connection test:
 
-- **API token** (default) — authenticates directly against Atlassian, works
+- **API token** (quickest) — authenticates directly against Atlassian, works
   with Okta SSO. Use this unless your admin blocks API tokens.
-- **OAuth (Okta-friendly)** — when API tokens are blocked by your org
-  (Atlassian Guard), use **Preferences → 🎫 Connect Jira via Okta (OAuth)…**.
-  You log in once in your browser (through Okta), and the app keeps a
-  refresh token in the Keychain. One-time prerequisite — create a free
-  OAuth app at **developer.atlassian.com → Console → Create → OAuth 2.0
-  integration**:
+- **Okta / OAuth** — when API tokens are blocked by your org
+  (Atlassian Guard). You log in once in your browser (through Okta), and
+  the app keeps a refresh token in the Keychain. One-time prerequisite —
+  create a free OAuth app at **developer.atlassian.com → Console → Create →
+  OAuth 2.0 integration**:
   1. **Permissions → Jira API** → add scopes `read:jira-work`,
      `write:jira-work`, `read:jira-user`. (`offline_access` is not in the
      console — it's an OAuth-protocol scope the app requests automatically
@@ -127,23 +129,21 @@ Two auth modes:
   Note: some orgs require admin approval the first time an OAuth app is
   authorized; if so, Jira shows a "request access" screen instead.
 
-**Easiest setup:** click **Preferences → 🎫 Jira integration** in the menu —
-a wizard asks for your Jira URL, email, API token (create one at
-**id.atlassian.com → Security → API tokens**), project key, issue type,
-and ticket labels. If you create a **scoped** token, it needs
-`read:jira-work` (project list + dedupe search), `write:jira-work`
-(create tickets), and `read:jira-user` (connection test) — a scoped token
-missing these shows an empty project list and "project does not exist"
-on create. The token goes into the macOS Keychain, not the config file.
-Labels are added to every ticket — give each team its own (e.g.
-`team-payments`) so their board filters pick up the right tickets. To fix a wrong token or
-change any value later, use **Preferences → 🎫 Edit Jira settings…** (leave
-the token blank to keep the current one). **Preferences → 🎫 Test Jira
-connection** shows who the token authenticates as and whether your project
-key is accessible — run it first when tickets fail. "Project does not
-exist" + no visible projects = the token was created on the wrong Atlassian
-account (id.atlassian.com keeps you logged into whichever you used last) or
-your admin blocks API tokens.
+Tips:
+
+- API tokens come from **id.atlassian.com → Security → API tokens** (logged
+  into your **work** account — it keeps you signed into whichever account
+  you used last). **Scoped** tokens need `read:jira-work`, `write:jira-work`,
+  `read:jira-user`.
+- Secrets (API token / OAuth client secret + refresh token) live in the
+  macOS Keychain, not the config file. Re-running the wizard with a blank
+  token keeps the stored one.
+- Labels are added to every ticket — give each team its own (e.g.
+  `team-payments`) so their board filters pick up the right tickets.
+- **Preferences → 🎫 Test Jira connection** shows who you authenticate as
+  and whether your project key is accessible — run it first when tickets
+  fail. "Project does not exist" + no visible projects = wrong account's
+  token, missing scopes, or admin-blocked API tokens (→ use OAuth).
 
 Manual setup instead:
 
