@@ -1499,11 +1499,21 @@ class DatadogAssistant(rumps.App):
              "current token.", True),
             ("project_key", "Jira project key",
              "Tickets are created in this project, e.g. OPS", False),
+            ("labels", "Ticket labels",
+             "Space- or comma-separated Jira labels added to every\n"
+             "ticket, e.g.: team-payments datadog-alert\n"
+             "Point your board's filter at your team's label.", False),
         ]
         for key, title, message, secret in steps:
+            if key == "labels":
+                prefill = " ".join(self.cfg["jira"].get("labels") or [])
+            elif secret:
+                prefill = ""
+            else:
+                prefill = self.cfg["jira"].get(key) or ""
             win = rumps.Window(
                 title=f"🎫 Jira setup — {title}", message=message,
-                default_text="" if secret else (self.cfg["jira"].get(key) or ""),
+                default_text=prefill,
                 ok="Next", cancel="Cancel", dimensions=(320, 24), secure=secret)
             resp = win.run()
             if not resp.clicked:
@@ -1516,6 +1526,10 @@ class DatadogAssistant(rumps.App):
                     self.cfg["jira"]["api_token"] = ""  # keychain wins
                 else:
                     self.cfg["jira"][key] = value
+            elif key == "labels":
+                # Jira labels can't contain spaces, so both separators are safe
+                self.cfg["jira"]["labels"] = [
+                    t for t in re.split(r"[,\s]+", value) if t]
             else:
                 self.cfg["jira"][key] = value
         save_config(self.cfg)
