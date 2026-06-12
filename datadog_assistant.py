@@ -1731,12 +1731,28 @@ class DatadogAssistant(rumps.App):
             def log_message(self, *a):
                 pass
 
+        # Evict a previous attempt still parked on the port — the one-shot
+        # server waits up to 4 min for a redirect that may never come (e.g.
+        # the authorize page errored before redirecting).
+        old = getattr(self, "_oauth_srv", None)
+        if old is not None:
+            old._cancelled = True
+            try:
+                old.server_close()
+            except Exception:
+                pass
+            self._oauth_srv = None
         try:
             srv = http.server.HTTPServer(("127.0.0.1", JIRA_OAUTH_PORT), Callback)
         except OSError as e:
             notify_modal("❌ Jira OAuth failed",
-                         f"Can't listen on port {JIRA_OAUTH_PORT}: {e}")
+                         f"Can't listen on port {JIRA_OAUTH_PORT}: {e}\n"
+                         "Another app may be using it — or a previous "
+                         "attempt is still waiting; try again in a few "
+                         "minutes or restart Datadog Assistant.")
             return
+        srv._cancelled = False
+        self._oauth_srv = srv
         srv.timeout = 240
         open_url(JIRA_OAUTH_AUTH_URL + "?" + urllib.parse.urlencode({
             "audience": "api.atlassian.com",
@@ -1747,8 +1763,17 @@ class DatadogAssistant(rumps.App):
             "response_type": "code",
             "prompt": "consent",
         }))
-        srv.handle_request()  # one shot: blocks until the redirect or timeout
-        srv.server_close()
+        try:
+            srv.handle_request()  # one shot: blocks until redirect or timeout
+        except Exception:
+            pass  # socket yanked from under us by a newer attempt
+        if getattr(srv, "_cancelled", False):
+            return  # superseded — let the new attempt own the port + modal
+        try:
+            srv.server_close()
+        except Exception:
+            pass
+        self._oauth_srv = None
         if not got.get("code") or got.get("state") != state:
             notify_modal("❌ Jira OAuth failed",
                          "No authorization code received "
