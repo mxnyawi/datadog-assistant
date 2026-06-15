@@ -4,3 +4,6 @@ venv/
 .DS_Store
 # never commit real keys
 config.json
+
+# wrangler / cloudflare deploy cache
+.wrangler/

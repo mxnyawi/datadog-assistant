@@ -23,6 +23,7 @@ Config lives at ~/.config/datadog-assistant/config.json
 """
 
 import base64
+import copy
 import gzip
 import hashlib
 import http.client
@@ -190,12 +191,15 @@ EVENT_MONITOR_TYPES = {
 # --------------------------------------------------------------------------
 
 def deep_merge(base, override):
-    out = dict(base)
+    # Deep-copy so the merged result never aliases base's nested mutables.
+    # Otherwise a later config edit (e.g. a Preferences toggle) would mutate
+    # the module-level DEFAULT_CONFIG in place, corrupting the defaults.
+    out = copy.deepcopy(base)
     for k, v in (override or {}).items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             out[k] = deep_merge(out[k], v)
         else:
-            out[k] = v
+            out[k] = copy.deepcopy(v)
     return out
 
 
@@ -1041,9 +1045,9 @@ class DatadogAssistant(rumps.App):
 
     def _menu_fingerprint(self):
         mons = tuple(sorted(
-            (m.get("id"), m.get("name"), m.get("overall_state"),
+            (m.get("id") or 0, m.get("name") or "", m.get("overall_state") or "",
              parse_priority(m) or 0,
-             bool(m.get("options", {}).get("silenced")),
+             bool((m.get("options") or {}).get("silenced")),
              len(self._triggered_groups(m)),
              self._triage_no_data(m)[0]
              if m.get("overall_state") == "No Data" else "")
@@ -1083,7 +1087,7 @@ class DatadogAssistant(rumps.App):
                     pl = s.get("pointlist") or []
                     if pl and pl[-1][1] is not None:
                         lasts.append(pl[-1][1])
-                thr = (m.get("options", {}).get("thresholds") or {}).get("critical")
+                thr = ((m.get("options") or {}).get("thresholds") or {}).get("critical")
                 out[m["id"]] = {"spark": sparkline(points),
                                 "now": max(lasts) if lasts else None,
                                 "crit": thr}
@@ -1226,7 +1230,7 @@ class DatadogAssistant(rumps.App):
             prev = self.prev_states.get(mid)
             name = m.get("name", f"monitor {mid}")
             url = self.client.monitor_url(mid)
-            muted = bool(m.get("options", {}).get("silenced"))
+            muted = bool((m.get("options") or {}).get("silenced"))
 
             should, title, body = None, None, None
             if prev is None:
@@ -1369,7 +1373,7 @@ class DatadogAssistant(rumps.App):
         groups = {"Alert": [], "Warn": [], "No Data": [], "Quiet": [],
                   "OK": [], "Muted": []}
         for m in self.monitors:
-            muted = bool(m.get("options", {}).get("silenced"))
+            muted = bool((m.get("options") or {}).get("silenced"))
             state = m.get("overall_state", "Unknown")
             if muted:
                 groups["Muted"].append(m)
