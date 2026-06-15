@@ -6,6 +6,32 @@ Your personal Datadog sidekick that lives in the menu bar and makes alerts
 > ⚠️ Unofficial personal tool — not affiliated with or endorsed by Datadog,
 > Inc. or Atlassian. You bring your own API keys.
 
+## 📸 See it in action
+
+**Every monitor grouped by state, one click from acting on it.** The menu bar
+icon flips from 🐶 to **‼️ 2** the moment something fires — open the menu and
+each alerting monitor carries its priority, how long it's been firing, a live
+sparkline and the triggered hosts, with mute / Jira / open-in-Datadog right
+there.
+
+![Datadog Assistant menu bar dropdown — incidents, alerting and warning monitors grouped by state, with a monitor submenu showing priority, sparkline, triggered hosts and mute / Jira / open actions](docs/images/scene-menu.png)
+
+**Alerts you can't miss.** A native banner with sound for every alert and
+recovery — or a modal popup that stays on screen until you act, for the P1s
+that can't be ignored like an email.
+
+| Native banners + recovery | Critical modal popup |
+|:---:|:---:|
+| ![macOS notification banners for a Datadog alert and a recovery](docs/images/scene-notify.png) | ![Critical modal alert popup that stays on screen with Open in Datadog and Dismiss buttons](docs/images/scene-modal.png) |
+
+**Tune every behaviour from the menu** — notification style, sound, recovery
+alerts, sparklines, incidents, Jira, snooze and more, no config editing needed.
+
+![Preferences submenu with toggles for notification style, sound, recovery, sparklines, incidents, Jira and snooze](docs/images/scene-prefs.png)
+
+> Screenshots are rendered mockups of the real UI (`docs/mockup.html` →
+> `python3 docs/shoot.py`), not live captures.
+
 ## ✨ What it does
 
 | | |
