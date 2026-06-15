@@ -64,18 +64,20 @@ alerts, sparklines, incidents, Jira, snooze and more, no config editing needed.
 
 ## 🚀 Install (on your Mac)
 
-**Prefer a window over the Terminal?** There's a native graphical installer that
-walks you through region, sign-in, and setup with no commands and **no
-dependencies to install first**. Try it right now:
+### Easiest , download the app (no Terminal) ⭐
 
-```bash
-osascript installer/install.applescript
-```
+1. **[Download the latest installer](https://github.com/mxnyawi/datadog-assistant/releases/latest/download/Datadog-Assistant-Installer.zip)**
+   (or from the [website](https://datadog-assistant.pages.dev)).
+2. Open the downloaded zip , it unzips to **Datadog Assistant Installer**.
+3. **Right-click → Open** the first time (it's unsigned; if macOS still blocks
+   it, go to **System Settings → Privacy & Security → Open Anyway**).
+4. Follow the steps: pick your site, sign in, done. The 🐶 appears in your menu bar.
 
-Build it into a double-clickable `.app` with `installer/build_app.sh`; see
-[`installer/README.md`](installer/README.md).
+The installer is a native macOS app (built by CI on every release , see
+[`installer/`](installer/)). You can also run it without building anything:
+`osascript installer/install.applescript`.
 
-**Or the script:**
+### Or the script:
 
 ```bash
 cd datadog-assistant
