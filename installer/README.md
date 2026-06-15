@@ -41,17 +41,24 @@ brew install python-tk     # or install Python from python.org
 `python3` and a plain Homebrew `python3` usually have **no** Tk , that's why the
 native installer above is the default.)
 
-## Distribute
+## Release (one command)
 
-Zip the app and attach it to a GitHub Release (the website's Download button
-points at `releases/latest`):
+On a Mac with the GitHub CLI (`gh`) authenticated, cut a release with:
 
 ```bash
-cd installer
-ditto -c -k --keepParent "Datadog Assistant Installer.app" "Datadog-Assistant-Installer.zip"
-gh release create v0.3.0 "Datadog-Assistant-Installer.zip" \
-  --title "Datadog Assistant 0.3.0" --notes "Graphical installer for macOS."
+./installer/release.sh v0.3.0
 ```
+
+It builds the `.app`, zips it, tags the repo, and publishes a GitHub Release
+with the app attached as `Datadog-Assistant-Installer.zip`. The website Download
+button (`releases/latest/download/Datadog-Assistant-Installer.zip`) then resolves.
+
+### Optional: build on GitHub instead of your Mac
+
+`.github/workflows/release.yml` builds the `.app` on a macOS runner and
+publishes the release automatically when you push a `v*` tag , no local Mac
+needed. Adding a workflow file requires a token with the `workflow` scope, so it
+has to be committed by someone with that scope (or via the GitHub web UI).
 
 ## Gatekeeper note
 
