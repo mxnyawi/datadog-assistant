@@ -1,33 +1,45 @@
 # 🐶 Datadog Assistant , graphical installer
 
-A small Tkinter wizard so non-technical users can install the menu bar app
-without touching Terminal. It does exactly what `../install.sh` does (venv +
-`rumps`, Keychain, config, LaunchAgent), just in a window.
+Install the menu bar app without touching Terminal. There are two builds; both
+do exactly what `../install.sh` does (venv + `rumps`, Keychain, config,
+LaunchAgent), just with a GUI.
 
-## What the user sees
+## ✅ Native installer (recommended , zero dependencies)
 
-1. **Welcome**
-2. **Choose your Datadog site** (US1 / EU / US3 / US5 / AP1 / Gov)
-3. **Sign in** , API + App keys (stored in the Keychain) or OAuth (Client ID;
-   the browser login is finished from the menu after install)
-4. **Options** , optional tag filter and company subdomain
-5. **Installing** , progress + log
-6. **All set** , the 🐶 appears in the menu bar
+`install.applescript` + `do_install.sh`. Uses only built-in macOS dialogs and
+compiles with `osacompile`, so it needs **no Python, no Tk, no pip** , nothing to
+install first.
 
-## Run it during development
+**Test it right now (no build):**
 
 ```bash
-python3 installer/install_gui.py        # needs a Mac with Tk (python.org build recommended)
+osascript installer/install.applescript
 ```
 
-## Build the distributable .app (on a Mac)
+**Build the double-clickable .app:**
 
 ```bash
-./installer/build.sh
+./installer/build_app.sh        # produces "Datadog Assistant Installer.app"
 ```
 
-This produces `installer/dist/Datadog Assistant Installer.app`, with
-`datadog_assistant.py` bundled inside, using PyInstaller.
+The flow: welcome → choose Datadog site → sign in (API + App keys to the
+Keychain, or an OAuth Client ID) → optional tag filter → it sets everything up
+and the 🐶 appears in your menu bar.
+
+## Single-window installer (optional , needs Tk to build)
+
+`install_gui.py` is a Tkinter version with one continuous window. It looks nicer
+but PyInstaller needs a **Tk-capable Python** to build it (the resulting .app
+bundles Tk, so end users don't need anything):
+
+```bash
+brew install python-tk     # or install Python from python.org
+./installer/build.sh       # builds in an isolated venv (no PEP 668 error)
+```
+
+`build.sh` checks for Tk first and tells you if it's missing. (Apple's system
+`python3` and a plain Homebrew `python3` usually have **no** Tk , that's why the
+native installer above is the default.)
 
 ## Distribute
 
@@ -35,7 +47,7 @@ Zip the app and attach it to a GitHub Release (the website's Download button
 points at `releases/latest`):
 
 ```bash
-cd installer/dist
+cd installer
 ditto -c -k --keepParent "Datadog Assistant Installer.app" "Datadog-Assistant-Installer.zip"
 gh release create v0.3.0 "Datadog-Assistant-Installer.zip" \
   --title "Datadog Assistant 0.3.0" --notes "Graphical installer for macOS."
@@ -43,7 +55,6 @@ gh release create v0.3.0 "Datadog-Assistant-Installer.zip" \
 
 ## Gatekeeper note
 
-The app is **not** code-signed/notarized (that needs a paid Apple Developer
+Neither build is code-signed/notarized (that needs a paid Apple Developer
 account), so the first launch shows an "unidentified developer" warning. Users
-right-click the app and choose **Open** once. The website and the README call
-this out.
+right-click the app and choose **Open** once.

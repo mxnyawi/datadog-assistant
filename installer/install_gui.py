@@ -16,8 +16,18 @@ import queue
 import shutil
 import threading
 import subprocess
-import tkinter as tk
-from tkinter import ttk
+try:
+    import tkinter as tk
+    from tkinter import ttk
+except ImportError:
+    sys.stderr.write(
+        "\nThis single-window installer needs a Python with Tk, which your "
+        "python3 doesn't have.\n\nEasiest fix , use the native installer "
+        "(no Python/Tk needed):\n"
+        "    osascript installer/install.applescript\n"
+        "    # or build it:  ./installer/build_app.sh\n\n"
+        "Or install Tk and re-run this:  brew install python-tk\n\n")
+    sys.exit(1)
 
 APP_DIR = os.path.expanduser("~/.datadog-assistant")
 CONFIG_DIR = os.path.expanduser("~/.config/datadog-assistant")

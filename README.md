@@ -64,10 +64,16 @@ alerts, sparklines, incidents, Jira, snooze and more, no config editing needed.
 
 ## 🚀 Install (on your Mac)
 
-**Prefer a window over the Terminal?** There's a graphical installer , a small
-wizard that walks you through region, sign-in, and setup with no commands. Build
-it with `installer/build.sh` (or test it from source with
-`python3 installer/install_gui.py`); see [`installer/README.md`](installer/README.md).
+**Prefer a window over the Terminal?** There's a native graphical installer that
+walks you through region, sign-in, and setup with no commands and **no
+dependencies to install first**. Try it right now:
+
+```bash
+osascript installer/install.applescript
+```
+
+Build it into a double-clickable `.app` with `installer/build_app.sh`; see
+[`installer/README.md`](installer/README.md).
 
 **Or the script:**
 
