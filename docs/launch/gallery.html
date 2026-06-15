@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-font-smoothing:antialiased; }
+  body { font-family:'Inter','Helvetica Neue',system-ui,sans-serif; background:#0b0b14; }
+
+  /* Product Hunt gallery slide = 1270 x 760 */
+  .slide { width:1270px; height:760px; position:relative; overflow:hidden;
+    margin:40px auto; color:#fff; }
+  .bg-dark {
+    background:
+      radial-gradient(1100px 700px at 88% 8%, #7a3ce8 0%, transparent 55%),
+      radial-gradient(1000px 800px at 8% 100%, #0f3460 0%, transparent 55%),
+      radial-gradient(900px 700px at 60% 60%, #4a1d96 0%, transparent 55%),
+      linear-gradient(150deg, #0b0b1e 0%, #16162e 55%, #1a1326 100%);
+  }
+  .bg-light {
+    background:
+      radial-gradient(1000px 700px at 85% 5%, #e8d9ff 0%, transparent 55%),
+      radial-gradient(1000px 800px at 5% 100%, #c7e5ff 0%, transparent 55%),
+      linear-gradient(150deg, #eef2ff 0%, #f5f0ff 55%, #fdeef6 100%);
+    color:#1d1d1f;
+  }
+  .pill { display:inline-flex; align-items:center; gap:7px; font-size:15px; font-weight:600;
+    padding:7px 15px; border-radius:999px; background:rgba(255,255,255,.1);
+    border:1px solid rgba(255,255,255,.18); letter-spacing:.2px; }
+  .bg-light .pill { background:rgba(122,60,232,.1); border-color:rgba(122,60,232,.22); color:#5b21b6; }
+  h1 { font-size:62px; font-weight:800; line-height:1.04; letter-spacing:-1.5px; }
+  h2 { font-size:48px; font-weight:800; line-height:1.06; letter-spacing:-1px; }
+  .lede { font-size:23px; line-height:1.45; opacity:.82; font-weight:400; }
+  .foot { position:absolute; bottom:34px; font-size:16px; opacity:.6; font-weight:500; }
+
+  /* ---------- shared macOS UI components (floating product shots) ---------- */
+  .ui { border-radius:13px; padding:6px;
+    background:rgba(40,40,46,0.92); backdrop-filter:blur(40px);
+    border:0.5px solid rgba(255,255,255,0.16);
+    box-shadow:0 30px 80px rgba(0,0,0,.55), 0 0 0 0.5px rgba(0,0,0,.5);
+    font-size:15px; color:#f5f5f7; }
+  .ui.light { background:rgba(248,248,250,0.96); color:#1d1d1f;
+    box-shadow:0 30px 80px rgba(80,40,140,.28), 0 0 0 0.5px rgba(0,0,0,.1); }
+  .mi { display:flex; align-items:center; gap:8px; padding:5px 12px; border-radius:7px;
+    line-height:1.5; white-space:nowrap; }
+  .mi .grow { flex:1; overflow:hidden; text-overflow:ellipsis; }
+  .mi .kbd { opacity:.4; font-size:13px; letter-spacing:1px; }
+  .mi .sub { opacity:.5; }
+  .mi.hover { background:#2569d8; color:#fff; }
+  .mi.dim { opacity:.55; }
+  .mi.header { font-weight:700; font-size:13px; letter-spacing:.4px; opacity:.5; padding-top:7px; }
+  .sep { height:1px; background:rgba(255,255,255,0.14); margin:5px 12px; }
+  .light .sep, .ui.light .sep { background:rgba(0,0,0,0.1); }
+  .check { width:15px; text-align:center; font-size:13px; }
+
+  .banner { width:404px; border-radius:19px; padding:13px 16px;
+    background:rgba(48,48,54,0.92); backdrop-filter:blur(40px);
+    border:0.5px solid rgba(255,255,255,0.16);
+    box-shadow:0 22px 60px rgba(0,0,0,.5);
+    display:flex; gap:13px; align-items:center; position:relative; }
+  .banner .appicon, .modal .bigicon {
+    background:linear-gradient(145deg,#7a3ce8,#632ca6);
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.25); flex-shrink:0; }
+  .banner .appicon { width:44px; height:44px; border-radius:10px; font-size:25px; }
+  .banner .t { font-size:15px; font-weight:700; }
+  .banner .s, .banner .b { font-size:14px; opacity:.85; }
+  .banner .when { position:absolute; top:11px; right:16px; font-size:12.5px; opacity:.5; }
+
+  .modal { width:320px; border-radius:15px; padding:24px 22px 20px; text-align:center;
+    background:rgba(52,52,58,0.96); backdrop-filter:blur(50px);
+    border:0.5px solid rgba(255,255,255,0.18);
+    box-shadow:0 35px 90px rgba(0,0,0,.6), 0 0 0 0.5px rgba(0,0,0,.5); }
+  .modal .bigicon { position:relative; width:74px; height:74px; margin:0 auto 15px;
+    border-radius:17px; font-size:44px; }
+  .modal .badge { position:absolute; bottom:-8px; right:-10px; font-size:30px;
+    filter:drop-shadow(0 2px 3px rgba(0,0,0,.5)); }
+  .modal h3 { font-size:16px; font-weight:800; margin-bottom:8px; }
+  .modal p { font-size:14px; line-height:1.5; opacity:.85; margin-bottom:18px; }
+  .modal .btn { display:block; width:100%; padding:8px 0; border-radius:9px;
+    font-size:15px; font-weight:600; margin-top:9px; background:rgba(255,255,255,0.14); }
+  .modal .btn.primary { background:#2569d8; box-shadow:inset 0 1px 0 rgba(255,255,255,.2); }
+  .modal .giveup { margin-top:13px; font-size:12px; opacity:.4; }
+
+  /* app icon (thumbnail) */
+  .appsquare { position:relative; border-radius:26%;
+    background:linear-gradient(150deg,#8a4cf0 0%, #632ca6 60%, #4a1d96 100%);
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 18px 50px rgba(99,44,166,.55), inset 0 2px 0 rgba(255,255,255,.3); }
+  .appsquare .dog { filter:drop-shadow(0 3px 6px rgba(0,0,0,.35)); }
+  .appsquare .badge { position:absolute; font-weight:800; color:#fff;
+    background:#ff453a; border-radius:999px; display:flex; align-items:center; justify-content:center;
+    box-shadow:0 4px 14px rgba(0,0,0,.4), 0 0 0 4px rgba(20,10,30,.0); }
+
+  /* feature grid */
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; }
+  .card { background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.1);
+    border-radius:16px; padding:22px; }
+  .card .ic { font-size:30px; }
+  .card .h { font-size:20px; font-weight:700; margin:11px 0 6px; }
+  .card .d { font-size:15.5px; line-height:1.45; opacity:.72; }
+
+  .glow { position:absolute; border-radius:50%; filter:blur(8px); }
+</style>
+</head>
+<body>
+
+<!-- ============ SLIDE 1 — HERO ============ -->
+<div class="slide bg-dark" id="s1">
+  <div style="position:absolute; left:70px; top:150px; width:560px;">
+    <div class="pill">🐶 macOS menu bar app</div>
+    <h1 style="margin:24px 0 22px;">Datadog alerts you<br>literally can't miss.</h1>
+    <div class="lede">A tiny menu bar app that turns every monitor into a glanceable
+      list — and fires an unmissable popup the second a P1 breaks.</div>
+    <div style="margin-top:30px; display:flex; gap:12px; font-size:16px; font-weight:600;">
+      <span class="pill" style="background:rgba(45,200,120,.16); border-color:rgba(45,200,120,.3);">● Free &amp; open source</span>
+      <span class="pill" style="background:rgba(122,60,232,.18); border-color:rgba(122,60,232,.34);">MIT licensed</span>
+    </div>
+  </div>
+
+  <!-- floating menu shot -->
+  <div class="ui" style="position:absolute; right:70px; top:96px; width:360px;">
+    <div class="mi"><span class="grow">📊 2 alerting · 1 warn · 47 ok</span></div>
+    <div class="mi dim"><span class="grow">🔄 Refresh now</span><span class="kbd">⌘R</span></div>
+    <div class="sep"></div>
+    <div class="mi header"><span class="grow">🔥 INCIDENTS (1)</span></div>
+    <div class="mi"><span class="grow">🔥 SEV-1 · Checkout flow down</span></div>
+    <div class="sep"></div>
+    <div class="mi header"><span class="grow">🔴 ALERTING (2)</span></div>
+    <div class="mi hover"><span class="grow">🔴 High CPU on prod-web</span><span>▸</span></div>
+    <div class="mi"><span class="grow">🔴 P95 latency — checkout-api</span><span>▸</span></div>
+    <div class="sep"></div>
+    <div class="mi header"><span class="grow">🟡 WARNING (1)</span></div>
+    <div class="mi"><span class="grow">🟡 Disk space — db-primary</span><span>▸</span></div>
+    <div class="sep"></div>
+    <div class="mi"><span class="grow">🟢 OK (47)</span><span>▸</span></div>
+    <div class="mi"><span class="grow">⚙️ Preferences</span><span>▸</span></div>
+  </div>
+  <div class="foot" style="left:70px;">github.com/mxnyawi/datadog-assistant</div>
+</div>
+
+<!-- ============ SLIDE 2 — UNMISSABLE ============ -->
+<div class="slide bg-dark" id="s2">
+  <div style="position:absolute; left:70px; top:118px; width:480px;">
+    <h2>Email gets lost.<br>This doesn't.</h2>
+    <div class="lede" style="margin-top:22px;">Every alert and recovery fires a native
+      banner with sound. For the P1s that truly can't wait, a modal popup stays on
+      screen until you act — macOS can't silence it.</div>
+    <div style="margin-top:26px; font-size:17px; line-height:2; opacity:.8;">
+      🔔 &nbsp;Banner + sound on every change<br>
+      🛑 &nbsp;Unmissable modal for criticals<br>
+      🔁 &nbsp;Re-nags every N min while still firing
+    </div>
+  </div>
+
+  <div class="banner" style="position:absolute; right:80px; top:96px;">
+    <div class="appicon">🐶</div>
+    <div>
+      <div class="t">🔴 ALERT — Datadog</div>
+      <div class="s">Datadog Assistant</div>
+      <div class="b">High CPU on prod-web</div>
+    </div>
+    <div class="when">now</div>
+  </div>
+
+  <div class="modal" style="position:absolute; right:165px; top:250px;">
+    <div class="bigicon">🐶<span class="badge">⚠️</span></div>
+    <div class="modal h3" style="font-size:16px; font-weight:800; margin-bottom:8px;">🔴 ALERT — Datadog</div>
+    <p>High CPU on prod-web</p>
+    <div class="btn primary">Open in Datadog 🔗</div>
+    <div class="btn">Dismiss</div>
+    <div class="giveup">stays until you act</div>
+  </div>
+  <div class="foot" style="left:70px;">Banner + modal · configurable per priority</div>
+</div>
+
+<!-- ============ SLIDE 3 — ONE CLICK TO ACT ============ -->
+<div class="slide bg-dark" id="s3">
+  <div style="position:absolute; left:70px; top:130px; width:470px;">
+    <h2>Every monitor.<br>One click to act.</h2>
+    <div class="lede" style="margin-top:22px;">Open any alerting monitor to see its
+      priority, how long it's been firing, a live sparkline and the triggered hosts —
+      then mute it, file a Jira ticket, or jump into Datadog without leaving the menu.</div>
+  </div>
+
+  <div class="ui" style="position:absolute; right:330px; top:92px; width:300px; z-index:1;">
+    <div class="mi header"><span class="grow">🔴 ALERTING (2)</span></div>
+    <div class="mi hover"><span class="grow">🔴 High CPU on prod-web</span><span>▸</span></div>
+    <div class="mi"><span class="grow">🔴 P95 latency — checkout-api</span><span>▸</span></div>
+    <div class="sep"></div>
+    <div class="mi"><span class="grow">🟡 Disk space — db-primary</span><span>▸</span></div>
+    <div class="mi"><span class="grow">🟢 OK (47)</span><span>▸</span></div>
+    <div class="mi"><span class="grow">🔇 MUTED (1)</span><span>▸</span></div>
+  </div>
+
+  <div class="ui" style="position:absolute; right:70px; top:150px; width:300px; z-index:2;">
+    <div class="mi dim"><span class="grow">🎯 Priority P1 — critical</span></div>
+    <div class="mi dim"><span class="grow">⏱ Triggered 23m ago</span></div>
+    <div class="mi dim"><span class="grow">📈 ▂▂▃▃▅▆▇█ now 97.2 (crit 90)</span></div>
+    <div class="mi dim"><span class="grow">📟 host:prod-web-1, prod-web-2</span></div>
+    <div class="sep"></div>
+    <div class="mi hover"><span class="grow">🔗 Open in Datadog</span></div>
+    <div class="mi"><span class="grow">🎫 Create Jira ticket</span></div>
+    <div class="sep"></div>
+    <div class="mi"><span class="grow">🔇 Mute 1 hour</span></div>
+    <div class="mi"><span class="grow">🔇 Mute 24 hours</span></div>
+    <div class="mi"><span class="grow">🗑 Delete monitor…</span></div>
+  </div>
+  <div class="foot" style="left:70px;">Live context pulled straight from the Datadog API</div>
+</div>
+
+<!-- ============ SLIDE 4 — FEATURE GRID ============ -->
+<div class="slide bg-dark" id="s4">
+  <div style="position:absolute; left:70px; right:70px; top:80px;">
+    <h2 style="margin-bottom:8px;">Built for on-call.</h2>
+    <div class="lede" style="margin-bottom:36px;">Zero runtime deps beyond <code>rumps</code>. Your keys never leave your Mac.</div>
+    <div class="grid">
+      <div class="card"><div class="ic">🎯</div><div class="h">Severity engine</div><div class="d">Per-priority rules — P1 gets a modal + 10-min nag, P3 just a quiet banner.</div></div>
+      <div class="card"><div class="ic">📈</div><div class="h">Live context</div><div class="d">Sparkline, current value vs threshold, duration and triggered hosts on every alert.</div></div>
+      <div class="card"><div class="ic">🤫</div><div class="h">No-Data triage</div><div class="d">Tells a dead host apart from an expected-quiet monitor, so you only get woken for real breakage.</div></div>
+      <div class="card"><div class="ic">🎫</div><div class="h">Jira tickets</div><div class="d">File a ticket per alert from the menu, or auto-create for P1/P2 — with open-ticket dedupe.</div></div>
+      <div class="card"><div class="ic">🔥</div><div class="h">Incidents</div><div class="d">Active Datadog incidents (SEV-1…5) and your real dashboards, right in the menu.</div></div>
+      <div class="card"><div class="ic">🔐</div><div class="h">Keys stay home</div><div class="d">macOS Keychain, env vars, or your password manager. Works with every Datadog site.</div></div>
+    </div>
+  </div>
+  <div class="foot" style="left:70px;">Severity · sparklines · incidents · Jira · No-Data triage</div>
+</div>
+
+<!-- ============ SLIDE 5 — PREFERENCES (light) ============ -->
+<div class="slide bg-light" id="s5">
+  <div style="position:absolute; left:70px; top:150px; width:500px;">
+    <div class="pill">⚙️ No config files required</div>
+    <h2 style="margin:24px 0 22px;">Tune everything<br>from the menu bar.</h2>
+    <div class="lede">Notification style, sound, recovery alerts, sparklines, incidents,
+      Jira, snooze, tag filters — every behaviour flips live. And every emoji is yours
+      to change.</div>
+  </div>
+
+  <div class="ui light" style="position:absolute; right:90px; top:96px; width:320px;">
+    <div class="mi"><span class="grow">⏱ Refresh interval</span><span>▸</span></div>
+    <div class="mi"><span class="grow">🔔 Notification style</span><span>▸</span></div>
+    <div class="mi"><span class="check">✓</span><span class="grow">🔔 Notifications enabled</span></div>
+    <div class="mi"><span class="check">✓</span><span class="grow">🔊 Sound</span></div>
+    <div class="mi"><span class="check">✓</span><span class="grow">🟢 Notify on recovery</span></div>
+    <div class="mi"><span class="check">✓</span><span class="grow">📈 Sparklines on alerts</span></div>
+    <div class="mi"><span class="check">✓</span><span class="grow">🔥 Show incidents</span></div>
+    <div class="mi"><span class="check">✓</span><span class="grow">📊 Auto dashboard links</span></div>
+    <div class="mi"><span class="check"></span><span class="grow">🎫 Jira integration</span></div>
+    <div class="sep"></div>
+    <div class="mi"><span class="grow">😴 Snooze alerts</span><span>▸</span></div>
+    <div class="mi"><span class="grow">🏷 Set tag filter…</span></div>
+    <div class="mi"><span class="grow">🌐 Datadog site</span><span>▸</span></div>
+  </div>
+  <div class="foot" style="left:70px; color:rgba(0,0,0,.45);">Preferences → flip any toggle, no restart</div>
+</div>
+
+<!-- ============ THUMBNAIL (square 480x480 @ render, PH wants 240) ============ -->
+<div class="slide bg-dark" id="thumb" style="width:480px; height:480px;">
+  <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center;">
+    <div class="appsquare" style="width:300px; height:300px; font-size:165px;">
+      <span class="dog">🐶</span>
+      <span class="badge" style="top:34px; right:30px; width:78px; height:54px; font-size:34px;">‼️2</span>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
