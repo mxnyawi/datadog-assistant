@@ -1,9 +1,12 @@
 {
+  "auth": "keys",
   "api_key": "",
   "app_key": "",
   "use_keychain": true,
   "api_key_cmd": "",
   "app_key_cmd": "",
+  "oauth_client_id": "",
+  "oauth_domain": "",
   "site": "datadoghq.com",
   "app_subdomain": "app",
   "browser": "",

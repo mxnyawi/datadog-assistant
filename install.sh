@@ -79,24 +79,50 @@ else
   echo "ℹ️  No tag filter — fetching all monitors (you can set tag_filter in config.json later)"
 fi
 
-# 4. Keys → macOS Keychain (recommended; skips if already present)
-read -r -p "🔐 Store your Datadog keys in the macOS Keychain now? [y/N] " yn
-if [[ "$yn" =~ ^[Yy]$ ]]; then
-  read -r -s -p "   Datadog API key: " API_KEY; echo
-  read -r -s -p "   Datadog APP key: " APP_KEY; echo
-  security add-generic-password -U -s datadog-assistant-api-key -a "$USER" -w "$API_KEY"
-  security add-generic-password -U -s datadog-assistant-app-key -a "$USER" -w "$APP_KEY"
-  # flip use_keychain=true in config
-  python3 - "$CONFIG_DIR/config.json" <<'EOF'
+# 4. Authentication — API + App keys, or OAuth (browser login)
+echo ""
+echo "🔐 How do you want to authenticate to Datadog?"
+echo "   1) API + App keys  (quickest — paste them now, stored in the Keychain)"
+echo "   2) OAuth           (log in via the browser; needs a Datadog OAuth client)"
+read -r -p "   Choice [1-2, default 1]: " authm
+if [ "${authm:-1}" = "2" ]; then
+  echo ""
+  echo "   OAuth needs a one-time OAuth client registered in Datadog"
+  echo "   (Organization Settings → OAuth). Set its redirect URI to exactly:"
+  echo "       http://localhost:8918/callback"
+  echo "   and grant the scopes: monitors_read monitors_write monitors_downtime"
+  echo "   dashboards_read incident_read metrics_read events_read"
+  read -r -p "   Datadog OAuth Client ID: " DD_CLIENT_ID
+  python3 - "$CONFIG_DIR/config.json" "$DD_CLIENT_ID" <<'EOF'
+import json, sys, os
+p, cid = sys.argv[1], sys.argv[2].strip()
+cfg = json.load(open(p)) if os.path.exists(p) else {}
+cfg["auth"] = "oauth"
+cfg["oauth_client_id"] = cid
+json.dump(cfg, open(p, "w"), indent=2)
+EOF
+  echo "✅ OAuth selected. After launch, click 🐶 → Preferences →"
+  echo "   🔐 Datadog credentials → OAuth to finish the browser login."
+else
+  read -r -p "   Store your Datadog keys in the macOS Keychain now? [y/N] " yn
+  if [[ "$yn" =~ ^[Yy]$ ]]; then
+    read -r -s -p "   Datadog API key: " API_KEY; echo
+    read -r -s -p "   Datadog APP key: " APP_KEY; echo
+    security add-generic-password -U -s datadog-assistant-api-key -a "$USER" -w "$API_KEY"
+    security add-generic-password -U -s datadog-assistant-app-key -a "$USER" -w "$APP_KEY"
+    # auth=keys + use_keychain=true in config
+    python3 - "$CONFIG_DIR/config.json" <<'EOF'
 import json, sys, os
 p = sys.argv[1]
 cfg = json.load(open(p)) if os.path.exists(p) else {}
+cfg["auth"] = "keys"
 cfg["use_keychain"] = True
 json.dump(cfg, open(p, "w"), indent=2)
 EOF
-  echo "✅ Keys stored in Keychain"
-else
-  echo "ℹ️  OK — put your keys in $CONFIG_DIR/config.json (api_key / app_key)"
+    echo "✅ Keys stored in Keychain"
+  else
+    echo "ℹ️  OK — put your keys in $CONFIG_DIR/config.json (api_key / app_key)"
+  fi
 fi
 
 # 5. LaunchAgent (start at login, keep alive)

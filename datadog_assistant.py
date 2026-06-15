@@ -24,6 +24,7 @@ Config lives at ~/.config/datadog-assistant/config.json
 
 import base64
 import gzip
+import hashlib
 import http.client
 import http.server
 import json
@@ -53,12 +54,15 @@ CONFIG_DIR = os.path.expanduser("~/.config/datadog-assistant")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 
 DEFAULT_CONFIG = {
+    "auth": "keys",                # "keys" (API + APP key) or "oauth" (browser login)
     "api_key": "",                 # or set DD_API_KEY env var, or use keychain
     "app_key": "",                 # or set DD_APP_KEY env var, or use keychain
     "use_keychain": False,         # read keys from macOS Keychain (see README)
     "api_key_cmd": "",             # pull keys from a password manager instead,
     "app_key_cmd": "",             # e.g. "lpass show --password dd-api-key" or
                                    # "op read op://Engineering/Datadog/api-key"
+    "oauth_client_id": "",         # OAuth mode: Client ID of your Datadog OAuth client
+    "oauth_domain": "",            # OAuth mode: org region (datadoghq.eu...) — set on connect
     "site": "datadoghq.com",       # datadoghq.eu, us3.datadoghq.com, us5..., ap1...
     "app_subdomain": "app",        # orgs with a custom subdomain: "yourorg" (else links re-ask login)
     "browser": "",                 # open links in a specific browser, e.g. "Google Chrome"
@@ -384,14 +388,35 @@ def acquire_single_instance_lock():
 
 # --------------------------------------------------------------------------
 # Datadog API client (stdlib only — no extra deps)
+#
+# Two auth modes:
+#   "keys"  — API key + Application key in the DD-API-KEY / DD-APPLICATION-KEY
+#             headers (the classic setup).
+#   "oauth" — OAuth 2.0 authorization-code + PKCE: you log in once in the
+#             browser, the app keeps a (rotating) refresh token in the Keychain
+#             and calls the API with short-lived Bearer access tokens. The org's
+#             region comes back from the consent redirect, so it's auto-detected.
 # --------------------------------------------------------------------------
+
+DD_OAUTH_PORT = 8918  # must match the OAuth client's registered callback URL
+DD_OAUTH_SCOPES = ("monitors_read monitors_write monitors_downtime "
+                   "dashboards_read incident_read metrics_read events_read")
+
 
 class DatadogClient:
     def __init__(self, cfg):
         self.cfg = cfg
+        self._access = {"token": "", "expires": 0}  # cached OAuth access token
+
+    def auth_mode(self):
+        return self.cfg.get("auth", "keys")
 
     @property
     def site(self):
+        # An OAuth authorization carries its own region (the `domain` returned
+        # at consent); API-key mode uses the configured site.
+        if self.auth_mode() == "oauth" and self.cfg.get("oauth_domain"):
+            return self.cfg["oauth_domain"]
         return self.cfg.get("site", "datadoghq.com")
 
     @property
@@ -418,8 +443,69 @@ class DatadogClient:
         api, app = self._keys()
         return bool(api and app)
 
+    # -------------------- OAuth (authorization-code + PKCE) --------------------
+
+    def _oauth_blob(self):
+        raw = (keychain_get("datadog-assistant-oauth")
+               or self.cfg.get("oauth_blob", ""))
+        try:
+            return json.loads(raw) if raw else {}
+        except ValueError:
+            return {}
+
+    def _save_oauth_blob(self, blob):
+        raw = json.dumps(blob)
+        if not keychain_set("datadog-assistant-oauth", raw):
+            self.cfg["oauth_blob"] = raw  # non-Keychain fallback
+
+    def configured(self):
+        """Are credentials present for the active auth mode?"""
+        if self.auth_mode() == "oauth":
+            return bool(self.cfg.get("oauth_client_id")
+                        and self._oauth_blob().get("refresh_token"))
+        return self.has_keys()
+
+    def _oauth_api(self):
+        # Token endpoint is regional; once connected we know the org's domain.
+        return self.cfg.get("oauth_domain") or self.cfg.get("site", "datadoghq.com")
+
+    def _access_token(self):
+        """A valid OAuth access token (TTL ~1h), refreshed via the rotating
+        refresh token when the cached one is about to expire."""
+        if self._access["token"] and time.time() < self._access["expires"] - 60:
+            return self._access["token"]
+        blob = self._oauth_blob()
+        data = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "client_id": self.cfg.get("oauth_client_id", ""),
+            "client_secret": blob.get("client_secret", ""),
+            "refresh_token": blob.get("refresh_token", ""),
+        }).encode()
+        req = urllib.request.Request(
+            f"https://api.{self._oauth_api()}/oauth2/v1/token",
+            data=data, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                tok = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(
+                f"Datadog OAuth refresh failed ({e.code}): "
+                f"{http_error_detail(e)} — reconnect via Preferences") from e
+        self._access = {"token": tok["access_token"],
+                        "expires": time.time() + int(tok.get("expires_in", 3600))}
+        if tok.get("refresh_token"):  # Datadog rotates refresh tokens
+            blob["refresh_token"] = tok["refresh_token"]
+            self._save_oauth_blob(blob)
+        return self._access["token"]
+
     def _request(self, method, path, params=None, body=None, version="v1"):
-        api, app = self._keys()
+        oauth = self.auth_mode() == "oauth"
+        api = app = ""
+        if oauth:
+            token = self._access_token()  # may raise -> surfaced as error row
+        else:
+            api, app = self._keys()
         url = f"https://api.{self.site}/api/{version}" + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
@@ -427,8 +513,11 @@ class DatadogClient:
         last_err = None
         for attempt in range(3):
             req = urllib.request.Request(url, data=data, method=method)
-            req.add_header("DD-API-KEY", api)
-            req.add_header("DD-APPLICATION-KEY", app)
+            if oauth:
+                req.add_header("Authorization", "Bearer " + token)
+            else:
+                req.add_header("DD-API-KEY", api)
+                req.add_header("DD-APPLICATION-KEY", app)
             req.add_header("Content-Type", "application/json")
             req.add_header("Accept-Encoding", "gzip")
             try:
@@ -872,8 +961,12 @@ class DatadogAssistant(rumps.App):
 
     def _fetch(self):
         try:
-            if not self.client.has_keys():
-                if self.cfg.get("api_key_cmd") or self.cfg.get("app_key_cmd"):
+            if not self.client.configured():
+                if self.client.auth_mode() == "oauth":
+                    self.results.put(("error",
+                                      "Datadog OAuth not connected — "
+                                      "Preferences → 🔐 Datadog credentials"))
+                elif self.cfg.get("api_key_cmd") or self.cfg.get("app_key_cmd"):
                     self.results.put(("error",
                                       "Secret command returned nothing — "
                                       "is your password manager unlocked?"))
@@ -1570,6 +1663,10 @@ class DatadogAssistant(rumps.App):
         prefs.add(site)
         prefs.add(rumps.MenuItem("🏢 Company subdomain…",
                                  callback=self._set_subdomain))
+        prefs.add(rumps.MenuItem("🔐 Datadog credentials…",
+                                 callback=self._edit_datadog_creds))
+        prefs.add(rumps.MenuItem("🔐 Test Datadog connection",
+                                 callback=self._test_datadog))
 
         prefs.add(rumps.MenuItem("📝 Open config file", callback=self._open_config))
         return prefs
@@ -2012,6 +2109,237 @@ class DatadogAssistant(rumps.App):
             self.cfg["tag_filter"] = resp.text.strip()
             save_config(self.cfg)
             self._poll_tick(None)
+
+    # -------------------- Datadog credentials wizard --------------------
+
+    def _edit_datadog_creds(self, _):
+        self._datadog_setup()
+
+    def _test_datadog(self, _):
+        threading.Thread(target=self._datadog_connection_test, daemon=True).start()
+
+    def _datadog_setup(self):
+        """One wizard for both auth methods: pick API keys vs OAuth, run the
+        matching credential steps, then test the connection."""
+        choice = ask_choice(
+            "🔐 Datadog credentials",
+            "How should the app authenticate to Datadog?\n\n"
+            "API + App keys — quickest. Create them at Organization "
+            "Settings → API Keys / Application Keys (the app key needs the "
+            "monitors_read / monitors_write / monitors_downtime scopes).\n\n"
+            "OAuth — log in once in the browser; the app stores rotating "
+            "tokens instead of your keys, and detects your region "
+            "automatically. Needs a one-time OAuth client in Datadog "
+            "(see README).",
+            ["Cancel", "OAuth", "API + App keys"])
+        if choice == "API + App keys":
+            mode = "keys"
+        elif choice == "OAuth":
+            mode = "oauth"
+        else:
+            return
+        # Background thread: the OAuth leg blocks on the browser redirect, and
+        # ask_text/ask_choice are osascript-based so they don't need the main
+        # thread (same pattern as the Jira wizard).
+        threading.Thread(target=self._datadog_setup_flow, args=(mode,),
+                         daemon=True).start()
+
+    def _datadog_setup_flow(self, mode):
+        if mode == "keys":
+            api = ask_text(
+                "🔐 Datadog — API key",
+                "Organization Settings → API Keys.\nStored in the macOS "
+                "Keychain. Leave blank to keep the current key.",
+                secure=True)
+            if api is None:
+                return
+            if api:
+                if keychain_set("datadog-assistant-api-key", api):
+                    self.cfg["api_key"] = ""   # keychain wins
+                else:
+                    self.cfg["api_key"] = api
+            app = ask_text(
+                "🔐 Datadog — Application key",
+                "Organization Settings → Application Keys. Needs the scopes "
+                "monitors_read, monitors_write, monitors_downtime (plus "
+                "dashboards_read / incident_read for the extras).\nStored in "
+                "the macOS Keychain. Leave blank to keep the current key.",
+                secure=True, ok="Save")
+            if app is None:
+                return
+            if app:
+                if keychain_set("datadog-assistant-app-key", app):
+                    self.cfg["app_key"] = ""
+                else:
+                    self.cfg["app_key"] = app
+            self.cfg["auth"] = "keys"
+            self.cfg["use_keychain"] = True
+            save_config(self.cfg)
+        else:
+            client_id = ask_text(
+                "🔐 Datadog OAuth — Client ID",
+                "One-time setup: create an OAuth client in Datadog\n"
+                "(Organization Settings → OAuth, or the Developer Platform):\n"
+                "• Scopes: monitors_read, monitors_write,\n"
+                "  monitors_downtime, dashboards_read, incident_read,\n"
+                "  metrics_read, events_read\n"
+                "• Redirect URI exactly:\n"
+                f"  http://localhost:{DD_OAUTH_PORT}/callback\n"
+                "Paste the client's Client ID:",
+                default=self.cfg.get("oauth_client_id") or "")
+            if not client_id:
+                return
+            secret = ask_text(
+                "🔐 Datadog OAuth — Client Secret",
+                "From the same OAuth client. Stored in the macOS Keychain.\n"
+                "Your browser opens for the Datadog login next.",
+                secure=True, ok="Connect")
+            if not secret:
+                return
+            self.cfg["oauth_client_id"] = client_id
+            save_config(self.cfg)
+            if not self._datadog_oauth_browser_flow(client_id, secret):
+                return  # failure already explained in a modal
+            self.cfg["auth"] = "oauth"
+            save_config(self.cfg)
+        self.client = DatadogClient(self.cfg)
+        self._datadog_connection_test()
+        # Refetch with the new credentials; the main-thread drain timer
+        # rebuilds the menu (mutating it from this worker thread is unsafe).
+        self._poll_tick(None)
+
+    def _datadog_oauth_browser_flow(self, client_id, secret):
+        # PKCE: a high-entropy verifier and its S256 challenge.
+        verifier = base64.urlsafe_b64encode(os.urandom(40)).decode().rstrip("=")
+        challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+        state = base64.urlsafe_b64encode(os.urandom(16)).decode().rstrip("=")
+        redirect = f"http://localhost:{DD_OAUTH_PORT}/callback"
+        site = self.cfg.get("site", "datadoghq.com")
+        got = {}
+
+        class Callback(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                got["code"] = (q.get("code") or [""])[0]
+                got["state"] = (q.get("state") or [""])[0]
+                # Datadog returns the org's region as `domain` on the redirect.
+                got["domain"] = (q.get("domain") or [""])[0]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write("<h2>🐶 Connected — close this tab and "
+                                 "return to the menu bar.</h2>".encode())
+
+            def log_message(self, *a):
+                pass
+
+        old = getattr(self, "_dd_oauth_srv", None)
+        if old is not None:
+            old._cancelled = True
+            try:
+                old.server_close()
+            except Exception:
+                pass
+            self._dd_oauth_srv = None
+        try:
+            srv = http.server.HTTPServer(("127.0.0.1", DD_OAUTH_PORT), Callback)
+        except OSError as e:
+            notify_modal("❌ Datadog OAuth failed",
+                         f"Can't listen on port {DD_OAUTH_PORT}: {e}\n"
+                         "Another app may be using it — or a previous attempt "
+                         "is still waiting; try again in a few minutes or "
+                         "restart Datadog Assistant.")
+            return False
+        srv._cancelled = False
+        self._dd_oauth_srv = srv
+        srv.timeout = 240
+        open_url(f"https://app.{site}/oauth2/v1/authorize?" +
+                 urllib.parse.urlencode({
+                     "client_id": client_id,
+                     "redirect_uri": redirect,
+                     "response_type": "code",
+                     "code_challenge": challenge,
+                     "code_challenge_method": "S256",
+                     "scope": DD_OAUTH_SCOPES,
+                     "state": state,
+                 }))
+        try:
+            srv.handle_request()  # one shot: blocks until redirect or timeout
+        except Exception:
+            pass
+        if getattr(srv, "_cancelled", False):
+            return False  # superseded by a newer attempt
+        try:
+            srv.server_close()
+        except Exception:
+            pass
+        self._dd_oauth_srv = None
+        if not got.get("code") or got.get("state") != state:
+            notify_modal("❌ Datadog OAuth failed",
+                         "No authorization code received "
+                         "(timed out or cancelled in the browser).")
+            return False
+        domain = got.get("domain") or site
+        try:
+            data = urllib.parse.urlencode({
+                "grant_type": "authorization_code",
+                "client_id": client_id,
+                "client_secret": secret,
+                "code": got["code"],
+                "code_verifier": verifier,
+                "redirect_uri": redirect,
+            }).encode()
+            req = urllib.request.Request(
+                f"https://api.{domain}/oauth2/v1/token", data=data, method="POST")
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                tok = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            notify_modal("❌ Datadog OAuth failed",
+                         f"{e.code}: {http_error_detail(e)}")
+            return False
+        except Exception as e:
+            notify_modal("❌ Datadog OAuth failed", str(e)[:300])
+            return False
+        if not tok.get("refresh_token"):
+            notify_modal("❌ Datadog OAuth failed",
+                         "No refresh token returned — make sure the OAuth "
+                         "client allows the authorization_code grant.")
+            return False
+        self.cfg["oauth_domain"] = domain
+        DatadogClient(self.cfg)._save_oauth_blob({
+            "client_secret": secret,
+            "refresh_token": tok["refresh_token"]})
+        save_config(self.cfg)
+        notify_banner("🔐 Datadog connected via OAuth", "Datadog Assistant 🐶",
+                      domain)
+        return True
+
+    def _datadog_connection_test(self):
+        """Fetch monitors with the active credentials and report what worked —
+        run this first when the menu bar shows 🔌."""
+        client = DatadogClient(self.cfg)
+        mode = "OAuth" if client.auth_mode() == "oauth" else "API + App keys"
+        if not client.configured():
+            notify_modal("❌ Datadog not configured",
+                         f"Auth mode: {mode}\nNo credentials yet — run "
+                         "Preferences → 🔐 Datadog credentials.")
+            return
+        try:
+            mons = client.get_monitors()
+            lines = [f"Auth: {mode}", f"Site: {client.site}",
+                     f"✅ Fetched {len(mons)} monitor(s)"]
+            try:
+                client.get_incidents()
+                lines.append("✅ Incidents accessible")
+            except Exception:
+                lines.append("ℹ️ Incidents not accessible "
+                             "(needs the incident_read scope)")
+            notify_modal("🔐 Datadog connection test", "\n".join(lines))
+        except Exception as e:
+            notify_modal("❌ Datadog connection failed",
+                         f"Auth mode: {mode}\n{str(e)[:280]}")
 
     def _set_subdomain(self, _):
         threading.Thread(target=self._set_subdomain_flow, daemon=True).start()

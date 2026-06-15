@@ -108,6 +108,79 @@ assert captured["url"] == \
     "https://api.atlassian.com/ex/jira/abc123/rest/api/3/myself", captured
 assert captured["auth"] == "Bearer tok", captured
 
+# OAuth-mode Datadog client: Bearer token + region taken from oauth_domain
+dd_oauth = da.DatadogClient({"auth": "oauth", "oauth_client_id": "cid",
+                             "oauth_domain": "datadoghq.eu",
+                             "site": "datadoghq.com"})
+dd_oauth._access = {"token": "ddtok", "expires": time.time() + 3600}
+assert dd_oauth.auth_mode() == "oauth"
+assert dd_oauth.site == "datadoghq.eu"            # oauth domain wins over site
+cap_dd = {}
+
+def fake_urlopen_dd(req, timeout=None):
+    cap_dd["url"] = req.full_url
+    cap_dd["auth"] = req.get_header("Authorization")
+    cap_dd["ddkey"] = req.get_header("Dd-api-key")  # must NOT be sent in oauth
+    class R(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        headers = {}
+    return R(b"[]")
+
+with mock.patch.object(da.urllib.request, "urlopen", fake_urlopen_dd):
+    dd_oauth._request("GET", "/monitor")
+assert cap_dd["url"].startswith("https://api.datadoghq.eu/api/v1/monitor"), cap_dd
+assert cap_dd["auth"] == "Bearer ddtok", cap_dd
+assert cap_dd["ddkey"] is None, cap_dd
+
+# configured(): keys-mode falls back to has_keys; oauth needs a refresh token
+assert da.DatadogClient({"api_key": "a", "app_key": "b"}).configured() is True
+assert da.DatadogClient(
+    {"auth": "oauth", "oauth_client_id": "cid"}).configured() is False
+# key-mode client still uses DD-API-KEY headers (no regression)
+cap_k = {}
+
+def fake_urlopen_k(req, timeout=None):
+    cap_k["auth"] = req.get_header("Authorization")
+    cap_k["ddkey"] = req.get_header("Dd-api-key")
+    class R(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        headers = {}
+    return R(b"[]")
+
+with mock.patch.object(da.urllib.request, "urlopen", fake_urlopen_k):
+    da.DatadogClient({"api_key": "k", "app_key": "p"})._request("GET", "/monitor")
+assert cap_k["auth"] is None and cap_k["ddkey"] == "k", cap_k
+
+# OAuth refresh: hits the regional token endpoint (form-encoded), caches the
+# access token, and rotates the refresh token back into the stored blob
+dd_ref = da.DatadogClient({
+    "auth": "oauth", "oauth_client_id": "cid", "oauth_domain": "datadoghq.eu",
+    "oauth_blob": json.dumps({"client_secret": "sek", "refresh_token": "r1"})})
+ref_cap = {}
+
+def fake_urlopen_ref(req, timeout=None):
+    ref_cap["url"] = req.full_url
+    ref_cap["ctype"] = req.get_header("Content-type")
+    ref_cap["body"] = req.data.decode()
+    class R(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+    return R(json.dumps({"access_token": "AT", "expires_in": 3600,
+                         "refresh_token": "r2"}).encode())
+
+with mock.patch.object(da.urllib.request, "urlopen", fake_urlopen_ref):
+    assert dd_ref._access_token() == "AT"
+assert ref_cap["url"] == "https://api.datadoghq.eu/oauth2/v1/token", ref_cap
+assert ref_cap["ctype"] == "application/x-www-form-urlencoded", ref_cap
+assert "grant_type=refresh_token" in ref_cap["body"], ref_cap
+assert "refresh_token=r1" in ref_cap["body"], ref_cap
+# rotated refresh token persisted (Keychain unavailable here -> cfg fallback)
+assert dd_ref._oauth_blob().get("refresh_token") == "r2", dd_ref._oauth_blob()
+# cached: a second call doesn't hit the network again
+assert dd_ref._access_token() == "AT"
+
 # create_issue merges cfg labels + per-monitor labels + dd-monitor-<id>, deduped
 cap = {}
 

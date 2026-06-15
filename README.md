@@ -52,7 +52,7 @@ alerts, sparklines, incidents, Jira, snooze and more, no config editing needed.
 | 🏷 | Tag + name filters so you only see *your* team's monitors |
 | 🔁 | Re-notifies every N minutes while a monitor is **still** alerting |
 | 🟢 | Recovery notifications when things go back to OK |
-| 🔐 | Keys via macOS Keychain (recommended), config file, or env vars |
+| 🔐 | **API keys or OAuth** — pick at setup; keys via macOS Keychain / config / env, or log in once in the browser (OAuth) so only rotating tokens are stored |
 | 🌐 | Works with every Datadog site (US1/EU/US3/US5/AP1/Gov) |
 | 🎯 | **Severity engine** — per-priority (P1–P5) notification rules: P1 gets modal + 10-min nag, P3 just a banner |
 | 📈 | **Live context on every alert**: sparkline of the metric, current value vs critical threshold |
@@ -72,15 +72,13 @@ chmod +x install.sh
 
 The installer:
 1. creates a venv at `~/.datadog-assistant` and installs `rumps`
-2. offers to store your **API key** and **APP key** in the macOS Keychain 🔐
+2. lets you authenticate with **API + App keys** (stored in the macOS
+   Keychain 🔐) **or OAuth** (browser login — see below)
 3. installs a LaunchAgent so the app starts at login and stays alive
 
 Then look for **🐶** in your menu bar. Use **🩺 Test Notification** to verify
-banners/popups work (grant notification permission if macOS asks).
-
-> 🔑 Get keys at **Organization Settings → API Keys / Application Keys**.
-> The app key needs the `monitors_read` / `monitors_write` /
-> `monitors_downtime` scopes.
+banners/popups work (grant notification permission if macOS asks), and
+**🔐 Test Datadog connection** to confirm your credentials work.
 
 ### Run manually instead
 
@@ -88,6 +86,43 @@ banners/popups work (grant notification permission if macOS asks).
 pip3 install rumps
 DD_API_KEY=xxx DD_APP_KEY=yyy python3 datadog_assistant.py
 ```
+
+## 🔑 Authentication — API keys or OAuth
+
+Pick either at setup (installer, or **Preferences → 🔐 Datadog credentials…**).
+Switch any time; secrets live in the macOS Keychain, never the config file.
+
+### Option A — API + App keys (quickest)
+
+Get them at **Organization Settings → API Keys / Application Keys**. The
+**application key** needs the `monitors_read`, `monitors_write` and
+`monitors_downtime` scopes (add `dashboards_read` / `incident_read` for the
+dashboard and incident sections). That's it.
+
+### Option B — OAuth (browser login, no keys on disk)
+
+Log in once in the browser; the app keeps a **rotating refresh token** in the
+Keychain and calls the API with short-lived Bearer tokens — your keys never
+touch the machine, and your **region is auto-detected** from the login. Good
+for orgs that prefer SSO/consent over provisioning keys.
+
+One-time prerequisite — create an **OAuth client** in Datadog (Organization
+Settings → OAuth, or the Developer Platform):
+
+1. **Scopes**: `monitors_read`, `monitors_write`, `monitors_downtime`,
+   `dashboards_read`, `incident_read`, `metrics_read`, `events_read`
+2. **Redirect URI**, exactly: `http://localhost:8918/callback`
+3. Copy the **Client ID** and **Client Secret**.
+
+Then **Preferences → 🔐 Datadog credentials… → OAuth**, paste the Client ID and
+Secret, and approve the login in your browser. The app authenticates against
+`app.<site>/oauth2/v1/authorize` + `api.<site>/oauth2/v1/token` (PKCE, S256) and
+stores only the refresh token + secret in Keychain service
+`datadog-assistant-oauth`.
+
+> Notes: the redirect URI must match `http://localhost:8918/callback` exactly.
+> Datadog access tokens last ~1h and are refreshed automatically; if a refresh
+> ever fails the menu bar shows 🔌 with a "reconnect via Preferences" hint.
 
 ## ⚙️ Customization — `~/.config/datadog-assistant/config.json`
 
