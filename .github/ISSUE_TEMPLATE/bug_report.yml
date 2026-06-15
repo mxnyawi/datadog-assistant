@@ -1,0 +1,59 @@
+name: 🐛 Bug report
+description: Something isn't working the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please **redact your API keys and any private
+        monitor / project names** from logs and screenshots before posting.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+      placeholder: The menu bar showed 🔌 and no alerts appeared, but I have an alerting monitor…
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the menu
+        2. Click …
+        3. See …
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "e.g. macOS 14.5 Sonoma"
+    validations:
+      required: true
+  - type: dropdown
+    id: site
+    attributes:
+      label: Datadog site
+      options:
+        - US1 (datadoghq.com)
+        - EU (datadoghq.eu)
+        - US3 (us3.datadoghq.com)
+        - US5 (us5.datadoghq.com)
+        - AP1 (ap1.datadoghq.com)
+        - Gov (ddog-gov.com)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: install
+    attributes:
+      label: How are you running it?
+      placeholder: "install.sh + LaunchAgent  /  manual python3 datadog_assistant.py"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: From `~/.datadog-assistant/stderr.log`. This is automatically formatted as code.
+      render: shell

@@ -1,5 +1,10 @@
 # 🐶 Datadog Assistant — macOS menu bar app
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Platform: macOS](https://img.shields.io/badge/platform-macOS-black.svg)
+![Python 3](https://img.shields.io/badge/python-3-blue.svg)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
 Your personal Datadog sidekick that lives in the menu bar and makes alerts
 **impossible to ignore** — because emails and Teams messages get lost.
 
@@ -263,3 +268,22 @@ submenu shows **🎫 Create Jira ticket** (and **🎫 Open OPS-123** once one ex
   launchctl unload ~/Library/LaunchAgents/com.nour.datadog-assistant.plist
   rm -rf ~/.datadog-assistant ~/Library/LaunchAgents/com.nour.datadog-assistant.plist
   ```
+
+## 🤝 Contributing
+
+Contributions are very welcome — bug reports, feature ideas, docs, and code.
+Good first stops:
+
+- 🐛 [Open an issue](https://github.com/mxnyawi/datadog-assistant/issues) (bug or feature templates)
+- 💬 [Start a discussion](https://github.com/mxnyawi/datadog-assistant/discussions) for questions and ideas
+- 💻 Read **[CONTRIBUTING.md](CONTRIBUTING.md)** for dev setup, the test workflow,
+  and the PR checklist — most logic is testable on Linux (`python3 test_smoke.py`)
+  even without a Mac
+
+Please also follow the [Code of Conduct](CODE_OF_CONDUCT.md). Keys never belong
+in commits — see CONTRIBUTING for how secrets are handled.
+
+## 📄 License
+
+[MIT](LICENSE) © Nour El Menyawi. Unofficial and not affiliated with Datadog,
+Inc. or Atlassian.
