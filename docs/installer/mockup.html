@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,"Helvetica Neue",Helvetica,Arial,sans-serif}
+  .scene{width:640px;height:560px;background:#ececed;display:flex;align-items:center;
+    justify-content:center}
+  /* macOS window */
+  .win{width:560px;background:#fff;border-radius:10px;overflow:hidden;
+    border:1px solid #d2d2d4;box-shadow:0 22px 60px rgba(0,0,0,.28)}
+  .bar{height:30px;background:#e8e8ea;display:flex;align-items:center;position:relative;
+    padding:0 12px;border-bottom:1px solid #dadadc}
+  .lights{display:flex;gap:8px}
+  .lights i{width:12px;height:12px;border-radius:50%;display:block}
+  .r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+  .bar .t{position:absolute;left:0;right:0;text-align:center;font-size:13px;
+    color:#52525a;font-weight:500}
+  .pad{padding:18px 24px 20px}
+  .head{display:flex;align-items:center;justify-content:space-between}
+  .head .app{font-size:17px;font-weight:700;color:#1d1d1f}
+  .head .step{font-size:12px;color:#8a8a8a}
+  .hr{height:1px;background:#e4e4e6;margin:12px -24px 0}
+  .body{min-height:300px;padding-top:18px}
+  h1{font-size:20px;font-weight:700;color:#1d1d1f;margin-bottom:6px}
+  .sub{font-size:13px;color:#6b6b6b;line-height:1.5;max-width:480px}
+  .footer{display:flex;justify-content:space-between;align-items:center;padding-top:18px}
+  .btn{font-size:13px;font-weight:600;border-radius:6px;padding:7px 18px;border:1px solid transparent}
+  .btn.def{background:#0a6cff;color:#fff}
+  .btn.sec{background:#fff;color:#333;border-color:#c7c7cc}
+  .btn.dis{opacity:.4}
+  .center{text-align:center}
+  .emoji{font-size:54px;text-align:center;margin:14px 0 10px}
+  /* controls */
+  .combo{display:flex;align-items:center;justify-content:space-between;width:330px;
+    border:1px solid #c4c4c8;border-radius:5px;padding:8px 11px;font-size:13px;color:#1d1d1f;
+    background:#fff;margin-top:4px}
+  .combo .chev{color:#8a8a8a;font-size:11px}
+  .radio{display:flex;align-items:center;gap:9px;font-size:13.5px;color:#1d1d1f;margin:5px 0}
+  .radio .dot{width:15px;height:15px;border-radius:50%;border:1.5px solid #b3b3b8;
+    display:inline-block;position:relative}
+  .radio.on .dot{border-color:#0a6cff}
+  .radio.on .dot:after{content:"";position:absolute;inset:3px;border-radius:50%;background:#0a6cff}
+  .lbl{font-size:12px;color:#444;margin:12px 0 3px}
+  .field{width:400px;border:1px solid #c4c4c8;border-radius:5px;padding:8px 11px;
+    font-size:13px;color:#1d1d1f;background:#fff;letter-spacing:.5px}
+  .field.dots{letter-spacing:2px;color:#555}
+  .track{width:480px;height:8px;background:#e3e3e6;border-radius:4px;margin:6px 0 10px;overflow:hidden}
+  .track .fill{height:100%;background:#0a6cff;border-radius:4px}
+  .status{font-size:12.5px;color:#444}
+  .log{width:480px;height:120px;background:#f4f4f6;border-radius:6px;margin-top:12px;
+    padding:10px 12px;font-family:Menlo,monospace;font-size:10.5px;color:#5a5a5a;line-height:1.7;
+    overflow:hidden}
+</style>
+</head>
+<body>
+
+<!-- 1. WELCOME -->
+<div class="scene" id="s-welcome">
+  <div class="win">
+    <div class="bar"><div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+      <div class="t">Datadog Assistant Installer</div></div>
+    <div class="pad">
+      <div class="head"><span class="app">🐶 Datadog Assistant</span><span class="step">Step 1 of 5</span></div>
+      <div class="hr"></div>
+      <div class="body">
+        <div class="emoji">🐶</div>
+        <div class="center"><h1>Welcome</h1>
+          <div class="sub" style="margin:0 auto">This sets up Datadog Assistant in your menu bar.
+            It takes about a minute, and you never need Terminal.</div></div>
+      </div>
+      <div class="footer"><span class="btn sec dis">Back</span><span class="btn def">Continue</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- 2. REGION -->
+<div class="scene" id="s-region">
+  <div class="win">
+    <div class="bar"><div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+      <div class="t">Datadog Assistant Installer</div></div>
+    <div class="pad">
+      <div class="head"><span class="app">🐶 Datadog Assistant</span><span class="step">Step 2 of 5</span></div>
+      <div class="hr"></div>
+      <div class="body">
+        <h1>Choose your Datadog site</h1>
+        <div class="sub">Pick the region your org is on. Check your browser, e.g. app.datadoghq.eu.</div>
+        <div class="combo" style="margin-top:18px"><span>EU&nbsp;&nbsp;·&nbsp;&nbsp;datadoghq.eu</span><span class="chev">▾</span></div>
+      </div>
+      <div class="footer"><span class="btn sec">Back</span><span class="btn def">Continue</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- 3. SIGN IN -->
+<div class="scene" id="s-signin">
+  <div class="win">
+    <div class="bar"><div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+      <div class="t">Datadog Assistant Installer</div></div>
+    <div class="pad">
+      <div class="head"><span class="app">🐶 Datadog Assistant</span><span class="step">Step 3 of 5</span></div>
+      <div class="hr"></div>
+      <div class="body">
+        <h1>Sign in to Datadog</h1>
+        <div class="sub">Your credentials are stored in the macOS Keychain on this Mac. Nothing is sent to any server.</div>
+        <div style="margin-top:14px">
+          <div class="radio on"><span class="dot"></span> API + App keys (quickest)</div>
+          <div class="radio"><span class="dot"></span> OAuth (log in via browser)</div>
+        </div>
+        <div class="lbl">Datadog API key</div>
+        <div class="field dots">••••••••••••••••••••••••••••••••</div>
+        <div class="lbl">Datadog Application key</div>
+        <div class="field dots">••••••••••••••••••••••••••••••••••••••</div>
+      </div>
+      <div class="footer"><span class="btn sec">Back</span><span class="btn def">Continue</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- 4. INSTALLING -->
+<div class="scene" id="s-install">
+  <div class="win">
+    <div class="bar"><div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+      <div class="t">Datadog Assistant Installer</div></div>
+    <div class="pad">
+      <div class="head"><span class="app">🐶 Datadog Assistant</span><span class="step">Step 5 of 5</span></div>
+      <div class="hr"></div>
+      <div class="body">
+        <h1>Installing…</h1>
+        <div class="track"><div class="fill" style="width:70%"></div></div>
+        <div class="status">Installing dependencies (rumps)…</div>
+        <div class="log">$ python3 -m venv ~/.datadog-assistant/venv<br>
+          Creating a Python environment…<br>
+          $ pip install --upgrade pip rumps<br>
+          Successfully installed rumps-0.4.0<br>
+          Writing your settings…<br>
+          Storing your keys in the Keychain…</div>
+      </div>
+      <div class="footer"><span class="btn sec dis">Back</span><span class="btn def dis">Install</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- 5. DONE -->
+<div class="scene" id="s-done">
+  <div class="win">
+    <div class="bar"><div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+      <div class="t">Datadog Assistant Installer</div></div>
+    <div class="pad">
+      <div class="head"><span class="app">🐶 Datadog Assistant</span><span class="step">Step 5 of 5</span></div>
+      <div class="hr"></div>
+      <div class="body">
+        <div class="emoji">✅</div>
+        <div class="center"><h1>All set!</h1>
+          <div class="sub" style="margin:0 auto">Look for the 🐶 in your menu bar. Open it to see your
+            monitors. You can change anything later under Preferences.</div></div>
+      </div>
+      <div class="footer"><span></span><span class="btn def">Done</span></div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
