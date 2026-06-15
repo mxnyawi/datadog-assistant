@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Datadog Assistant</title>
+<meta name="description" content="A free, open source macOS menu bar app that makes Datadog alerts impossible to ignore. Unmissable popups for P1s, live metric context, incidents, one click Jira tickets. Your keys stay on your Mac.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐶</text></svg>">
+<meta property="og:title" content="Datadog Assistant">
+<meta property="og:description" content="Datadog alerts you can't miss, in your Mac menu bar. Download for Mac, or grab the source on GitHub.">
+<meta property="og:image" content="assets/og.png">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0c0c0f; --panel:#141418; --ink:#f4f4f6; --muted:#9a9aa6;
+    --accent:#7350ff; --accent-ink:#ffffff; --line:#26262d; --good:#37d07a;
+    --max:1060px;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+  body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg);
+    color:var(--ink);-webkit-font-smoothing:antialiased;line-height:1.55;overflow-x:hidden}
+  a{color:inherit;text-decoration:none}
+  img{max-width:100%;height:auto;display:block}
+  .wrap{max-width:var(--max);margin:0 auto;padding:0 20px}
+
+  .btn{display:inline-flex;align-items:center;justify-content:center;font-weight:600;
+    font-size:15px;padding:13px 20px;border:1px solid transparent;cursor:pointer;
+    transition:background .15s, border-color .15s, color .15s;white-space:nowrap}
+  .btn-primary{background:var(--accent);color:var(--accent-ink)}
+  .btn-primary:hover{background:#5e3df0}
+  .btn-ghost{border-color:var(--line);color:var(--ink);background:transparent}
+  .btn-ghost:hover{border-color:#4a4a57}
+  .btn.sm{padding:9px 14px;font-size:14px}
+
+  /* nav */
+  nav{position:sticky;top:0;z-index:50;background:var(--bg);border-bottom:1px solid var(--line)}
+  nav .wrap{display:flex;align-items:center;justify-content:space-between;height:58px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:16px}
+  .brand .dog{font-size:20px}
+  .nav-links{display:flex;align-items:center;gap:8px}
+
+  /* section rhythm */
+  section{padding:60px 0;border-top:1px solid var(--line)}
+  .eyebrow{color:var(--muted);font-weight:700;font-size:12px;letter-spacing:1.4px;
+    text-transform:uppercase}
+  h1{font-size:clamp(34px,9vw,58px);line-height:1.02;letter-spacing:-1.5px;font-weight:800}
+  h1 .hl{color:var(--accent)}
+  h2{font-size:clamp(26px,5vw,38px);letter-spacing:-1px;font-weight:800;margin-top:10px}
+  .lead{color:var(--muted);font-size:17px;max-width:54ch;margin-top:12px}
+
+  /* hero */
+  header{padding:56px 0 0;border-top:none}
+  .pill{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:600;
+    padding:6px 12px;border:1px solid var(--line);color:var(--muted)}
+  header h1{margin:18px 0 0;max-width:14ch}
+  .sub{font-size:18px;color:var(--muted);max-width:52ch;margin:18px 0 0}
+  .cta{display:flex;gap:10px;flex-wrap:wrap;margin-top:26px}
+  .cta .btn{padding:14px 22px;font-size:16px}
+  .micro{margin-top:18px;font-size:13.5px;color:var(--muted);display:flex;gap:18px;
+    flex-wrap:wrap}
+  .micro span{display:inline-flex;align-items:center;gap:7px}
+  .tick{width:6px;height:6px;background:var(--good)}
+  .shot{margin:40px 0 0;border:1px solid var(--line);width:100%;height:auto}
+
+  /* two paths */
+  .paths{display:grid;grid-template-columns:1fr;gap:16px;margin-top:30px}
+  .panel{background:var(--panel);border:1px solid var(--line);padding:28px;min-width:0}
+  .panel.lead-card{border-color:#3a2f6b}
+  .panel .ic{font-size:28px}
+  .panel h3{font-size:21px;margin:12px 0 8px;letter-spacing:-.4px}
+  .panel p{color:var(--muted);font-size:15px}
+  .panel .btn{margin-top:20px}
+  .panel code{background:#0c0c0f;border:1px solid var(--line);padding:11px 13px;
+    font-size:13px;display:block;margin-top:16px;color:#cfc7f5;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-x:auto;white-space:nowrap}
+
+  /* features */
+  .grid{display:grid;grid-template-columns:1fr;gap:0;margin-top:30px;
+    border:1px solid var(--line)}
+  .cell{padding:26px;border-bottom:1px solid var(--line)}
+  .cell .ic{font-size:24px}
+  .cell h4{font-size:18px;margin:12px 0 7px;letter-spacing:-.3px}
+  .cell p{color:var(--muted);font-size:14.5px}
+
+  /* showcase */
+  .showcase{display:grid;grid-template-columns:1fr;gap:16px;margin-top:30px}
+  .frame{border:1px solid var(--line);background:#000;min-width:0}
+  .frame img{width:100%;height:auto}
+  .frame figcaption{padding:13px 16px;font-size:14px;color:var(--muted);
+    background:var(--panel);border-top:1px solid var(--line)}
+
+  /* steps */
+  .steps{display:grid;grid-template-columns:1fr;gap:0;margin-top:30px;border:1px solid var(--line)}
+  .step{padding:26px;border-bottom:1px solid var(--line)}
+  .step .n{width:34px;height:34px;display:flex;align-items:center;justify-content:center;
+    font-weight:800;background:var(--accent);color:#fff}
+  .step h4{margin:14px 0 6px;font-size:17px}
+  .step p{color:var(--muted);font-size:14.5px}
+
+  /* install tutorial */
+  .tutorial{display:grid;grid-template-columns:1fr;margin-top:30px;
+    border:1px solid var(--line);border-bottom:none}
+  .tut{border-bottom:1px solid var(--line);min-width:0}
+  .tut .shotimg{width:100%;height:auto;display:block;background:#ececed;
+    border-bottom:1px solid var(--line)}
+  .tut .cap{padding:20px 24px;display:flex;gap:13px;align-items:flex-start}
+  .tut .n{flex:none;width:30px;height:30px;display:flex;align-items:center;
+    justify-content:center;font-weight:800;background:var(--accent);color:#fff;font-size:14px}
+  .tut h4{font-size:17px;margin-bottom:5px}
+  .tut p{color:var(--muted);font-size:14.5px}
+
+  /* faq */
+  .faq{margin-top:24px;border:1px solid var(--line)}
+  details{border-bottom:1px solid var(--line)}
+  details:last-child{border-bottom:none}
+  summary{cursor:pointer;padding:18px 20px;font-weight:600;list-style:none;display:flex;
+    justify-content:space-between;align-items:center;gap:16px}
+  summary::-webkit-details-marker{display:none}
+  summary::after{content:"+";color:var(--accent);font-size:20px;font-weight:400}
+  details[open] summary::after{content:"\2212"}
+  details p{color:var(--muted);padding:0 20px 20px;font-size:15px;max-width:70ch}
+
+  /* final */
+  .final{background:var(--panel);border:1px solid var(--line);padding:50px 24px;text-align:center}
+  .final .cta{justify-content:center}
+
+  footer{border-top:1px solid var(--line);padding:34px 0;color:var(--muted);font-size:14px}
+  footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start}
+  footer .links{display:flex;gap:18px;flex-wrap:wrap}
+  footer a:hover{color:var(--ink)}
+  .disclaimer{font-size:12.5px;color:#6c6c78;margin-top:8px;max-width:56ch}
+
+  @media(min-width:560px){
+    .grid{grid-template-columns:1fr 1fr}
+    .cell:nth-last-child(-n+1){border-bottom:none}
+  }
+  @media(min-width:720px){
+    .wrap{padding:0 24px}
+    section{padding:76px 0}
+    .paths{grid-template-columns:1fr 1fr}
+    .showcase{grid-template-columns:1fr 1fr}
+    .steps{grid-template-columns:1fr 1fr 1fr}
+    .step{border-bottom:none;border-right:1px solid var(--line)}
+    .step:last-child{border-right:none}
+    .tutorial{grid-template-columns:1fr 1fr}
+    .tut:nth-child(odd){border-right:1px solid var(--line)}
+    .shot{margin-top:48px}
+  }
+  @media(min-width:860px){
+    header{padding:74px 0 0}
+    .grid{grid-template-columns:1fr 1fr 1fr}
+    .cell{border-right:1px solid var(--line)}
+    .cell:nth-child(3n){border-right:none}
+    .cell:nth-last-child(-n+3){border-bottom:none}
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#"><span class="dog">🐶</span> Datadog Assistant</a>
+    <div class="nav-links">
+      <a class="btn btn-ghost sm" href="https://github.com/mxnyawi/datadog-assistant" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-primary sm" href="#get">Download</a>
+    </div>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <span class="pill">🐶 macOS menu bar app</span>
+    <h1>Alerts you<br><span class="hl">can't miss</span></h1>
+    <p class="sub">A small app for your Mac menu bar. It shows every Datadog monitor at a glance and fires an unmissable popup the moment a P1 breaks.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="#get">Download for Mac</a>
+      <a class="btn btn-ghost" href="https://github.com/mxnyawi/datadog-assistant" target="_blank" rel="noopener">View on GitHub</a>
+    </div>
+    <div class="micro">
+      <span><i class="tick"></i> Free and open source</span>
+      <span><i class="tick"></i> Keys stay on your Mac</span>
+      <span><i class="tick"></i> Every Datadog site</span>
+    </div>
+    <img class="shot" src="assets/scene-menu.png" alt="Datadog Assistant menu bar dropdown showing monitors grouped by state, with a monitor submenu" loading="lazy" width="2560" height="1600">
+  </div>
+</header>
+
+<section id="get">
+  <div class="wrap">
+    <div class="eyebrow">Get it</div>
+    <h2>Two ways to start</h2>
+    <p class="lead">Not technical? Download the app and a simple installer sets it up. A developer? Grab the source and run it your way.</p>
+    <div class="paths">
+      <div class="panel lead-card">
+        <div class="ic">🪄</div>
+        <h3>Download the app</h3>
+        <p>One download. Double click it and a clean installer steps you through your region, your Datadog login, and setup. No Terminal. The 🐶 shows up in your menu bar when it is done.</p>
+        <a class="btn btn-primary" href="https://github.com/mxnyawi/datadog-assistant/releases/latest" target="_blank" rel="noopener">Download for macOS</a>
+      </div>
+      <div class="panel">
+        <div class="ic">⌨️</div>
+        <h3>Build from source</h3>
+        <p>One dependency light Python file. Clone it, run the installer script, send a PR. MIT licensed.</p>
+        <code>git clone https://github.com/mxnyawi/datadog-assistant &amp;&amp; ./install.sh</code>
+        <a class="btn btn-ghost" href="https://github.com/mxnyawi/datadog-assistant" target="_blank" rel="noopener">Open the repo</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="eyebrow">Why it helps</div>
+    <h2>Built for on-call</h2>
+    <div class="grid">
+      <div class="cell"><div class="ic">🛑</div><h4>Impossible to ignore</h4>
+        <p>Banners and sound for every change, plus a modal popup macOS can't silence for the P1s that can't wait.</p></div>
+      <div class="cell"><div class="ic">📈</div><h4>Context on every alert</h4>
+        <p>A live sparkline, current value versus threshold, how long it has been firing, and which hosts triggered.</p></div>
+      <div class="cell"><div class="ic">🤫</div><h4>Smart No Data triage</h4>
+        <p>Tells a dead host apart from a quiet monitor, so you only get woken for real breakage.</p></div>
+      <div class="cell"><div class="ic">🎫</div><h4>One click Jira</h4>
+        <p>File a ticket from any alert, or auto create for P1 and P2, with open ticket dedupe.</p></div>
+      <div class="cell"><div class="ic">🔥</div><h4>Incidents and dashboards</h4>
+        <p>Active Datadog incidents and your real dashboards, right in the menu.</p></div>
+      <div class="cell"><div class="ic">🔐</div><h4>Keys stay home</h4>
+        <p>API keys or OAuth, stored in the macOS Keychain. Never on a server, never in a config file.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="eyebrow">See it</div>
+    <h2>One glance away</h2>
+    <div class="showcase">
+      <figure class="frame"><img src="assets/scene-notify.png" alt="macOS notification banners for a Datadog alert and recovery" loading="lazy" width="2560" height="1600"><figcaption>Native banners for every alert and recovery.</figcaption></figure>
+      <figure class="frame"><img src="assets/scene-modal.png" alt="Critical modal popup that stays on screen until dismissed" loading="lazy" width="2560" height="1600"><figcaption>An unmissable popup for the criticals.</figcaption></figure>
+      <figure class="frame"><img src="assets/scene-menu.png" alt="Menu dropdown with a monitor submenu" loading="lazy" width="2560" height="1600"><figcaption>Priority, sparkline, hosts and actions per monitor.</figcaption></figure>
+      <figure class="frame"><img src="assets/scene-prefs.png" alt="Preferences submenu with toggles" loading="lazy" width="2560" height="1600"><figcaption>Tune every behaviour from the menu bar.</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="eyebrow">After you download</div>
+    <h2>Set up in a minute</h2>
+    <p class="lead">Double click the app and a simple installer does the rest. No Terminal, no commands.</p>
+    <div class="tutorial">
+      <div class="tut">
+        <img class="shotimg" src="assets/install-1.png" alt="Installer welcome screen" loading="lazy" width="1280" height="1120">
+        <div class="cap"><div class="n">1</div><div><h4>Open the installer</h4>
+          <p>Double click the download. The first time, right click then Open to pass the macOS prompt.</p></div></div>
+      </div>
+      <div class="tut">
+        <img class="shotimg" src="assets/install-2.png" alt="Installer choose your Datadog site step" loading="lazy" width="1280" height="1120">
+        <div class="cap"><div class="n">2</div><div><h4>Choose your site</h4>
+          <p>Pick your Datadog region. With OAuth it is detected for you.</p></div></div>
+      </div>
+      <div class="tut">
+        <img class="shotimg" src="assets/install-3.png" alt="Installer sign in step with API and App key fields" loading="lazy" width="1280" height="1120">
+        <div class="cap"><div class="n">3</div><div><h4>Sign in</h4>
+          <p>Paste your keys or use OAuth. Stored in the macOS Keychain, never on a server.</p></div></div>
+      </div>
+      <div class="tut">
+        <img class="shotimg" src="assets/install-4.png" alt="Installer all set screen" loading="lazy" width="1280" height="1120">
+        <div class="cap"><div class="n">4</div><div><h4>Find the 🐶</h4>
+          <p>The installer finishes and the dog appears in your menu bar. That is it.</p></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="eyebrow">Good to know</div>
+    <h2>Questions</h2>
+    <div class="faq">
+      <details><summary>Is it safe? Where do my keys go?</summary>
+        <p>Your Datadog and Jira credentials live in the macOS Keychain on your machine, or your password manager. They are never sent to a server. The app is open source, so you can read exactly what it does.</p></details>
+      <details><summary>Why does macOS say "unidentified developer"?</summary>
+        <p>The app is not signed with a paid Apple certificate, so macOS warns you the first time. Right click the app, choose Open once, and you are set. You can also build it yourself from source.</p></details>
+      <details><summary>Does it cost anything?</summary>
+        <p>No. It is free and MIT licensed. You only need your own Datadog account and API access.</p></details>
+      <details><summary>Which Datadog sites work?</summary>
+        <p>All of them. US1, EU, US3, US5, AP1 and Gov. With OAuth the region is detected automatically.</p></details>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="final">
+      <h2>Stop missing alerts</h2>
+      <p class="lead" style="margin:12px auto 24px">Put your Datadog monitors where you will actually see them.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/mxnyawi/datadog-assistant/releases/latest" target="_blank" rel="noopener">Download for Mac</a>
+        <a class="btn btn-ghost" href="https://github.com/mxnyawi/datadog-assistant" target="_blank" rel="noopener">View on GitHub</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>
+      <div class="brand"><span class="dog">🐶</span> Datadog Assistant</div>
+      <div class="disclaimer">Unofficial personal project. Not affiliated with Datadog, Inc. or Atlassian. MIT licensed.</div>
+    </div>
+    <div class="links">
+      <a href="https://github.com/mxnyawi/datadog-assistant" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/mxnyawi/datadog-assistant/releases/latest" target="_blank" rel="noopener">Download</a>
+      <a href="https://github.com/mxnyawi/datadog-assistant/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contribute</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
