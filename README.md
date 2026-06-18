@@ -305,22 +305,45 @@ line when something shipped right before:
 
 (that line is also appended to the notification).
 
-### Where each piece comes from
-The repo/deploy/link data is mined from three Datadog sources, in this order:
+### Finding the service (monitors are tagged inconsistently)
+Datadog's Unified Service Tagging (`service`/`env`/`version`) is **not applied
+to monitors automatically** — a monitor only carries `service:` if someone put
+it there or the query scopes by it. So the app walks a **fallback ladder** and
+tells you which rung matched (`matched via tag:app`, `via query`, `via name`):
 
-1. **The monitor's own tags** — `service:`, `version:`, and
-   `git.repository_url:` / `repository:` (Datadog's source-code metadata) give
-   the service, the deployed version, and the repo with zero setup.
-2. **Links in the monitor message** — `[Runbook](…)`, repo URLs, dashboard
-   links teams already paste into the alert message are scraped and classified
-   (repo / runbook / docs / dashboard).
-3. **The Software Catalog** (`/api/v2/services/definitions`) — the canonical
-   home of a service's `links` (repo/runbook/doc/dashboard),
-   `codeLocations.repositoryURL`, owning `team`, and PagerDuty/Opsgenie. The
-   monitor's `service:` tag resolves to its definition.
+1. **A service-ish tag**, in order: `service` → `kube_app_name` →
+   `kube_deployment` → `kube_service` → `app` → `application` →
+   `servicename`/`service_name` → `dd-service` → `component`. (The `kube_*`
+   ones are auto-emitted by the Agent, so even untagged k8s monitors resolve.)
+2. **The query scope** — `…{service:checkout,env:prod}…` (skipped for
+   `composite` monitors, whose query is just sub-monitor IDs).
+3. **The name** — a leading `[checkout]` prefix (ignoring `[P1]`/`[prod]`).
 
-**Deploys** come from the **Events API** (`tags:service:<svc>`), filtered to
-deploy-like events and correlated to when the alert started.
+The **owning team** falls back the same way: `team` → `owner` → `squad` →
+`dd_team` → `group`, then an `@team-…` handle in the message.
+
+### Where each link comes from
+Every source is a fallback, so a monitor surfaces whatever it can:
+
+1. **Tags** — `git.repository_url:` (Datadog Source Code Integration; also
+   `repository:`/`repo:`), plus `version:`, `git.commit.sha:`, `git.branch:` →
+   the repo, deployed version, and a direct **commit link**, with zero setup.
+2. **Links in the monitor message** — `[Runbook](…)`, repo/dashboard URLs teams
+   paste into the alert text are scraped and classified.
+3. **The Software Catalog** — `links` (repo/runbook/doc/dashboard),
+   `codeLocations.repositoryURL`, owning `team`, PagerDuty/Opsgenie. The parser
+   handles **every catalog schema**: v2 (`repos[]`/`docs[]`), v2.1/v2.2
+   (`links[]`), and the v3 entity model (`metadata.links`, `metadata.owner`).
+
+**Deploys** come from the **Events API** (`tags:service:<svc>`): an event counts
+as a deploy if it's from a CI/CD source (`github`, `gitlab`, `jenkins`,
+`argocd`, `spinnaker`, …) **or** its title matches a deploy keyword — then it's
+correlated to when the alert started. Even with zero deploy events, the
+`version:`/`git.commit.sha:` tags still show what's running.
+
+When **nothing** resolves, the monitor says so (`🧭 No service/repo found — add
+a service: or git.repository_url: tag`) instead of showing a blank, so you know
+it's a tagging gap, not a bug.
 
 ### Requirements & tuning
 - Your Datadog key/OAuth needs **`events_read`** (deploys) and the
@@ -331,8 +354,8 @@ deploy-like events and correlated to when the alert started.
 - `service_context` config: `correlate_minutes` (suspect window),
   `lookback_hours`, `deploy_keywords` (what counts as a deploy event),
   `deploy_event_sources` (restrict to specific event sources), `show_on`,
-  `notify_correlation`, and the `cache_seconds` / `max_services_per_poll`
-  rate-limit guards.
+  `notify_correlation`, `show_unresolved_hint`, and the `cache_seconds` /
+  `max_services_per_poll` rate-limit guards.
 
 Everything is **read-only**.
 

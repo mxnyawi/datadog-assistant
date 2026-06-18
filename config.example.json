@@ -79,7 +79,8 @@
     "max_services_per_poll": 6,
     "cache_seconds": 180,
     "show_on": ["Alert", "Warn", "No Data"],
-    "notify_correlation": true
+    "notify_correlation": true,
+    "show_unresolved_hint": true
   },
   "digest_hour": 9,
   "jira": {

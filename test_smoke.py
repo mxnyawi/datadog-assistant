@@ -573,4 +573,93 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
                                "options": {}}])
     assert any("Deploy" in m for k, t, m in notifications), notifications
 
+    # ---- service resolution fallback ladder (non-uniform monitors) ----
+    rs = da.resolve_service
+    assert rs({"tags": ["service:pay"]}) == ("pay", "tag")
+    assert rs({"tags": ["kube_app_name:web"]}) == ("web", "tag:kube_app_name")
+    assert rs({"tags": ["kube_deployment:api"]})[0] == "api"
+    assert rs({"tags": ["app:billing"]}) == ("billing", "tag:app")
+    assert rs({"tags": ["application:ledger"]})[0] == "ledger"
+    assert rs({"tags": ["dd-service:cart"]})[0] == "cart"
+    assert rs({"tags": [],
+               "query": "avg(last_5m):avg:lat{service:checkout} > 1"}) == \
+        ("checkout", "query")
+    assert rs({"tags": [], "name": "[web-store] high latency"}) == \
+        ("web-store", "name")
+    assert rs({"tags": [], "name": "[P1] disk full"})[0] is None   # priority, not svc
+    assert rs({"type": "composite", "query": "1234 && 5678", "tags": []})[0] is None
+    assert rs({"tags": []})[0] is None
+
+    # ---- team / git / repo extraction ----
+    assert da.team_from_monitor({"tags": ["team:core"]}) == "core"
+    assert da.team_from_monitor({"tags": ["owner:sre"]}) == "sre"
+    assert da.team_from_monitor(
+        {"tags": [], "message": "ping @team-payments now"}) == "payments"
+    gm = da.git_meta_from_monitor(
+        {"tags": ["git.commit.sha:abcdef0123456", "git.branch:main"]})
+    assert gm["sha"] == "abcdef0123456" and gm["branch"] == "main"
+    assert da.commit_url("https://github.com/o/r", "abc123") == \
+        "https://github.com/o/r/commit/abc123"
+    assert da.commit_url("https://bitbucket.org/o/r", "abc123").endswith(
+        "/commits/abc123")
+    assert da.repo_urls_from_tags(["git.repository_url:github.com/o/r"]) == \
+        ["https://github.com/o/r"]
+
+    # ---- catalog parser handles every schema version ----
+    v2_schema = {
+        "schema-version": "v2", "dd-service": "legacy", "team": "core",
+        "repos": [{"name": "Source", "url": "https://github.com/o/legacy"}],
+        "docs": [{"name": "Design", "url": "https://wiki/legacy"}]}
+    v2 = da.parse_service_definition({"attributes": {"schema": v2_schema}})
+    assert v2["links"]["repo"][0]["url"] == "https://github.com/o/legacy"
+    assert v2["links"]["doc"][0]["url"] == "https://wiki/legacy"
+    v3_schema = {
+        "apiVersion": "v3", "kind": "service",
+        "metadata": {"name": "checkout", "owner": "checkout-team",
+                     "links": [{"name": "Runbook", "type": "runbook",
+                                "url": "https://wiki/run"}]},
+        "datadog": {"codeLocations": [
+            {"repositoryURL": "https://github.com/o/checkout"}]},
+        "integrations": {"opsgenie": {"serviceURL": "https://og/x"}}}
+    v3 = da.parse_service_definition({"attributes": {"schema": v3_schema}})
+    assert v3["name"] == "checkout" and v3["team"] == "checkout-team"
+    assert v3["links"]["repo"][0]["url"] == "https://github.com/o/checkout"
+    assert v3["links"]["runbook"][0]["url"] == "https://wiki/run"
+    assert v3["oncall"][0]["label"] == "opsgenie"
+
+    # ---- deploy detection by CI/CD source (no keyword needed) ----
+    assert da.is_deploy_event({"source_type_name": "github", "title": "x"}, [])
+    assert da.is_deploy_event({"source_type_name": "jenkins"}, [])
+    assert not da.is_deploy_event(
+        {"source_type_name": "nagios", "title": "cpu high"}, ["deploy"])
+
+    # ---- _service_links: team fallback + commit link + resolution method ----
+    app.services = {}
+    app.deploys = {}
+    fmon = {"id": 71, "name": "[billing] errors", "overall_state": "Alert",
+            "options": {}, "tags": ["app:billing", "owner:fin-team",
+                                    "git.repository_url:github.com/o/billing",
+                                    "git.commit.sha:deadbeef999", "version:4.5"]}
+    fi = app._service_links(fmon)
+    assert fi["service"] == "billing" and fi["service_how"] == "tag:app"
+    assert fi["team"] == "fin-team"                       # from owner: tag
+    assert fi["links"]["repo"][0]["url"] == "https://github.com/o/billing"
+    assert fi["commit"] == "https://github.com/o/billing/commit/deadbeef999"
+
+    fitem = da.rumps.MenuItem("x")
+    app._add_service_section(fitem, fmon, 71)
+    panel = next(c for c in fitem.children
+                 if c and getattr(c, "title", "").startswith("🧭 billing"))
+    pl = [c.title for c in panel.children if c]
+    assert any("matched via tag:app" in t for t in pl), pl
+    assert any("version 4.5" in t and "deadbee" in t for t in pl), pl
+
+    # ---- unresolved monitor explains itself instead of a silent blank ----
+    bitem = da.rumps.MenuItem("y")
+    app._add_service_section(bitem, {"id": 72, "name": "orphan", "tags": [],
+                                     "overall_state": "Alert", "options": {}}, 72)
+    assert any("No service/repo found" in (getattr(c, "title", "") or "")
+               for c in bitem.children if c), \
+        [c.title for c in bitem.children if c]
+
 print("SMOKE TEST PASSED ✅")

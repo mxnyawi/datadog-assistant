@@ -158,7 +158,8 @@ DEFAULT_CONFIG = {
         "max_services_per_poll": 6,  # cap deploy-event queries per refresh
         "cache_seconds": 180,
         "show_on": ["Alert", "Warn", "No Data"],
-        "notify_correlation": True   # add the "🚀 deployed Nm before" line to alerts
+        "notify_correlation": True,  # add the "🚀 deployed Nm before" line to alerts
+        "show_unresolved_hint": True # tell you when a monitor has no service/repo
     },
     "digest_hour": None,                 # e.g. 9 = morning summary at 9am
     "jira": {
@@ -417,29 +418,85 @@ def fmt_ago(epoch):
 # Mining repo / deploy / runbook info out of Datadog's own data
 # --------------------------------------------------------------------------
 
-def service_from_monitor(m):
-    """The service a monitor watches: a `service:` tag, else the service
-    scope inside the query ('...{service:payments,env:prod}...')."""
-    for t in m.get("tags") or []:
+# Unified Service Tagging does NOT automatically tag monitors — a monitor
+# only carries service:/team: if a human or IaC added them, or the query
+# scopes by them. So we fall back through the tag keys Datadog auto-emits
+# (kube_*) and the custom keys teams actually use, then the query, then the
+# name. Order matters: most-canonical first.
+SERVICE_TAG_KEYS = [
+    "service", "kube_app_name", "kube_deployment", "kube_service",
+    "app", "application", "servicename", "service_name", "service-name",
+    "dd-service", "dd_service", "component", "kube_app_component",
+]
+TEAM_TAG_KEYS = ["team", "owner", "squad", "dd_team", "dd-team", "group"]
+REPO_TAG_KEYS = ["git.repository_url", "git_repository_url", "repository_url",
+                 "repository", "repo"]
+# leading "[token]" in a name is a service only if it isn't a priority/env tag
+_NAME_PREFIX_SKIP = {"p1", "p2", "p3", "p4", "p5", "prod", "production",
+                     "staging", "stage", "dev", "qa", "test", "uat", "sandbox",
+                     "critical", "warn", "warning", "info", "sev1", "sev2"}
+
+
+def _tag_value(tags, key):
+    pre = key + ":"
+    for t in tags or []:
         s = str(t)
-        if s.startswith("service:"):
-            return s.split(":", 1)[1]
-    mt = re.search(r"service:([a-zA-Z0-9._\-]+)", m.get("query") or "")
+        if s.startswith(pre):
+            return s[len(pre):]
+    return None
+
+
+def resolve_service(m):
+    """(service, how) via the realistic fallback ladder. Composite monitors
+    hold sub-monitor IDs in their query, so we don't parse a query for them."""
+    tags = m.get("tags") or []
+    for key in SERVICE_TAG_KEYS:
+        v = _tag_value(tags, key)
+        if v:
+            return v, ("tag" if key == "service" else f"tag:{key}")
+    if m.get("type") != "composite":
+        mt = re.search(r"[{,\s]service:([a-zA-Z0-9._\-/]+)", m.get("query") or "")
+        if mt:
+            return mt.group(1), "query"
+    mt = re.match(r"\s*[\[\(]([a-zA-Z0-9][a-zA-Z0-9._\-]{1,40})[\]\)]",
+                  m.get("name") or "")
+    if mt and mt.group(1).lower() not in _NAME_PREFIX_SKIP:
+        return mt.group(1), "name"
+    return None, None
+
+
+def service_from_monitor(m):
+    return resolve_service(m)[0]
+
+
+def team_from_monitor(m):
+    """Owning team: a team-ish tag, else an @team-<handle> in the message."""
+    for key in TEAM_TAG_KEYS:
+        v = _tag_value(m.get("tags"), key)
+        if v:
+            return v
+    mt = re.search(r"@team-([a-zA-Z0-9._\-]+)", m.get("message") or "")
     return mt.group(1) if mt else None
 
 
 def version_from_monitor(m):
-    for t in m.get("tags") or []:
-        s = str(t)
-        if s.startswith("version:"):
-            return s.split(":", 1)[1]
+    v = _tag_value(m.get("tags"), "version")
+    if v:
+        return v
     mt = re.search(r"version:([a-zA-Z0-9._\-]+)", m.get("query") or "")
     return mt.group(1) if mt else None
 
 
+def git_meta_from_monitor(m):
+    """commit sha + branch, if Source Code Integration tagged the monitor."""
+    tags = m.get("tags") or []
+    return {"sha": _tag_value(tags, "git.commit.sha"),
+            "branch": _tag_value(tags, "git.branch")}
+
+
 def normalize_repo_url(v):
-    """A repo from a tag may be 'github.com/o/r', 'git@github.com:o/r.git',
-    or a full URL — return a browser-openable https URL."""
+    """A repo from a tag may be 'github.com/o/r' (Datadog's normalized form),
+    'git@github.com:o/r.git', or a full URL — return a browser-openable URL."""
     v = (v or "").strip()
     if not v:
         return ""
@@ -453,15 +510,23 @@ def normalize_repo_url(v):
 def repo_urls_from_tags(tags):
     """git.repository_url / repository / repo tags → repo URLs."""
     out = []
-    for t in tags or []:
-        s = str(t)
-        for pre in ("git.repository_url:", "repository_url:",
-                    "repository:", "repo:"):
-            if s.startswith(pre):
-                url = normalize_repo_url(s[len(pre):])
-                if url:
-                    out.append(url)
+    for key in REPO_TAG_KEYS:
+        v = _tag_value(tags, key)
+        if v:
+            url = normalize_repo_url(v)
+            if url and url not in out:
+                out.append(url)
     return out
+
+
+def commit_url(repo_url, sha):
+    """Best-effort link to a commit on the common forge layouts."""
+    if not (repo_url and sha):
+        return None
+    host = urllib.parse.urlparse(repo_url).netloc
+    if "bitbucket" in host:
+        return f"{repo_url}/commits/{sha}"
+    return f"{repo_url}/commit/{sha}"          # github / gitlab / azure-ish
 
 
 _MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
@@ -513,47 +578,78 @@ _CATALOG_LINK_KIND = {
 }
 
 
+def _add_link(links, kind, label, url):
+    if url:
+        links[kind].append({"label": label or kind, "url": url})
+
+
 def parse_service_definition(item):
-    """One Software Catalog definition (`/api/v2/services/definitions` data[])
-    → {name, team, links:{repo/runbook/doc/dashboard/other}, oncall}."""
-    schema = ((item or {}).get("attributes") or {}).get("schema") or {}
-    name = schema.get("dd-service") or schema.get("name")
+    """One Software Catalog entry → {name, team, links{...}, oncall}. Handles
+    every schema Datadog has shipped: v2 (separate `repos[]`/`docs[]`), v2.1/
+    v2.2 (unified `links[]`), and the v3 entity model (`metadata.links`,
+    `metadata.owner`, `datadog.codeLocations`)."""
+    schema = ((item or {}).get("attributes") or {}).get("schema") or item or {}
+    is_v3 = str(schema.get("apiVersion") or "").startswith("v3") \
+        or isinstance(schema.get("metadata"), dict)
+    if is_v3:
+        meta = schema.get("metadata") or {}
+        name = meta.get("name") or schema.get("dd-service")
+        team = meta.get("owner") or schema.get("team")
+        raw_links = meta.get("links") or schema.get("links") or []
+        code_locs = ((schema.get("datadog") or {}).get("codeLocations")
+                     or schema.get("codeLocations") or [])
+    else:
+        name = schema.get("dd-service") or schema.get("name")
+        team = schema.get("team") or schema.get("dd-team")
+        raw_links = schema.get("links") or []
+        code_locs = schema.get("codeLocations") or []
     if not name:
         return None
     links = {"repo": [], "runbook": [], "doc": [], "dashboard": [], "other": []}
-    for ln in schema.get("links") or []:
-        url = ln.get("url")
-        if not url:
-            continue
+    for ln in raw_links:
         kind = _CATALOG_LINK_KIND.get((ln.get("type") or "").lower(), "other")
-        links[kind].append({"label": ln.get("name") or kind, "url": url})
-    for cl in schema.get("codeLocations") or []:     # schema v2.2+
-        url = cl.get("repositoryURL")
-        if url:
-            links["repo"].append({"label": "code", "url": url})
+        _add_link(links, kind, ln.get("name"), ln.get("url"))
+    for r in schema.get("repos") or []:              # v2 separate array
+        _add_link(links, "repo", (r.get("name") if isinstance(r, dict) else None),
+                  r.get("url") if isinstance(r, dict) else r)
+    for d in schema.get("docs") or []:               # v2 separate array
+        _add_link(links, "doc", (d.get("name") if isinstance(d, dict) else None),
+                  d.get("url") if isinstance(d, dict) else d)
+    for cl in code_locs:                             # v2.2 / v3
+        if isinstance(cl, dict):
+            _add_link(links, "repo", "code", cl.get("repositoryURL"))
     oncall = []
     integrations = schema.get("integrations") or {}
     for key in ("pagerduty", "opsgenie"):
         v = integrations.get(key)
-        url = None
         if isinstance(v, dict):
             url = v.get("service-url") or v.get("serviceURL") or v.get("url")
-        elif isinstance(v, str):
-            url = v
+        else:
+            url = v if isinstance(v, str) else None
         if url:
             oncall.append({"label": key, "url": url})
-    return {"name": name, "team": schema.get("team"),
-            "links": links, "oncall": oncall}
+    return {"name": name, "team": team, "links": links, "oncall": oncall}
+
+
+# Event sources Datadog attributes to CI/CD systems — a deploy event from any
+# of these counts even if its title doesn't say "deploy".
+DEPLOY_EVENT_SOURCES = {
+    "github", "github_apps", "gitlab", "bitbucket", "jenkins",
+    "amazon_codedeploy", "octopus_deploy", "octopusdeploy", "argocd",
+    "spinnaker", "harness", "circleci", "azure_devops", "deployment",
+}
 
 
 def is_deploy_event(e, keywords):
-    """Does this Datadog event look like a deployment? Match against the
-    title, text, tags, source and alert_type."""
+    """Treat an event as a deploy if it came from a known CI/CD source, or if
+    its title/text/tags/alert_type mention a deploy keyword."""
+    src = str(e.get("source_type_name") or e.get("source") or "").lower()
+    if src in DEPLOY_EVENT_SOURCES:
+        return True
     hay = " ".join([
         str(e.get("title") or ""), str(e.get("text") or ""),
         " ".join(str(t) for t in (e.get("tags") or [])),
-        str(e.get("source_type_name") or ""),
-        str(e.get("alert_type") or "")]).lower()
+        src, str(e.get("alert_type") or "")]).lower()
     return any(k.lower() in hay for k in keywords)
 
 
@@ -816,11 +912,13 @@ class DatadogClient:
 
     def get_service_definitions(self):
         """Software Catalog service definitions (paginated) — the canonical
-        home of a service's repo/runbook/docs/on-call links inside Datadog."""
+        home of a service's repo/runbook/docs/on-call links inside Datadog.
+        schema_version=v2.2 returns the unified `links[]` shape."""
         out, page = [], 0
         while True:
             data = self._request("GET", "/services/definitions",
-                                 params={"page[size]": 100, "page[number]": page},
+                                 params={"page[size]": 100, "page[number]": page,
+                                         "schema_version": "v2.2"},
                                  version="v2")
             batch = data.get("data") or []
             out.extend(batch)
@@ -1347,18 +1445,22 @@ class DatadogAssistant(rumps.App):
 
     def _service_links(self, m):
         """Aggregate every repo/runbook/doc/dashboard link Datadog knows for a
-        monitor — Software Catalog + tags + message — with no network call."""
+        monitor — Software Catalog + tags + message — with no network call.
+        Each source is a fallback so non-uniform monitors still surface what
+        they can."""
         scfg = self.cfg.get("service_context", {})
-        svc = service_from_monitor(m)
+        svc, how = resolve_service(m)
         links = {"repo": [], "runbook": [], "doc": [], "dashboard": [], "other": []}
         team, oncall = None, []
         if scfg.get("use_catalog", True) and svc:
-            entry = self.services.get(svc)
+            entry = self.services.get(svc) or self.services.get(svc.lower())
             if entry:
                 team = entry.get("team")
                 oncall = entry.get("oncall") or []
                 for k in links:
                     links[k].extend(entry["links"].get(k, []))
+        team = team or team_from_monitor(m)        # tag/@team fallback
+        git = git_meta_from_monitor(m)
         for url in repo_urls_from_tags(m.get("tags")):
             links["repo"].append({"label": "tag", "url": url})
         if scfg.get("use_message_links", True):
@@ -1373,8 +1475,13 @@ class DatadogAssistant(rumps.App):
                 seen.add(it["url"])
                 ded.append(it)
             links[k] = ded
-        return {"service": svc, "team": team, "oncall": oncall,
-                "links": links, "version": version_from_monitor(m)}
+        # a commit link from git.repository_url + git.commit.sha tags
+        commit = None
+        if git["sha"] and links["repo"]:
+            commit = commit_url(links["repo"][0]["url"], git["sha"])
+        return {"service": svc, "service_how": how, "team": team,
+                "oncall": oncall, "links": links,
+                "version": version_from_monitor(m), "git": git, "commit": commit}
 
     def _fetch_deploys(self, monitors):
         """Recent deploy events per firing service (cached + capped), each
@@ -2020,6 +2127,12 @@ class DatadogAssistant(rumps.App):
         dep = self.deploys.get(mid)
         has_links = any(info["links"].values()) or info["oncall"]
         if not info["service"] and not has_links:
+            # nothing resolved — say why, so non-uniform monitors aren't a
+            # silent blank (the user can then add a service:/team: tag)
+            if self.cfg.get("service_context", {}).get("show_unresolved_hint", True):
+                item.add(rumps.MenuItem(
+                    "🧭 No service/repo found — add a service: or "
+                    "git.repository_url: tag"))
             return
         if dep and dep.get("headline"):
             item.add(rumps.MenuItem(f"⚠️ {dep['headline']}",
@@ -2032,6 +2145,8 @@ class DatadogAssistant(rumps.App):
         sub = rumps.MenuItem(title)
         seen = set()
         links = info["links"]
+        if info.get("service") and info.get("service_how") not in (None, "tag"):
+            sub.add(rumps.MenuItem(f"   (matched via {info['service_how']})"))
 
         def add_links(emoji, bucket, label):
             for it in links.get(bucket, [])[:3]:
@@ -2040,8 +2155,17 @@ class DatadogAssistant(rumps.App):
                                        callback=self._make_opener(it["url"])))
 
         add_links("📦", "repo", "Repo")
-        if info.get("version"):
-            sub.add(rumps.MenuItem(f"🔖 version {info['version']}"))
+        git = info.get("git") or {}
+        if info.get("version") or git.get("sha"):
+            ver = info.get("version") or ""
+            sha = f" · {git['sha'][:7]}" if git.get("sha") else ""
+            brc = f" @ {git['branch']}" if git.get("branch") else ""
+            label = f"🔖 {('version ' + ver) if ver else 'commit'}{sha}{brc}"
+            if info.get("commit"):
+                sub.add(rumps.MenuItem(unique_title(label[:62], seen),
+                                       callback=self._make_opener(info["commit"])))
+            else:
+                sub.add(rumps.MenuItem(label[:62]))
         if dep and dep.get("events"):
             sub.add(rumps.MenuItem("🚀 Recent deploys"))
             for e in dep["events"][:4]:
