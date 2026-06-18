@@ -137,6 +137,29 @@ DEFAULT_CONFIG = {
         "match_tags": True,
         "exclusive": True            # also hide them from Alert/Warn/OK/… groups
     },
+    "service_context": {
+        # Surface the repo / deploy / runbook links Datadog ALREADY knows
+        # about for a firing monitor — no extra credentials. Three sources,
+        # all from the data we already hold or one cheap API each:
+        #   • the monitor's own tags (service:, git.repository_url:, version:)
+        #   • links embedded in the monitor message (Markdown + bare URLs)
+        #   • the Software Catalog service definition (repo/runbook/docs/on-call)
+        # plus recent deploy EVENTS for the service, flagged when one shipped
+        # just before the alert started.
+        "enabled": True,
+        "use_catalog": True,         # pull links from the Software Catalog
+        "use_message_links": True,   # scrape links out of the monitor message
+        "show_deploys": True,        # recent deploy events for the service
+        "deploy_event_sources": [],  # restrict to these event sources ([] = any)
+        "deploy_keywords": ["deploy", "deployment", "rollout", "released",
+                            "release", "shipped"],
+        "correlate_minutes": 120,    # flag a deploy within N min before the alert
+        "lookback_hours": 24,
+        "max_services_per_poll": 6,  # cap deploy-event queries per refresh
+        "cache_seconds": 180,
+        "show_on": ["Alert", "Warn", "No Data"],
+        "notify_correlation": True   # add the "🚀 deployed Nm before" line to alerts
+    },
     "digest_hour": None,                 # e.g. 9 = morning summary at 9am
     "jira": {
         "enabled": False,
@@ -381,6 +404,157 @@ def extract_metric_query(monitor_query):
         r"^[a-z0-9_]+\(last_[^)]*\):(.*?)\s*(?:[<>]=?|==|!=)\s*[-\d.]+\s*$",
         (monitor_query or "").strip())
     return mt.group(1).strip() if mt else ""
+
+
+def fmt_ago(epoch):
+    """'13m ago' / '2h 04m ago' / '3d 1h ago' from a unix timestamp."""
+    if not epoch:
+        return ""
+    return f"{fmt_duration(max(0, time.time() - epoch))} ago"
+
+
+# --------------------------------------------------------------------------
+# Mining repo / deploy / runbook info out of Datadog's own data
+# --------------------------------------------------------------------------
+
+def service_from_monitor(m):
+    """The service a monitor watches: a `service:` tag, else the service
+    scope inside the query ('...{service:payments,env:prod}...')."""
+    for t in m.get("tags") or []:
+        s = str(t)
+        if s.startswith("service:"):
+            return s.split(":", 1)[1]
+    mt = re.search(r"service:([a-zA-Z0-9._\-]+)", m.get("query") or "")
+    return mt.group(1) if mt else None
+
+
+def version_from_monitor(m):
+    for t in m.get("tags") or []:
+        s = str(t)
+        if s.startswith("version:"):
+            return s.split(":", 1)[1]
+    mt = re.search(r"version:([a-zA-Z0-9._\-]+)", m.get("query") or "")
+    return mt.group(1) if mt else None
+
+
+def normalize_repo_url(v):
+    """A repo from a tag may be 'github.com/o/r', 'git@github.com:o/r.git',
+    or a full URL — return a browser-openable https URL."""
+    v = (v or "").strip()
+    if not v:
+        return ""
+    if v.startswith("git@"):
+        v = v.replace(":", "/", 1).replace("git@", "https://", 1)
+    if not v.startswith(("http://", "https://")):
+        v = "https://" + v
+    return v[:-4] if v.endswith(".git") else v
+
+
+def repo_urls_from_tags(tags):
+    """git.repository_url / repository / repo tags → repo URLs."""
+    out = []
+    for t in tags or []:
+        s = str(t)
+        for pre in ("git.repository_url:", "repository_url:",
+                    "repository:", "repo:"):
+            if s.startswith(pre):
+                url = normalize_repo_url(s[len(pre):])
+                if url:
+                    out.append(url)
+    return out
+
+
+_MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+_BARE_URL = re.compile(r"https?://[^\s>)\]}\"']+")
+_REPO_HOSTS = ("github.com", "gitlab.com", "bitbucket.org", "dev.azure.com")
+
+
+def classify_link(label, url):
+    lbl = (label or "").lower()
+    u = (url or "").lower()
+    host = urllib.parse.urlparse(u).netloc
+    if any(h in host for h in _REPO_HOSTS) or host.startswith("git."):
+        return "repo"
+    if any(k in lbl for k in ("runbook", "playbook", "wiki", "confluence",
+                              "notion", "on-call", "oncall", "sop")):
+        return "runbook"
+    if "/dashboard" in u or "dashboard" in lbl:
+        return "dashboard"
+    if any(k in lbl for k in ("doc", "documentation", "readme")):
+        return "doc"
+    return "other"
+
+
+def extract_message_links(message):
+    """Links teams embed in the monitor message — Markdown [label](url) first
+    (the label helps us classify), then any remaining bare URLs."""
+    if not message:
+        return []
+    out, seen = [], set()
+    for mt in _MD_LINK.finditer(message):
+        label, url = mt.group(1).strip(), mt.group(2).strip()
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append({"label": label, "url": url, "kind": classify_link(label, url)})
+    for mt in _BARE_URL.finditer(message):
+        url = mt.group(0).rstrip(".,);")
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append({"label": url, "url": url, "kind": classify_link("", url)})
+    return out
+
+
+_CATALOG_LINK_KIND = {
+    "repo": "repo", "code": "repo", "source": "repo", "vcs": "repo",
+    "git": "repo", "runbook": "runbook", "doc": "doc",
+    "documentation": "doc", "docs": "doc", "dashboard": "dashboard",
+}
+
+
+def parse_service_definition(item):
+    """One Software Catalog definition (`/api/v2/services/definitions` data[])
+    → {name, team, links:{repo/runbook/doc/dashboard/other}, oncall}."""
+    schema = ((item or {}).get("attributes") or {}).get("schema") or {}
+    name = schema.get("dd-service") or schema.get("name")
+    if not name:
+        return None
+    links = {"repo": [], "runbook": [], "doc": [], "dashboard": [], "other": []}
+    for ln in schema.get("links") or []:
+        url = ln.get("url")
+        if not url:
+            continue
+        kind = _CATALOG_LINK_KIND.get((ln.get("type") or "").lower(), "other")
+        links[kind].append({"label": ln.get("name") or kind, "url": url})
+    for cl in schema.get("codeLocations") or []:     # schema v2.2+
+        url = cl.get("repositoryURL")
+        if url:
+            links["repo"].append({"label": "code", "url": url})
+    oncall = []
+    integrations = schema.get("integrations") or {}
+    for key in ("pagerduty", "opsgenie"):
+        v = integrations.get(key)
+        url = None
+        if isinstance(v, dict):
+            url = v.get("service-url") or v.get("serviceURL") or v.get("url")
+        elif isinstance(v, str):
+            url = v
+        if url:
+            oncall.append({"label": key, "url": url})
+    return {"name": name, "team": schema.get("team"),
+            "links": links, "oncall": oncall}
+
+
+def is_deploy_event(e, keywords):
+    """Does this Datadog event look like a deployment? Match against the
+    title, text, tags, source and alert_type."""
+    hay = " ".join([
+        str(e.get("title") or ""), str(e.get("text") or ""),
+        " ".join(str(t) for t in (e.get("tags") or [])),
+        str(e.get("source_type_name") or ""),
+        str(e.get("alert_type") or "")]).lower()
+    return any(k.lower() in hay for k in keywords)
 
 
 def unique_title(label, seen):
@@ -633,6 +807,34 @@ class DatadogClient:
         now = int(time.time())
         return self._request("GET", "/query", params={
             "from": now - window_minutes * 60, "to": now, "query": query})
+
+    def service_url(self, service):
+        return f"{self.app_base}/services/{urllib.parse.quote(service)}"
+
+    def event_url(self, event_id):
+        return f"{self.app_base}/event/event?id={event_id}"
+
+    def get_service_definitions(self):
+        """Software Catalog service definitions (paginated) — the canonical
+        home of a service's repo/runbook/docs/on-call links inside Datadog."""
+        out, page = [], 0
+        while True:
+            data = self._request("GET", "/services/definitions",
+                                 params={"page[size]": 100, "page[number]": page},
+                                 version="v2")
+            batch = data.get("data") or []
+            out.extend(batch)
+            if len(batch) < 100:
+                return out
+            page += 1
+
+    def get_events(self, tags, start, end, sources=None):
+        params = {"start": int(start), "end": int(end)}
+        if tags:
+            params["tags"] = ",".join(tags)
+        if sources:
+            params["sources"] = ",".join(sources)
+        return self._request("GET", "/events", params=params).get("events") or []
 
 
 def jira_label(s):
@@ -933,6 +1135,10 @@ class DatadogAssistant(rumps.App):
         self.dashboards = []
         self.enrich = {}             # monitor id -> {spark, now, crit}
         self.nodata_probe = {}       # monitor id -> "stopped" | "silent"
+        self.services = {}           # service name -> parsed Software Catalog entry
+        self.deploys = {}            # monitor id -> {events, headline, suspect_url}
+        self._deploy_cache = {}      # service -> (ts, events)  (shared across monitors)
+        self._svc_ts = 0             # last Software Catalog refresh
         self.state = load_state()    # persists jira tickets + digest date
         self._dash_ts = 0
         self.prev_states = {}        # id -> overall_state
@@ -1009,6 +1215,21 @@ class DatadogAssistant(rumps.App):
                         pass
                 if ctx.get("show_sparkline", True):
                     payload["enrich"] = self._fetch_enrichment(payload["monitors"])
+                scfg = self.cfg.get("service_context", {})
+                if scfg.get("enabled", True):
+                    if scfg.get("use_catalog", True) and \
+                            time.time() - self._svc_ts > 3600:
+                        try:
+                            defs = self.client.get_service_definitions()
+                            payload["services"] = {
+                                d["name"]: d for d in
+                                (parse_service_definition(x) for x in defs) if d}
+                            self._svc_ts = time.time()
+                        except Exception:
+                            pass  # key lacks catalog scope — links still come
+                                  # from tags + the monitor message
+                    if scfg.get("show_deploys", True):
+                        payload["deploys"] = self._fetch_deploys(payload["monitors"])
                 payload["nodata_probe"] = self._probe_no_data(payload["monitors"])
                 self.results.put(("data", payload))
         except urllib.error.HTTPError as e:
@@ -1033,6 +1254,10 @@ class DatadogAssistant(rumps.App):
                 if "dashboards" in payload:
                     self.dashboards = payload["dashboards"]
                 self.enrich = payload.get("enrich") or {}
+                if "services" in payload:
+                    self.services = payload["services"]
+                if "deploys" in payload:
+                    self.deploys = payload["deploys"]
                 # keep probe verdicts for monitors still in No Data, fold in
                 # the new ones (only a capped batch is probed per refresh)
                 nodata_ids = {m.get("id") for m in payload["monitors"]
@@ -1071,6 +1296,8 @@ class DatadogAssistant(rumps.App):
             for m in self.monitors))
         enr = tuple(sorted(
             (k, v.get("spark"), v.get("now")) for k, v in self.enrich.items()))
+        dep = tuple(sorted((k, v.get("sig")) for k, v in self.deploys.items()))
+        svc = tuple(sorted(self.services.keys()))
         inc = tuple((i.get("public_id"), i.get("title"), i.get("severity"))
                     for i in self.incidents)
         dash = tuple(d["title"] for d in self.dashboards)
@@ -1080,7 +1307,7 @@ class DatadogAssistant(rumps.App):
                   for m in self.monitors)
         bucket = int(time.time() // 300) if hot else 0
         return (self.last_error, time.time() < self.snooze_until,
-                mons, enr, inc, dash, bucket)
+                mons, enr, dep, svc, inc, dash, bucket)
 
     def _fetch_enrichment(self, monitors):
         """Live metric values + sparklines for the hottest alerting monitors."""
@@ -1111,6 +1338,109 @@ class DatadogAssistant(rumps.App):
             except Exception:
                 continue
         return out
+
+    # ---------------- service context: repos, deploys, runbooks ------------
+
+    def _alert_start(self, m):
+        dur = self._alert_duration(m)
+        return time.time() - dur if dur else None
+
+    def _service_links(self, m):
+        """Aggregate every repo/runbook/doc/dashboard link Datadog knows for a
+        monitor — Software Catalog + tags + message — with no network call."""
+        scfg = self.cfg.get("service_context", {})
+        svc = service_from_monitor(m)
+        links = {"repo": [], "runbook": [], "doc": [], "dashboard": [], "other": []}
+        team, oncall = None, []
+        if scfg.get("use_catalog", True) and svc:
+            entry = self.services.get(svc)
+            if entry:
+                team = entry.get("team")
+                oncall = entry.get("oncall") or []
+                for k in links:
+                    links[k].extend(entry["links"].get(k, []))
+        for url in repo_urls_from_tags(m.get("tags")):
+            links["repo"].append({"label": "tag", "url": url})
+        if scfg.get("use_message_links", True):
+            for ln in extract_message_links(m.get("message")):
+                bucket = ln["kind"] if ln["kind"] in links else "other"
+                links[bucket].append({"label": ln["label"], "url": ln["url"]})
+        for k in links:                       # dedupe by url, keep order
+            seen, ded = set(), []
+            for it in links[k]:
+                if it["url"] in seen:
+                    continue
+                seen.add(it["url"])
+                ded.append(it)
+            links[k] = ded
+        return {"service": svc, "team": team, "oncall": oncall,
+                "links": links, "version": version_from_monitor(m)}
+
+    def _fetch_deploys(self, monitors):
+        """Recent deploy events per firing service (cached + capped), each
+        tagged with a correlation headline when it shipped before the alert."""
+        scfg = self.cfg.get("service_context", {})
+        show_on = set(scfg.get("show_on", ["Alert", "Warn", "No Data"]))
+        ttl = int(scfg.get("cache_seconds", 180))
+        budget = int(scfg.get("max_services_per_poll", 6))
+        lookback = int(scfg.get("lookback_hours", 24)) * 3600
+        keywords = scfg.get("deploy_keywords", [])
+        sources = scfg.get("deploy_event_sources") or None
+        now = time.time()
+        targets = [(m, service_from_monitor(m)) for m in monitors
+                   if m.get("overall_state") in show_on]
+        targets = [(m, s) for m, s in targets if s]
+        targets.sort(key=lambda ms: parse_priority(ms[0]) or 9)
+
+        out = {}
+        for m, svc in targets:
+            cached = self._deploy_cache.get(svc)
+            if not (cached and now - cached[0] < ttl):
+                if budget <= 0 and not cached:
+                    continue
+                if budget > 0:
+                    try:
+                        evs = self.client.get_events(
+                            [f"service:{svc}"], now - lookback, now, sources)
+                    except Exception:
+                        evs = []
+                    parsed = [{"title": (e.get("title")
+                                         or (e.get("text") or "")[:80] or "deploy"),
+                               "when": e.get("date_happened"),
+                               "url": self.client.event_url(e.get("id"))}
+                              for e in evs if is_deploy_event(e, keywords)]
+                    parsed.sort(key=lambda x: x["when"] or 0, reverse=True)
+                    cached = (now, parsed[:6])
+                    self._deploy_cache[svc] = cached
+                    budget -= 1
+            evs = cached[1] if cached else []
+            out[m.get("id")] = self._deploy_context_for(m, svc, evs)
+        live = {s for _, s in targets}
+        self._deploy_cache = {k: v for k, v in self._deploy_cache.items()
+                              if k in live}
+        return out
+
+    def _deploy_context_for(self, m, svc, events):
+        scfg = self.cfg.get("service_context", {})
+        window = int(scfg.get("correlate_minutes", 120)) * 60
+        start = self._alert_start(m)
+        headline, suspect = None, self.client.service_url(svc)
+        for e in events:
+            w = e.get("when")
+            if start and w and 0 <= start - w <= window:
+                mins = int((start - w) / 60)
+                headline = (f"🚀 Deploy “{e['title'][:40]}” "
+                            f"{mins}m before this alert")
+                suspect = e.get("url") or suspect
+                break
+        sig = "|".join([svc, headline or "",
+                        str(events[0]["when"]) if events else ""])
+        return {"service": svc, "events": events, "headline": headline,
+                "suspect_url": suspect, "sig": sig}
+
+    def _deploy_headline(self, mid):
+        ctx = self.deploys.get(mid)
+        return ctx.get("headline") if ctx else None
 
     def _probe_no_data(self, monitors):
         """For No Data metric monitors: query the metric's recent history.
@@ -1291,14 +1621,21 @@ class DatadogAssistant(rumps.App):
                 sound = (rule.get("sound_name", ncfg.get("sound_name"))
                          if ncfg.get("sound", True) else None)
                 ctx = self._context_line(m)
+                dep_hint = (self._deploy_headline(mid)
+                            if self.cfg.get("service_context", {}).get(
+                                "notify_correlation", True) else None)
                 if style in ("banner", "both"):
                     banner_body = f"{body} — {ctx}" if ctx else body
+                    if dep_hint:
+                        banner_body += f"\n{dep_hint}"
                     notify_banner(title, "Datadog Assistant 🐶", banner_body, sound)
                 if style in ("modal", "both") and state == "Alert":
                     modal_body = body + (f"\n{ctx}" if ctx else "")
                     grps = self._triggered_groups(m)
                     if grps:
                         modal_body += "\n" + ", ".join(grps[:5])
+                    if dep_hint:
+                        modal_body += f"\n{dep_hint}"
                     notify_modal(title, modal_body, url)
                 if sound and style == "modal":
                     play_sound(sound)
@@ -1645,6 +1982,7 @@ class DatadogAssistant(rumps.App):
                     item.add(rumps.MenuItem(f"      {gname}"))
                 if len(grps) > maxg:
                     item.add(rumps.MenuItem(f"      … +{len(grps) - maxg} more"))
+            self._add_service_section(item, m, mid)
             item.add(None)
 
         item.add(rumps.MenuItem("🔗 Open in Datadog", callback=self._make_opener(url)))
@@ -1671,6 +2009,58 @@ class DatadogAssistant(rumps.App):
         item.add(rumps.MenuItem("🗑 Delete monitor…",
                                 callback=self._make_deleter(mid, dd_name)))
         return item
+
+    def _add_service_section(self, item, m, mid):
+        """The 🧭 panel: a prime-suspect deploy headline (if one shipped just
+        before the alert) + a submenu of repo / deploys / runbook / docs /
+        dashboard / on-call links, all sourced from Datadog itself."""
+        if not self.cfg.get("service_context", {}).get("enabled", True):
+            return
+        info = self._service_links(m)
+        dep = self.deploys.get(mid)
+        has_links = any(info["links"].values()) or info["oncall"]
+        if not info["service"] and not has_links:
+            return
+        if dep and dep.get("headline"):
+            item.add(rumps.MenuItem(f"⚠️ {dep['headline']}",
+                                    callback=self._make_opener(dep.get("suspect_url"))))
+        item.add(self._service_submenu(info, dep))
+
+    def _service_submenu(self, info, dep):
+        svc = info["service"] or "service"
+        title = f"🧭 {svc}" + (f" · {info['team']}" if info.get("team") else "")
+        sub = rumps.MenuItem(title)
+        seen = set()
+        links = info["links"]
+
+        def add_links(emoji, bucket, label):
+            for it in links.get(bucket, [])[:3]:
+                t = f"{emoji} {label}: {it['label']}"[:62]
+                sub.add(rumps.MenuItem(unique_title(t, seen),
+                                       callback=self._make_opener(it["url"])))
+
+        add_links("📦", "repo", "Repo")
+        if info.get("version"):
+            sub.add(rumps.MenuItem(f"🔖 version {info['version']}"))
+        if dep and dep.get("events"):
+            sub.add(rumps.MenuItem("🚀 Recent deploys"))
+            for e in dep["events"][:4]:
+                t = f"   🚀 {e['title']} · {fmt_ago(e['when'])}"[:62]
+                sub.add(rumps.MenuItem(unique_title(t, seen),
+                                       callback=self._make_opener(e["url"])))
+        add_links("📕", "runbook", "Runbook")
+        add_links("📖", "doc", "Docs")
+        add_links("📊", "dashboard", "Dashboard")
+        for oc in info.get("oncall", [])[:2]:
+            sub.add(rumps.MenuItem(unique_title(f"📟 On-call: {oc['label']}", seen),
+                                   callback=self._make_opener(oc["url"])))
+        add_links("🔗", "other", "Link")
+        if info["service"]:
+            sub.add(None)
+            sub.add(rumps.MenuItem("🔗 Open in Software Catalog",
+                                   callback=self._make_opener(
+                                       self.client.service_url(info["service"]))))
+        return sub
 
     def _prefs_menu(self):
         prefs = rumps.MenuItem("⚙️ Preferences")
@@ -1717,6 +2107,10 @@ class DatadogAssistant(rumps.App):
                              callback=self._toggle_dlq)
         dlq.state = 1 if self.cfg.get("dlq", {}).get("enabled", True) else 0
         prefs.add(dlq)
+        svc = rumps.MenuItem("🧭 Service & deploy context",
+                             callback=self._toggle_service_context)
+        svc.state = 1 if self.cfg.get("service_context", {}).get("enabled", True) else 0
+        prefs.add(svc)
         inc = rumps.MenuItem("🔥 Show incidents", callback=self._toggle_incidents)
         inc.state = 1 if self.cfg["context"].get("show_incidents", True) else 0
         prefs.add(inc)
@@ -1911,6 +2305,13 @@ class DatadogAssistant(rumps.App):
 
     def _toggle_dlq(self, _):
         self._toggle("dlq", "enabled")
+
+    def _toggle_service_context(self, _):
+        on = not self.cfg.get("service_context", {}).get("enabled", True)
+        self._toggle("service_context", "enabled")
+        if on:
+            self._svc_ts = 0          # force a catalog refresh on the next poll
+            self._poll_tick(None)
 
     def _toggle_incidents(self, _):
         self._toggle("context", "show_incidents")

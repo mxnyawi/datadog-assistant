@@ -476,4 +476,101 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
     assert any("🔴 ALERTING (2)" == t for t in titles), titles
     app._toggle_dlq(None)  # restore
 
+    # ---- Datadog-native service context: parsers ----
+    assert da.service_from_monitor(
+        {"tags": ["env:prod", "service:payments"]}) == "payments"
+    assert da.service_from_monitor(
+        {"query": "avg(last_5m):avg:lat{service:checkout,env:prod} > 1"}) == \
+        "checkout"
+    assert da.service_from_monitor({"tags": [], "query": ""}) is None
+    assert da.version_from_monitor({"tags": ["version:1.2.3"]}) == "1.2.3"
+    assert da.normalize_repo_url("github.com/o/r") == "https://github.com/o/r"
+    assert da.normalize_repo_url("git@github.com:o/r.git") == "https://github.com/o/r"
+    assert da.repo_urls_from_tags(
+        ["git.repository_url:github.com/o/r", "env:prod"]) == \
+        ["https://github.com/o/r"]
+    assert da.classify_link("Runbook", "https://wiki.acme/x") == "runbook"
+    assert da.classify_link("", "https://github.com/o/r") == "repo"
+    assert da.classify_link(
+        "Board", "https://app.datadoghq.com/dashboard/abc") == "dashboard"
+    mlinks = da.extract_message_links(
+        "Check [Runbook](https://wiki.acme/run) and https://github.com/o/r @pd")
+    kinds = {l["kind"] for l in mlinks}
+    assert "runbook" in kinds and "repo" in kinds, mlinks
+    assert all(l["url"].startswith("http") for l in mlinks)  # no @-handles
+
+    svc_def = da.parse_service_definition({"attributes": {"schema": {
+        "dd-service": "payments", "team": "core-pay",
+        "links": [
+            {"name": "Source", "type": "repo",
+             "url": "https://github.com/o/payments"},
+            {"name": "Runbook", "type": "runbook", "url": "https://wiki/r"},
+            {"name": "Board", "type": "dashboard", "url": "https://dd/dash/1"}],
+        "integrations": {"pagerduty": {"service-url": "https://pd/svc"}},
+        "codeLocations": [
+            {"repositoryURL": "https://github.com/o/payments-lib"}]}}})
+    assert svc_def["name"] == "payments" and svc_def["team"] == "core-pay"
+    assert len(svc_def["links"]["repo"]) == 2          # link + codeLocation
+    assert svc_def["links"]["runbook"][0]["url"] == "https://wiki/r"
+    assert svc_def["oncall"][0]["label"] == "pagerduty"
+    assert da.is_deploy_event({"title": "Deployed payments v2"}, ["deploy"])
+    assert not da.is_deploy_event({"title": "cpu high"}, ["deploy"])
+
+    # ---- _service_links: catalog + tags + message, deduped ----
+    app.services = {"payments": svc_def}
+    smon = {"id": 901, "name": "checkout latency", "overall_state": "Alert",
+            "options": {}, "tags": ["service:payments", "version:9.9"],
+            "message": "Repo: https://github.com/o/payments"}
+    info = app._service_links(smon)
+    assert info["service"] == "payments" and info["team"] == "core-pay"
+    assert info["version"] == "9.9"
+    repo_urls = [r["url"] for r in info["links"]["repo"]]
+    assert repo_urls.count("https://github.com/o/payments") == 1, repo_urls  # deduped
+    assert "https://github.com/o/payments-lib" in repo_urls                  # codeLocation
+    assert info["links"]["dashboard"][0]["url"] == "https://dd/dash/1"       # catalog
+    assert info["oncall"][0]["url"] == "https://pd/svc"
+
+    # ---- deploy events + correlation ----
+    smon["state"] = {"groups": {"h": {"status": "Alert",
+                                      "last_triggered_ts": NOW - 1380}}}
+    astart = time.time() - app._alert_duration(smon)
+    app.client.get_events = lambda tags, start, end, sources=None: [
+        {"id": 55, "title": "Deployed payments abc123",
+         "date_happened": astart - 600, "tags": ["service:payments"]},
+        {"id": 56, "title": "unrelated note", "date_happened": NOW - 50}]
+    dmap = app._fetch_deploys([smon])
+    dctx = dmap[901]
+    assert "Deploy" in dctx["headline"] and "before this alert" in dctx["headline"]
+    assert len(dctx["events"]) == 1, dctx          # only the deploy kept
+    assert dctx["suspect_url"].endswith("id=55"), dctx
+
+    # ---- render: 🧭 panel + inline suspect headline ----
+    app.deploys = dmap
+    app.monitors = [smon]
+    app._rebuild_menu()
+    mi = next(i for i in app.menu
+              if i and getattr(i, "title", "").startswith("🔴 checkout"))
+    labels = [c.title for c in mi.children if c]
+    assert any("Deploy" in t and "before this alert" in t for t in labels), labels
+    panel = next(c for c in mi.children
+                 if c and getattr(c, "title", "").startswith("🧭 payments"))
+    pl = [c.title for c in panel.children if c]
+    assert any("Repo:" in t for t in pl), pl
+    assert any("version 9.9" in t for t in pl), pl
+    assert any("Recent deploys" in t for t in pl), pl
+    assert any("Runbook:" in t for t in pl), pl
+    assert any("On-call: pagerduty" in t for t in pl), pl
+    assert any("Software Catalog" in t for t in pl), pl
+
+    # ---- deploy hint rides along on the alert notification ----
+    app.deploys = {902: {"headline": "🚀 Deploy “x” 4m before this alert",
+                         "sig": "x"}}
+    app.cfg["service_context"]["notify_correlation"] = True
+    app.snooze_until = 0
+    notifications.clear()
+    app.prev_states[902] = "OK"
+    app._handle_new_monitors([{"id": 902, "name": "svc", "overall_state": "Alert",
+                               "options": {}}])
+    assert any("Deploy" in m for k, t, m in notifications), notifications
+
 print("SMOKE TEST PASSED ✅")

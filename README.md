@@ -63,6 +63,7 @@ alerts, sparklines, incidents, Jira, snooze and more, no config editing needed.
 | 📊 | Your real dashboards auto-populated into Quick Links |
 | 🌅 | Optional daily digest notification (`digest_hour`) |
 | 🎫 | **Jira integration** — create tickets per alert from the menu, or auto-create for P1/P2, with open-ticket dedupe |
+| 🧭 | **Service context (repos & deploys, from Datadog)** — surfaces the repo, runbook, docs, dashboard and on-call links Datadog already holds for a firing monitor (Software Catalog + the monitor's own tags + links in its message), plus recent **deploy events** — flagging any that shipped *just before* the alert (`🚀 Deploy "…" 12m before this alert`). No GitHub credentials needed |
 
 ## 🚀 Install (on your Mac)
 
@@ -291,12 +292,55 @@ Every ticket gets a `dd-monitor-<id>` label; with `dedupe: true` a new ticket
 is skipped while one for that monitor is still open. Each alerting monitor's
 submenu shows **🎫 Create Jira ticket** (and **🎫 Open OPS-123** once one exists).
 
+## 🧭 Service context — repos & deploys, straight from Datadog
+
+When a monitor fires, the first question is *"what is this service and did we
+just deploy?"* Datadog already holds the answer — this surfaces it on the alert
+with **no extra credentials** (it reuses your Datadog connection). On every
+firing monitor you get a **🧭 service** submenu with the **repo, runbook, docs,
+dashboard and on-call** links, plus recent **deploys**, and an inline suspect
+line when something shipped right before:
+
+> ⚠️ 🚀 Deploy "release v2.3.1" 12m before this alert
+
+(that line is also appended to the notification).
+
+### Where each piece comes from
+The repo/deploy/link data is mined from three Datadog sources, in this order:
+
+1. **The monitor's own tags** — `service:`, `version:`, and
+   `git.repository_url:` / `repository:` (Datadog's source-code metadata) give
+   the service, the deployed version, and the repo with zero setup.
+2. **Links in the monitor message** — `[Runbook](…)`, repo URLs, dashboard
+   links teams already paste into the alert message are scraped and classified
+   (repo / runbook / docs / dashboard).
+3. **The Software Catalog** (`/api/v2/services/definitions`) — the canonical
+   home of a service's `links` (repo/runbook/doc/dashboard),
+   `codeLocations.repositoryURL`, owning `team`, and PagerDuty/Opsgenie. The
+   monitor's `service:` tag resolves to its definition.
+
+**Deploys** come from the **Events API** (`tags:service:<svc>`), filtered to
+deploy-like events and correlated to when the alert started.
+
+### Requirements & tuning
+- Your Datadog key/OAuth needs **`events_read`** (deploys) and the
+  **service catalog read** scope (catalog links). If either is missing the app
+  **degrades gracefully** — tags + message links always work with just
+  `monitors_read`.
+- Toggle live via **⚙️ Preferences → 🧭 Service & deploy context**.
+- `service_context` config: `correlate_minutes` (suspect window),
+  `lookback_hours`, `deploy_keywords` (what counts as a deploy event),
+  `deploy_event_sources` (restrict to specific event sources), `show_on`,
+  `notify_correlation`, and the `cache_seconds` / `max_services_per_poll`
+  rate-limit guards.
+
+Everything is **read-only**.
+
 ## 🗺 Roadmap ideas (API already supports these)
 
 - 🪵 Recent error logs per alerting service (Logs Search API)
 - 🎯 SLO error-budget section (SLO API)
 - 🌐 Failing Synthetics checks
-- 📰 Event stream (deploys correlated with alerts)
 - 🖥 Host up/down counts, 💸 usage/cost watch
 
 ## 🛡 macOS hardening (built in)

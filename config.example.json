@@ -67,6 +67,20 @@
     "match_tags": true,
     "exclusive": true
   },
+  "service_context": {
+    "enabled": true,
+    "use_catalog": true,
+    "use_message_links": true,
+    "show_deploys": true,
+    "deploy_event_sources": [],
+    "deploy_keywords": ["deploy", "deployment", "rollout", "released", "release", "shipped"],
+    "correlate_minutes": 120,
+    "lookback_hours": 24,
+    "max_services_per_poll": 6,
+    "cache_seconds": 180,
+    "show_on": ["Alert", "Warn", "No Data"],
+    "notify_correlation": true
+  },
   "digest_hour": 9,
   "jira": {
     "enabled": false,
