@@ -63,6 +63,7 @@ alerts, sparklines, incidents, Jira, snooze and more, no config editing needed.
 | 📊 | Your real dashboards auto-populated into Quick Links |
 | 🌅 | Optional daily digest notification (`digest_hour`) |
 | 🎫 | **Jira integration** — create tickets per alert from the menu, or auto-create for P1/P2, with open-ticket dedupe |
+| 🐙 | **GitHub "what changed"** — one-click **OAuth** (log in & approve in the browser). Maps each monitor to its repo — manually, by tag/`repo_map`, or by **code-searching GitHub for the monitor's definition** (monitors-as-code) — then shows recent **deploys, releases, failing CI, and commits** on the alert. Flags anything that shipped *just before* it started (`🚀 Deployed to production 12m before this alert`) and rides that hint into the notification |
 
 ## 🚀 Install (on your Mac)
 
@@ -291,12 +292,80 @@ Every ticket gets a `dd-monitor-<id>` label; with `dedupe: true` a new ticket
 is skipped while one for that monitor is still open. Each alerting monitor's
 submenu shows **🎫 Create Jira ticket** (and **🎫 Open OPS-123** once one exists).
 
+## 🐙 GitHub "what changed" (debug the cause, not just the symptom)
+
+When a monitor fires, the first question is always *"did we just ship
+something?"* This pulls the answer onto the alert itself — recent **deploys**,
+the **latest release**, **failing CI**, and **recent commits** for that
+service — and calls out anything that landed in the minutes *before* the alert
+started:
+
+> ⚠️ 🚀 Deployed to production 12m before this alert
+
+That same line is appended to the notification, so you often know the likely
+cause before you even open the menu.
+
+### Connect (OAuth — the easy way)
+**Preferences → 🔗 Connect GitHub** → your browser opens → **log in & approve** →
+done. The access token is stored in the macOS **Keychain**; the app never sees
+your password and only reads.
+
+One-time prep: GitHub needs an **OAuth App** (no public client can hold a
+secret safely). Create one at **GitHub → Settings → Developer settings → OAuth
+Apps → New OAuth App** with **Authorization callback URL** exactly:
+
+```
+http://localhost:8919/callback
+```
+
+Paste its **Client ID** and **Client Secret** the first time you connect; after
+that, **🔗 Reconnect GitHub** goes straight to the browser. GitHub Enterprise is
+supported — the wizard asks for your host (`https://your-host/api/v3`) and the
+OAuth URLs follow it.
+
+> **Prefer a token?** **🐙 GitHub settings (token / org)…** takes a PAT instead
+> — Classic (`repo`, + `workflow` for Actions) or fine-grained (*Contents*,
+> *Deployments*, *Actions* = Read). Resolved from the Keychain, `token_cmd`
+> (password manager), or a `GITHUB_TOKEN` env var.
+
+### How a monitor finds its repo (first match wins)
+1. **Manual link** — the **🐙 Link GitHub repo…** action on any monitor
+   (stored locally in `state.json`, like renames). Zero config, per-monitor.
+2. **`repo_map`** — match a monitor by a `service:` tag, *any* tag substring,
+   or a **name** substring → `owner/repo`.
+3. **`default_org` + tag** — a `service:payments` (or `repo:`/`app:`) tag
+   resolves to `<default_org>/payments` automatically; a `repo:owner/name`
+   tag is used as-is.
+4. **🔍 Auto-detect (code search)** — monitors are usually committed *as code*
+   (Terraform `datadog_monitor`, monitors-as-YAML, the Datadog provider…), so
+   the app **code-searches GitHub for the monitor's name** (then its id, then
+   its metric), scoped to `default_org`, and uses the repo that defines it.
+   Results are cached in `state.json` (hits re-confirmed weekly, misses retried
+   after a few hours) and capped per refresh. Auto-detected repos show a
+   **🔍 auto-detected** badge with a one-click **✅ pin this repo** to confirm.
+
+### Tuning (`github` block)
+- **`deploy_environments`** — which deploy environments to surface (default
+  `production`, `prod`).
+- **`correlate_minutes`** — how far before the alert a change still counts as a
+  suspect (default 120).
+- **`lookback_hours`** / **`max_items`** — history window and how many
+  commits/CI runs to list.
+- **`show_on`** — which states get a panel (default Alert/Warn/No Data).
+- **`notify_correlation`** — include the suspect line in the alert popup.
+- **`auto_discover`** + **`max_discover_per_poll`** / **`discover_*_ttl_hours`**
+  — toggle and rate-limit the code-search repo detection.
+- **`cache_seconds`** / **`max_repos_per_poll`** — read-side guards so large
+  orgs never blow the GitHub hourly rate limit (repo data is cached and the
+  number of repos queried per refresh is capped).
+
+Everything is **read-only** — the app never writes to your repos.
+
 ## 🗺 Roadmap ideas (API already supports these)
 
 - 🪵 Recent error logs per alerting service (Logs Search API)
 - 🎯 SLO error-budget section (SLO API)
 - 🌐 Failing Synthetics checks
-- 📰 Event stream (deploys correlated with alerts)
 - 🖥 Host up/down counts, 💸 usage/cost watch
 
 ## 🛡 macOS hardening (built in)

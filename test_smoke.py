@@ -476,4 +476,161 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
     assert any("🔴 ALERTING (2)" == t for t in titles), titles
     app._toggle_dlq(None)  # restore
 
+    # ---- GitHub: service→repo resolver ----
+    app.cfg["github"]["default_org"] = ""
+    app.cfg["github"]["repo_map"] = {"service:billing": "myorg/billing",
+                                     "checkout": "myorg/checkout"}
+    app.state.pop("repos", None)
+    assert app._repo_for({"id": 2, "tags": ["service:billing"]}) == "myorg/billing"
+    assert app._repo_for({"id": 3, "name": "Checkout p95"}) == "myorg/checkout"
+    assert app._repo_for({"id": 4, "tags": ["repo:acme/widgets"]}) == "acme/widgets"
+    assert app._repo_for({"id": 5, "name": "nothing", "tags": []}) is None
+    app.cfg["github"]["default_org"] = "myorg"
+    assert app._repo_for({"id": 6, "tags": ["service:payments"]}) == "myorg/payments"
+    # an explicit per-monitor link beats every mapping rule
+    app.state.setdefault("repos", {})["2"] = "myorg/override"
+    assert app._repo_for({"id": 2, "tags": ["service:billing"]}) == "myorg/override"
+    app.state["repos"].pop("2")
+
+    # ---- GitHub: correlation + menu render ----
+    gmon = {"id": 1, "name": "checkout latency", "overall_state": "Alert",
+            "tags": ["service:payments"], "options": {},
+            "state": {"groups": {"host:a": {"status": "Alert",
+                                            "last_triggered_ts": NOW - 1380}}}}
+    app.cfg["github"].update({"enabled": True, "token": "x",
+                              "default_org": "myorg", "repo_map": {}})
+    app.github = da.GitHubClient(app.cfg["github"])
+    assert app.github.configured()
+    assert app.github.web_base() == "https://github.com"
+    astart = time.time() - app._alert_duration(gmon)
+    app.github.recent_deployments = lambda repo, envs, limit=10: [
+        {"env": "production", "ref": "main", "sha": "abc1234", "creator": "alice",
+         "when": astart - 600, "state": "success",
+         "url": "https://github.com/myorg/payments/deployments"}]
+    app.github.latest_release = lambda repo: {
+        "tag": "v2.3.1", "name": "v2.3.1", "when": NOW - 7200,
+        "url": "https://github.com/myorg/payments/releases/tag/v2.3.1"}
+    app.github.recent_runs = lambda repo, since, limit=4: [
+        {"name": "deploy", "status": "completed", "conclusion": "success",
+         "branch": "main", "event": "push", "when": NOW - 800,
+         "url": "https://github.com/x/runs/1"}]
+    app.github.recent_commits = lambda repo, since, limit=4: [
+        {"sha": "abc1234", "msg": "bump timeout", "author": "alice",
+         "when": astart - 600, "url": "https://github.com/x/commit/abc1234"}]
+
+    app.monitors = [gmon]
+    ghmap = app._fetch_github([gmon])
+    ctx = ghmap[1]
+    assert "Deployed to production" in ctx["headline"], ctx
+    assert "before this alert" in ctx["headline"], ctx
+    assert ctx["repo"] == "myorg/payments", ctx
+    assert ctx["suspect_url"].endswith("/deployments"), ctx
+
+    app.gh = ghmap
+    app._rebuild_menu()
+    mi = next(i for i in app.menu
+              if i and getattr(i, "title", "").startswith("🔴 checkout"))
+    labels = [c.title for c in mi.children if c]
+    assert any("Deployed to production" in t for t in labels), labels
+    ghsub = next(c for c in mi.children
+                 if c and getattr(c, "title", "").startswith("🐙 myorg/payments"))
+    gl = [c.title for c in ghsub.children if c]
+    assert any("Recent deploys" in t for t in gl), gl
+    assert any("production" in t and "abc1234" in t for t in gl), gl
+    assert any("v2.3.1" in t for t in gl), gl
+    assert any("bump timeout" in t for t in gl), gl
+    # gh signature is part of the fingerprint -> menu repaints on new gh data
+    assert ctx["sig"] in str(app._menu_fingerprint())
+
+    # everything older than the correlation window -> NO scary headline,
+    # but the panel (deploys/commits) still renders for manual inspection
+    old = NOW - 5 * 86400
+    app.github.recent_deployments = lambda repo, envs, limit=10: [
+        {"env": "production", "ref": "main", "sha": "old0000", "creator": "bob",
+         "when": old, "state": "success", "url": "https://x/d"}]
+    app.github.latest_release = lambda repo: {
+        "tag": "v1.0", "name": "v1.0", "when": old, "url": "https://x/r"}
+    app.github.recent_runs = lambda repo, since, limit=4: []
+    app.github.recent_commits = lambda repo, since, limit=4: [
+        {"sha": "old0000", "msg": "ancient", "author": "bob",
+         "when": old, "url": "https://x/c"}]
+    app._gh_cache.clear()
+    ctx2 = app._fetch_github([gmon])[1]
+    assert ctx2["headline"] is None, ctx2
+    assert ctx2["raw"]["deploys"], ctx2  # data still present
+
+    # ---- GitHub: correlation hint rides along on the alert notification ----
+    app.gh = {77: {"headline": "🚀 Deployed to production 5m before this alert",
+                   "sig": "x", "repo": "myorg/x", "raw": {}}}
+    app.cfg["github"]["notify_correlation"] = True
+    app.snooze_until = 0
+    notifications.clear()
+    app.prev_states[77] = "OK"
+    app._handle_new_monitors([{"id": 77, "name": "svc", "overall_state": "Alert",
+                               "options": {}}])
+    assert any("Deployed to production" in m for k, t, m in notifications), \
+        notifications
+
+    # ---- GitHub OAuth: URLs, mode, bearer, configured ----
+    ghc = da.GitHubClient({"auth": "oauth", "api_base": "https://api.github.com"})
+    assert ghc.auth_mode() == "oauth"
+    assert ghc.oauth_authorize_url() == "https://github.com/login/oauth/authorize"
+    assert ghc.oauth_token_url() == "https://github.com/login/oauth/access_token"
+    ghe = da.GitHubClient({"auth": "oauth",
+                           "api_base": "https://ghe.acme.com/api/v3"})
+    assert ghe.web_base() == "https://ghe.acme.com", ghe.web_base()
+    assert ghe.oauth_authorize_url() == \
+        "https://ghe.acme.com/login/oauth/authorize"
+    # non-expiring OAuth token from the Keychain blob
+    ghc._oauth_blob = lambda: {"access_token": "gho_live"}
+    assert ghc.configured() is True
+    assert ghc._bearer() == "gho_live"
+    # token mode is unaffected and still works
+    tc = da.GitHubClient({"auth": "token", "token": "pat_x"})
+    assert tc.configured() and tc._bearer() == "pat_x"
+    assert da.GitHubClient({"auth": "oauth"}).configured() is False
+
+    # ---- GitHub auto-discovery: code-search a monitor → repo ----
+    app.cfg["github"].update({"enabled": True, "auth": "token", "token": "x",
+                              "default_org": "myorg", "repo_map": {},
+                              "auto_discover": True})
+    app.github = da.GitHubClient(app.cfg["github"])
+    app.github.search_code = lambda q, per_page=5: (
+        [{"repository": {"full_name": "myorg/payments-api"}}]
+        if "checkout latency" in q else [])
+    assert app.github.repo_for_monitor("checkout latency", 1, "myorg") == \
+        "myorg/payments-api"
+    assert app.github.repo_for_monitor("unknown thing", 2, "myorg") is None
+
+    app.state.pop("repos", None)
+    app.state.pop("repos_auto", None)
+    dmon = {"id": 555, "name": "checkout latency", "overall_state": "Alert",
+            "tags": [], "options": {}}
+    app._discover_repos([dmon], {"Alert", "Warn", "No Data"})
+    assert app.state["repos_auto"]["555"]["repo"] == "myorg/payments-api"
+    assert app._repo_for(dmon) == "myorg/payments-api"
+    assert app._repo_source(dmon) == "auto"
+    # a manual link beats an auto-detected one
+    app.state.setdefault("repos", {})["555"] = "myorg/manual"
+    assert app._repo_for(dmon) == "myorg/manual"
+    assert app._repo_source(dmon) == "manual"
+    app.state["repos"].pop("555")
+    # a not-found search is cached as a miss (no repeat search until TTL)
+    nmon = {"id": 556, "name": "unknown thing", "overall_state": "Alert",
+            "tags": [], "options": {}}
+    app._discover_repos([nmon], {"Alert", "Warn", "No Data"})
+    assert app.state["repos_auto"]["556"]["repo"] == ""
+    assert app._repo_for(nmon) is None
+
+    # auto-detected repos render a marker + a one-click "pin" action
+    gctx = {"mid": 555, "repo": "myorg/payments-api", "source": "auto",
+            "raw": {"deploys": [], "release": None, "runs": [], "commits": []}}
+    sub = app._github_submenu(gctx)
+    assert "auto-detected" in sub.title, sub.title
+    assert any("pin this repo" in (getattr(c, "title", "") or "")
+               for c in sub.children if c), [c.title for c in sub.children if c]
+    app._make_repo_confirmer(555, "myorg/payments-api")(None)
+    assert app.state["repos"]["555"] == "myorg/payments-api"
+    assert "555" not in app.state.get("repos_auto", {})
+
 print("SMOKE TEST PASSED ✅")

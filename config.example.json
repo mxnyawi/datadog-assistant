@@ -67,6 +67,32 @@
     "match_tags": true,
     "exclusive": true
   },
+  "github": {
+    "enabled": false,
+    "auth": "oauth",
+    "token": "",
+    "token_cmd": "",
+    "oauth_client_id": "",
+    "oauth_scopes": "repo",
+    "api_base": "https://api.github.com",
+    "default_org": "your-org",
+    "auto_discover": true,
+    "max_discover_per_poll": 3,
+    "discover_hit_ttl_hours": 168,
+    "discover_miss_ttl_hours": 6,
+    "repo_map": {
+      "service:payments": "your-org/payments-api",
+      "checkout": "your-org/checkout"
+    },
+    "deploy_environments": ["production", "prod"],
+    "lookback_hours": 24,
+    "correlate_minutes": 120,
+    "max_items": 4,
+    "show_on": ["Alert", "Warn", "No Data"],
+    "notify_correlation": true,
+    "cache_seconds": 180,
+    "max_repos_per_poll": 6
+  },
   "digest_hour": 9,
   "jira": {
     "enabled": false,

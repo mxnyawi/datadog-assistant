@@ -40,7 +40,7 @@ import webbrowser
 import urllib.request
 import urllib.parse
 import urllib.error
-from datetime import datetime
+from datetime import datetime, timezone
 
 try:
     import rumps
@@ -136,6 +136,38 @@ DEFAULT_CONFIG = {
         "match_query": True,
         "match_tags": True,
         "exclusive": True            # also hide them from Alert/Warn/OK/… groups
+    },
+    "github": {
+        # Pull "what changed" context from GitHub onto a firing monitor —
+        # recent deploys, the latest release, failing CI, and recent commits
+        # for the service — and flag anything that shipped just BEFORE the
+        # alert started (the prime suspect). Read-only; a token with `repo`
+        # (and `actions:read` for CI) scope is enough.
+        "enabled": False,
+        "auth": "token",             # "token" (PAT) or "oauth" (Connect GitHub button)
+        "token": "",                 # or Keychain: datadog-assistant-github-token,
+        "token_cmd": "",             # or a password-manager CLI, or GITHUB_TOKEN env
+        "oauth_client_id": "",       # OAuth: from your GitHub OAuth App (one-time)
+        "oauth_scopes": "repo",      # repo = private contents/actions/releases
+        "api_base": "https://api.github.com",   # GHE: https://your.ghe/api/v3
+        "default_org": "",           # so a `service:payments` tag → <org>/payments
+        "auto_discover": True,       # find the repo by code-searching for the monitor
+        "max_discover_per_poll": 3,  # cap code-search calls per refresh
+        "discover_hit_ttl_hours": 168,   # re-confirm a found repo weekly
+        "discover_miss_ttl_hours": 6,    # retry a not-found monitor every few hours
+        "repo_map": {
+            # match a monitor → repo by service tag, any tag, or name substring:
+            # "service:payments": "myorg/payments-api",
+            # "checkout": "myorg/checkout"
+        },
+        "deploy_environments": ["production", "prod"],  # deploy envs to surface
+        "lookback_hours": 24,        # how far back to pull commits / CI runs
+        "correlate_minutes": 120,    # flag changes within N min before the alert
+        "max_items": 4,              # commits / CI runs shown per monitor
+        "show_on": ["Alert", "Warn", "No Data"],   # states that get a GitHub panel
+        "notify_correlation": True,  # add the "🚀 deployed Nm before" line to alerts
+        "cache_seconds": 180,        # reuse a repo's data across polls for this long
+        "max_repos_per_poll": 6      # cap GitHub calls per refresh (rate-limit guard)
     },
     "digest_hour": None,                 # e.g. 9 = morning summary at 9am
     "jira": {
@@ -649,11 +681,32 @@ def http_error_detail(e):
         body = json.loads(e.read().decode())
         msgs = list(body.get("errorMessages") or [])
         msgs += [f"{k}: {v}" for k, v in (body.get("errors") or {}).items()]
+        if body.get("message"):            # GitHub & many APIs put it here
+            msgs.append(str(body["message"]))
         if msgs:
             return "; ".join(msgs)
     except Exception:
         pass
     return getattr(e, "reason", None) or "request failed"
+
+
+def parse_iso8601(s):
+    """GitHub timestamps ('2026-06-18T09:12:00Z') → unix epoch, or None."""
+    if not s:
+        return None
+    try:
+        dt = datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")
+        return dt.replace(tzinfo=timezone.utc).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def fmt_ago(epoch):
+    """'13m ago' / '2h ago' / '3d ago' from a unix timestamp."""
+    if not epoch:
+        return ""
+    secs = max(0, time.time() - epoch)
+    return f"{fmt_duration(secs)} ago"
 
 
 # --------------------------------------------------------------------------
@@ -818,6 +871,263 @@ class JiraClient:
 
 
 # --------------------------------------------------------------------------
+# GitHub client (REST v3) — read-only "what changed" context
+#
+# Two auth modes:
+#   "oauth" — the "Connect GitHub" button: log in + approve in the browser,
+#             the app keeps the token in the Keychain. One-time OAuth App
+#             registration gives the client_id/secret (like Datadog/Jira).
+#   "token" — a Personal Access Token (classic or fine-grained). Resolved
+#             like Datadog/Jira: password-manager command, then config, then
+#             the Keychain, then the GITHUB_TOKEN / GH_TOKEN env vars.
+# Either way it's read-only; `repo` scope covers contents, Actions, releases.
+# --------------------------------------------------------------------------
+
+GITHUB_OAUTH_PORT = 8919  # must match the OAuth App's registered callback URL
+
+
+class GitHubClient:
+    def __init__(self, cfg):
+        self.cfg = cfg or {}
+        self._access = {"token": "", "expires": 0}
+
+    def enabled(self):
+        return bool(self.cfg.get("enabled"))
+
+    def auth_mode(self):
+        return self.cfg.get("auth", "token")
+
+    @property
+    def api_base(self):
+        return (self.cfg.get("api_base") or "https://api.github.com").rstrip("/")
+
+    def web_base(self):
+        """The browser host for repo links (api.github.com → github.com;
+        GHE https://host/api/v3 → https://host)."""
+        base = self.api_base
+        if base == "https://api.github.com":
+            return "https://github.com"
+        return re.sub(r"/api/v3$", "", base)
+
+    def oauth_authorize_url(self):
+        return f"{self.web_base()}/login/oauth/authorize"
+
+    def oauth_token_url(self):
+        return f"{self.web_base()}/login/oauth/access_token"
+
+    def _oauth_blob(self):
+        raw = (keychain_get("datadog-assistant-github-oauth")
+               or self.cfg.get("oauth_blob", ""))
+        try:
+            return json.loads(raw) if raw else {}
+        except ValueError:
+            return {}
+
+    def _save_oauth_blob(self, blob):
+        raw = json.dumps(blob)
+        if not keychain_set("datadog-assistant-github-oauth", raw):
+            self.cfg["oauth_blob"] = raw  # non-Keychain fallback
+
+    def _token(self):
+        return (secret_from_cmd(self.cfg.get("token_cmd"))
+                or self.cfg.get("token")
+                or keychain_get("datadog-assistant-github-token")
+                or os.environ.get("GITHUB_TOKEN", "")
+                or os.environ.get("GH_TOKEN", ""))
+
+    def _access_token(self):
+        """OAuth access token. GitHub OAuth-App tokens are long-lived by
+        default (no refresh); only refresh when the app opted into expiry."""
+        blob = self._oauth_blob()
+        at = blob.get("access_token", "")
+        exp = blob.get("expires_at", 0)
+        if at and (not exp or time.time() < exp - 60):
+            return at
+        rt = blob.get("refresh_token")
+        if not rt:
+            return at                     # non-expiring token
+        data = urllib.parse.urlencode({
+            "grant_type": "refresh_token", "refresh_token": rt,
+            "client_id": self.cfg.get("oauth_client_id", ""),
+            "client_secret": blob.get("client_secret", "")}).encode()
+        req = urllib.request.Request(self.oauth_token_url(), data=data,
+                                     method="POST")
+        req.add_header("Accept", "application/json")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                tok = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(
+                f"GitHub OAuth refresh failed ({e.code}): "
+                f"{http_error_detail(e)} — reconnect via Preferences") from e
+        if tok.get("access_token"):
+            blob["access_token"] = tok["access_token"]
+            if tok.get("expires_in"):
+                blob["expires_at"] = time.time() + int(tok["expires_in"])
+            if tok.get("refresh_token"):
+                blob["refresh_token"] = tok["refresh_token"]
+            self._save_oauth_blob(blob)
+            return tok["access_token"]
+        return at
+
+    def _bearer(self):
+        return (self._access_token() if self.auth_mode() == "oauth"
+                else self._token())
+
+    def configured(self):
+        if self.auth_mode() == "oauth":
+            return bool(self._oauth_blob().get("access_token"))
+        return bool(self._token())
+
+    def repo_url(self, repo):
+        return f"{self.web_base()}/{repo}"
+
+    def _request(self, path, params=None):
+        url = self.api_base + path
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("Authorization", "Bearer " + self._bearer())
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("X-GitHub-Api-Version", "2022-11-28")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                payload = resp.read().decode()
+                return json.loads(payload) if payload else {}
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"GitHub {e.code}: {http_error_detail(e)}") from e
+
+    def search_code(self, query, per_page=5):
+        """Code search — used to discover which repo defines a monitor."""
+        data = self._request("/search/code",
+                             {"q": query, "per_page": per_page})
+        return data.get("items") or []
+
+    def repo_for_monitor(self, name, monitor_id, org=None, metric=None):
+        """Find the repo that defines this monitor by code-searching for its
+        name (then id, then metric) — monitors are usually committed as code
+        (Terraform datadog_monitor, monitors-as-yaml…). Returns the most-hit
+        repo, or None. Scoped to `org` when set to keep the search tight."""
+        org_q = f" org:{org}" if org else ""
+        for term in filter(None, [f'"{name}"' if name else "",
+                                  f'"{monitor_id}"' if monitor_id else "",
+                                  f'"{metric}"' if metric else ""]):
+            try:
+                items = self.search_code(term + org_q)
+            except Exception:
+                continue
+            tally = {}
+            for it in items:
+                full = (it.get("repository") or {}).get("full_name")
+                if full:
+                    tally[full] = tally.get(full, 0) + 1
+            if tally:
+                return max(tally, key=tally.get)
+        return None
+
+    def whoami(self):
+        return self._request("/user")
+
+    def rate_limit(self):
+        return (self._request("/rate_limit").get("resources", {})
+                .get("core", {}))
+
+    def recent_commits(self, repo, since_epoch, limit=4):
+        params = {"per_page": limit}
+        if since_epoch:
+            params["since"] = datetime.fromtimestamp(
+                since_epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        out = []
+        for c in self._request(f"/repos/{repo}/commits", params) or []:
+            commit = c.get("commit") or {}
+            msg = (commit.get("message") or "").splitlines()[0]
+            author = ((c.get("author") or {}).get("login")
+                      or (commit.get("author") or {}).get("name") or "?")
+            out.append({
+                "sha": (c.get("sha") or "")[:7],
+                "msg": msg,
+                "author": author,
+                "when": parse_iso8601((commit.get("author") or {}).get("date")),
+                "url": c.get("html_url"),
+            })
+        return out
+
+    def latest_release(self, repo):
+        try:
+            r = self._request(f"/repos/{repo}/releases/latest")
+        except RuntimeError:
+            return None          # 404 = repo has no releases
+        if not r:
+            return None
+        return {
+            "tag": r.get("tag_name"),
+            "name": r.get("name") or r.get("tag_name"),
+            "when": parse_iso8601(r.get("published_at")),
+            "url": r.get("html_url"),
+        }
+
+    def recent_deployments(self, repo, environments, limit=10):
+        """Most recent deployment per configured environment, with its
+        current status (success / failure / in_progress)."""
+        deploys = []
+        envs = environments or [None]
+        for env in envs:
+            params = {"per_page": limit}
+            if env:
+                params["environment"] = env
+            try:
+                rows = self._request(f"/repos/{repo}/deployments", params) or []
+            except RuntimeError:
+                continue
+            if not rows:
+                continue
+            d = rows[0]                       # newest first
+            state = None
+            try:
+                st = self._request(
+                    f"/repos/{repo}/deployments/{d.get('id')}/statuses",
+                    {"per_page": 1}) or []
+                if st:
+                    state = st[0].get("state")
+            except RuntimeError:
+                pass
+            deploys.append({
+                "env": d.get("environment") or env,
+                "ref": d.get("ref"),
+                "sha": (d.get("sha") or "")[:7],
+                "creator": (d.get("creator") or {}).get("login") or "?",
+                "when": parse_iso8601(d.get("created_at")),
+                "state": state,
+                "url": f"{self.web_base()}/{repo}/deployments",
+            })
+        deploys.sort(key=lambda x: x["when"] or 0, reverse=True)
+        return deploys
+
+    def recent_runs(self, repo, since_epoch, limit=4):
+        params = {"per_page": limit}
+        try:
+            data = self._request(f"/repos/{repo}/actions/runs", params)
+        except RuntimeError:
+            return []
+        out = []
+        for r in (data.get("workflow_runs") or [])[:limit]:
+            when = parse_iso8601(r.get("run_started_at") or r.get("created_at"))
+            if since_epoch and when and when < since_epoch:
+                continue
+            out.append({
+                "name": r.get("name") or r.get("display_title") or "run",
+                "status": r.get("status"),
+                "conclusion": r.get("conclusion"),
+                "branch": r.get("head_branch"),
+                "event": r.get("event"),
+                "when": when,
+                "url": r.get("html_url"),
+            })
+        return out
+
+
+# --------------------------------------------------------------------------
 # macOS notifications
 # --------------------------------------------------------------------------
 
@@ -925,6 +1235,7 @@ class DatadogAssistant(rumps.App):
         OPEN_BROWSER = self.cfg.get("browser", "")
         self.client = DatadogClient(self.cfg)
         self.jira = JiraClient(self.cfg.get("jira", {}))
+        self.github = GitHubClient(self.cfg.get("github", {}))
         icons = self.cfg["icons"]
         super().__init__(APP_NAME, title=icons["ok"], quit_button=None)
 
@@ -932,6 +1243,8 @@ class DatadogAssistant(rumps.App):
         self.incidents = []
         self.dashboards = []
         self.enrich = {}             # monitor id -> {spark, now, crit}
+        self.gh = {}                 # monitor id -> github "what changed" context
+        self._gh_cache = {}          # repo -> (ts, context)  (shared across monitors)
         self.nodata_probe = {}       # monitor id -> "stopped" | "silent"
         self.state = load_state()    # persists jira tickets + digest date
         self._dash_ts = 0
@@ -1009,6 +1322,8 @@ class DatadogAssistant(rumps.App):
                         pass
                 if ctx.get("show_sparkline", True):
                     payload["enrich"] = self._fetch_enrichment(payload["monitors"])
+                if self.github.enabled() and self.github.configured():
+                    payload["github"] = self._fetch_github(payload["monitors"])
                 payload["nodata_probe"] = self._probe_no_data(payload["monitors"])
                 self.results.put(("data", payload))
         except urllib.error.HTTPError as e:
@@ -1033,6 +1348,8 @@ class DatadogAssistant(rumps.App):
                 if "dashboards" in payload:
                     self.dashboards = payload["dashboards"]
                 self.enrich = payload.get("enrich") or {}
+                if "github" in payload:
+                    self.gh = payload["github"]
                 # keep probe verdicts for monitors still in No Data, fold in
                 # the new ones (only a capped batch is probed per refresh)
                 nodata_ids = {m.get("id") for m in payload["monitors"]
@@ -1071,6 +1388,7 @@ class DatadogAssistant(rumps.App):
             for m in self.monitors))
         enr = tuple(sorted(
             (k, v.get("spark"), v.get("now")) for k, v in self.enrich.items()))
+        ghp = tuple(sorted((k, v.get("sig")) for k, v in self.gh.items()))
         inc = tuple((i.get("public_id"), i.get("title"), i.get("severity"))
                     for i in self.incidents)
         dash = tuple(d["title"] for d in self.dashboards)
@@ -1080,7 +1398,7 @@ class DatadogAssistant(rumps.App):
                   for m in self.monitors)
         bucket = int(time.time() // 300) if hot else 0
         return (self.last_error, time.time() < self.snooze_until,
-                mons, enr, inc, dash, bucket)
+                mons, enr, ghp, inc, dash, bucket)
 
     def _fetch_enrichment(self, monitors):
         """Live metric values + sparklines for the hottest alerting monitors."""
@@ -1110,6 +1428,199 @@ class DatadogAssistant(rumps.App):
                                 "crit": thr}
             except Exception:
                 continue
+        return out
+
+    # -------------------- GitHub "what changed" context --------------------
+
+    def _static_repo_for(self, m):
+        """Resolve a monitor to an 'owner/repo' without any network call: a
+        manual per-monitor link wins, then the config repo_map (service tag /
+        any tag / name substring), then a service/repo tag + default_org."""
+        gh = self.cfg.get("github", {})
+        mid = str(m.get("id"))
+        linked = (self.state.get("repos") or {}).get(mid)
+        if linked:
+            return linked
+        tags = [str(t) for t in (m.get("tags") or [])]
+        name = (self._display_name(m) or "").lower()
+        for key, repo in (gh.get("repo_map") or {}).items():
+            kl = key.lower()
+            if key in tags or any(kl in t.lower() for t in tags) or kl in name:
+                return repo
+        for t in tags:                       # repo:owner/name (org-independent)
+            mt = re.match(r"(?:repo|github):(.+/.+)$", t, re.IGNORECASE)
+            if mt:
+                return mt.group(1)
+        org = gh.get("default_org")
+        if org:
+            for t in tags:
+                mt = re.match(r"(?:service|app|repo|github):([^/]+)$", t,
+                              re.IGNORECASE)
+                if mt:
+                    return f"{org}/{mt.group(1)}"
+        return None
+
+    def _auto_repo_for(self, m):
+        """A repo discovered earlier by code-searching for the monitor."""
+        entry = (self.state.get("repos_auto") or {}).get(str(m.get("id")))
+        return entry.get("repo") if entry and entry.get("repo") else None
+
+    def _repo_for(self, m):
+        return self._static_repo_for(m) or self._auto_repo_for(m)
+
+    def _repo_source(self, m):
+        if (self.state.get("repos") or {}).get(str(m.get("id"))):
+            return "manual"
+        if self._static_repo_for(m):
+            return "mapped"
+        return "auto" if self._auto_repo_for(m) else None
+
+    def _discover_repos(self, monitors, show_on):
+        """Code-search GitHub for firing monitors whose repo we don't know yet,
+        and cache the result in state.json. Capped per poll and TTL'd (hits
+        re-confirmed weekly, misses retried after a few hours) so we never
+        hammer the search rate limit."""
+        gh = self.cfg.get("github", {})
+        if not gh.get("auto_discover", True):
+            return
+        cap = int(gh.get("max_discover_per_poll", 3))
+        hit_ttl = int(gh.get("discover_hit_ttl_hours", 168)) * 3600
+        miss_ttl = int(gh.get("discover_miss_ttl_hours", 6)) * 3600
+        org = gh.get("default_org") or None
+        auto = self.state.setdefault("repos_auto", {})
+        now, n, changed = time.time(), 0, False
+        for m in monitors:
+            if m.get("overall_state") not in show_on:
+                continue
+            mid = str(m.get("id"))
+            if self._static_repo_for(m):
+                continue
+            cached = auto.get(mid)
+            if cached:
+                ttl = hit_ttl if cached.get("repo") else miss_ttl
+                if now - cached.get("ts", 0) < ttl:
+                    continue
+            if n >= cap:
+                continue
+            n += 1
+            try:
+                repo = self.github.repo_for_monitor(
+                    self._display_name(m), m.get("id"), org,
+                    extract_metric_query(m.get("query", "")) or None)
+            except Exception:
+                repo = None
+            auto[mid] = {"repo": repo or "", "ts": now}
+            changed = True
+        if changed:
+            save_state(self.state)
+
+    def _alert_start(self, m):
+        dur = self._alert_duration(m)
+        return time.time() - dur if dur else None
+
+    def _gh_repo_data(self, repo):
+        """All four GitHub views for a repo. Each endpoint is isolated so a
+        repo with (say) no Actions still yields deploys/commits."""
+        gh = self.cfg.get("github", {})
+        since = time.time() - int(gh.get("lookback_hours", 24)) * 3600
+        n = int(gh.get("max_items", 4))
+        envs = gh.get("deploy_environments", ["production", "prod"])
+
+        def safe(fn, default):
+            try:
+                return fn()
+            except Exception:
+                return default
+        return {
+            "deploys": safe(lambda: self.github.recent_deployments(repo, envs), []),
+            "release": safe(lambda: self.github.latest_release(repo), None),
+            "runs": safe(lambda: self.github.recent_runs(repo, since, n), []),
+            "commits": safe(lambda: self.github.recent_commits(repo, since, n), []),
+        }
+
+    def _gh_context_for(self, m, repo, raw):
+        """Per-monitor context: the raw repo views plus a correlation
+        headline naming whatever shipped just before the alert started."""
+        gh = self.cfg.get("github", {})
+        window = int(gh.get("correlate_minutes", 120)) * 60
+        start = self._alert_start(m)
+        headline, suspect_url = None, self.github.repo_url(repo)
+
+        def before(when):
+            return bool(start and when and 0 <= start - when <= window)
+
+        def mins(when):
+            return int((start - when) / 60)
+
+        for d in raw.get("deploys") or []:
+            if before(d.get("when")):
+                headline = (f"🚀 Deployed to {d.get('env')} "
+                            f"{mins(d['when'])}m before this alert")
+                suspect_url = d.get("url") or suspect_url
+                break
+        rel = raw.get("release")
+        if not headline and rel and before(rel.get("when")):
+            headline = (f"🏷 Released {rel.get('tag')} "
+                        f"{mins(rel['when'])}m before this alert")
+            suspect_url = rel.get("url") or suspect_url
+        if not headline:
+            for r in raw.get("runs") or []:
+                if r.get("conclusion") == "failure" and before(r.get("when")):
+                    headline = (f"🔴 CI “{r.get('name')}” failed "
+                                f"{mins(r['when'])}m before this alert")
+                    suspect_url = r.get("url") or suspect_url
+                    break
+        if not headline:
+            for c in raw.get("commits") or []:
+                if before(c.get("when")):
+                    headline = (f"📝 {c.get('author')} pushed "
+                                f"{mins(c['when'])}m before this alert")
+                    suspect_url = c.get("url") or suspect_url
+                    break
+        first_sha = (lambda xs: xs[0].get("sha", "") if xs else "")
+        source = self._repo_source(m)
+        sig = "|".join([repo, source or "", headline or "",
+                        first_sha(raw.get("deploys")),
+                        first_sha(raw.get("commits"))])
+        return {"mid": m.get("id"), "repo": repo, "headline": headline,
+                "suspect_url": suspect_url, "raw": raw, "sig": sig,
+                "source": source}
+
+    def _gh_headline(self, mid):
+        ctx = self.gh.get(mid)
+        return ctx.get("headline") if ctx else None
+
+    def _fetch_github(self, monitors):
+        """Background: pull GitHub context for firing monitors that resolve to
+        a repo. Per-repo cached with a TTL and capped per poll so large orgs
+        don't blow the GitHub rate limit."""
+        gh = self.cfg.get("github", {})
+        show_on = set(gh.get("show_on", ["Alert", "Warn", "No Data"]))
+        ttl = int(gh.get("cache_seconds", 180))
+        budget = int(gh.get("max_repos_per_poll", 6))
+        self._discover_repos(monitors, show_on)   # fills state["repos_auto"]
+        targets = [(m, self._repo_for(m)) for m in monitors
+                   if m.get("overall_state") in show_on]
+        targets = [(m, r) for m, r in targets if r]
+        targets.sort(key=lambda mr: parse_priority(mr[0]) or 9)
+
+        out = {}
+        for m, repo in targets:
+            cached = self._gh_cache.get(repo)
+            if not (cached and time.time() - cached[0] < ttl):
+                if budget <= 0 and not cached:
+                    continue                 # over budget — fetch next poll
+                if budget > 0:
+                    raw = self._gh_repo_data(repo)
+                    cached = (time.time(), raw)
+                    self._gh_cache[repo] = cached
+                    budget -= 1
+            raw = cached[1] if cached else None
+            if raw is None:
+                continue
+            out[m.get("id")] = self._gh_context_for(m, repo, raw)
+        live = {r for _, r in targets}
+        self._gh_cache = {k: v for k, v in self._gh_cache.items() if k in live}
         return out
 
     def _probe_no_data(self, monitors):
@@ -1291,14 +1802,21 @@ class DatadogAssistant(rumps.App):
                 sound = (rule.get("sound_name", ncfg.get("sound_name"))
                          if ncfg.get("sound", True) else None)
                 ctx = self._context_line(m)
+                gh_hint = (self._gh_headline(mid)
+                           if self.cfg.get("github", {}).get(
+                               "notify_correlation", True) else None)
                 if style in ("banner", "both"):
                     banner_body = f"{body} — {ctx}" if ctx else body
+                    if gh_hint:
+                        banner_body += f"\n{gh_hint}"
                     notify_banner(title, "Datadog Assistant 🐶", banner_body, sound)
                 if style in ("modal", "both") and state == "Alert":
                     modal_body = body + (f"\n{ctx}" if ctx else "")
                     grps = self._triggered_groups(m)
                     if grps:
                         modal_body += "\n" + ", ".join(grps[:5])
+                    if gh_hint:
+                        modal_body += f"\n{gh_hint}"
                     notify_modal(title, modal_body, url)
                 if sound and style == "modal":
                     play_sound(sound)
@@ -1645,6 +2163,7 @@ class DatadogAssistant(rumps.App):
                     item.add(rumps.MenuItem(f"      {gname}"))
                 if len(grps) > maxg:
                     item.add(rumps.MenuItem(f"      … +{len(grps) - maxg} more"))
+            self._add_github_section(item, m, mid)
             item.add(None)
 
         item.add(rumps.MenuItem("🔗 Open in Datadog", callback=self._make_opener(url)))
@@ -1671,6 +2190,121 @@ class DatadogAssistant(rumps.App):
         item.add(rumps.MenuItem("🗑 Delete monitor…",
                                 callback=self._make_deleter(mid, dd_name)))
         return item
+
+    def _add_github_section(self, item, m, mid):
+        """The 🐙 'what changed' panel: a prime-suspect headline (if something
+        shipped just before the alert) + a submenu of deploys/release/CI/
+        commits, or a 'Link repo' prompt when the service isn't mapped yet."""
+        if not self.github.enabled():
+            return
+        gctx = self.gh.get(mid)
+        if gctx:
+            if gctx.get("headline"):
+                item.add(rumps.MenuItem(
+                    f"⚠️ {gctx['headline']}",
+                    callback=self._make_opener(gctx.get("suspect_url"))))
+            item.add(self._github_submenu(gctx))
+        elif self.github.configured() and not self._repo_for(m):
+            item.add(rumps.MenuItem("🐙 Link GitHub repo…",
+                                    callback=self._make_repo_linker(mid)))
+
+    def _github_submenu(self, gctx):
+        repo = gctx["repo"]
+        raw = gctx.get("raw") or {}
+        mid = gctx.get("mid")
+        auto = gctx.get("source") == "auto"
+        sub = rumps.MenuItem(f"🐙 {repo}" + (" · 🔍 auto-detected" if auto else ""))
+        seen = set()
+        if auto:
+            sub.add(rumps.MenuItem("✅ Correct — pin this repo",
+                                   callback=self._make_repo_confirmer(mid, repo)))
+            sub.add(None)
+        state_icon = {"success": "🟢", "failure": "🔴", "error": "🔴",
+                      "in_progress": "🟡", "queued": "🟡", "pending": "🟡"}
+
+        deploys = raw.get("deploys") or []
+        if deploys:
+            sub.add(rumps.MenuItem("🚀 Recent deploys"))
+            for d in deploys[:3]:
+                icon = state_icon.get(d.get("state"), "⚪")
+                t = (f"   {icon} {d.get('env')} · {d.get('sha')} "
+                     f"by {d.get('creator')} · {fmt_ago(d.get('when'))}")
+                sub.add(rumps.MenuItem(unique_title(t[:62], seen),
+                                       callback=self._make_opener(d.get("url"))))
+        rel = raw.get("release")
+        if rel:
+            t = f"🏷 Release {rel.get('tag')} · {fmt_ago(rel.get('when'))}"
+            sub.add(rumps.MenuItem(unique_title(t[:62], seen),
+                                   callback=self._make_opener(rel.get("url"))))
+        runs = raw.get("runs") or []
+        if runs:
+            sub.add(rumps.MenuItem("⚙️ Recent CI runs"))
+            for r in runs:
+                icon = state_icon.get(r.get("conclusion"),
+                                      "🟡" if r.get("status") != "completed"
+                                      else "⚪")
+                t = (f"   {icon} {r.get('name')} ({r.get('branch')}) · "
+                     f"{fmt_ago(r.get('when'))}")
+                sub.add(rumps.MenuItem(unique_title(t[:62], seen),
+                                       callback=self._make_opener(r.get("url"))))
+        commits = raw.get("commits") or []
+        if commits:
+            sub.add(rumps.MenuItem("📝 Recent commits"))
+            for c in commits:
+                t = f"   {c.get('sha')} {c.get('msg')} — {c.get('author')}"
+                sub.add(rumps.MenuItem(unique_title(t[:62], seen),
+                                       callback=self._make_opener(c.get("url"))))
+        sub.add(None)
+        sub.add(rumps.MenuItem("🔗 Open repo",
+                               callback=self._make_opener(self.github.repo_url(repo))))
+        if (self.state.get("repos") or {}).get(str(mid)):
+            sub.add(rumps.MenuItem("❌ Unlink repo",
+                                   callback=self._make_repo_unlinker(mid)))
+        else:
+            sub.add(rumps.MenuItem("🔗 Link a different repo…",
+                                   callback=self._make_repo_linker(mid)))
+        return sub
+
+    def _make_repo_linker(self, mid):
+        def cb(_):
+            cur = (self.state.get("repos") or {}).get(str(mid), "")
+            win = rumps.Window(
+                title="🐙 Link GitHub repo",
+                message="owner/repo for this monitor's service, e.g.\n"
+                        "myorg/payments-api. Stored locally; used to surface\n"
+                        "deploys / releases / CI on its alerts. Blank to unlink.",
+                default_text=cur, ok="Save", cancel="Cancel",
+                dimensions=(320, 24))
+            resp = win.run()
+            if not resp.clicked:
+                return
+            repos = self.state.setdefault("repos", {})
+            val = resp.text.strip()
+            if val:
+                repos[str(mid)] = val
+            else:
+                repos.pop(str(mid), None)
+            save_state(self.state)
+            self._gh_cache.clear()
+            self._poll_tick(None)
+        return cb
+
+    def _make_repo_confirmer(self, mid, repo):
+        def cb(_):
+            self.state.setdefault("repos", {})[str(mid)] = repo
+            (self.state.get("repos_auto") or {}).pop(str(mid), None)
+            save_state(self.state)
+            self._rebuild_menu()
+        return cb
+
+    def _make_repo_unlinker(self, mid):
+        def cb(_):
+            (self.state.get("repos") or {}).pop(str(mid), None)
+            (self.state.get("repos_auto") or {}).pop(str(mid), None)
+            save_state(self.state)
+            self._gh_cache.clear()
+            self._poll_tick(None)
+        return cb
 
     def _prefs_menu(self):
         prefs = rumps.MenuItem("⚙️ Preferences")
@@ -1735,6 +2369,19 @@ class DatadogAssistant(rumps.App):
                                  callback=self._edit_jira))
         prefs.add(rumps.MenuItem("🎫 Test Jira connection",
                                  callback=self._test_jira))
+        gh = rumps.MenuItem("🐙 GitHub context on alerts",
+                            callback=self._toggle_github)
+        gh.state = 1 if self.cfg.get("github", {}).get("enabled", False) else 0
+        prefs.add(gh)
+        gcfg = self.cfg.get("github", {})
+        connected = gcfg.get("auth") == "oauth" and self.github.configured()
+        prefs.add(rumps.MenuItem(
+            "🔗 Reconnect GitHub" if connected else "🔗 Connect GitHub…",
+            callback=self._connect_github))
+        prefs.add(rumps.MenuItem("🐙 GitHub settings (token / org)…",
+                                 callback=self._edit_github))
+        prefs.add(rumps.MenuItem("🐙 Test GitHub connection",
+                                 callback=self._test_github))
         prefs.add(None)
 
         # snooze
@@ -1939,6 +2586,263 @@ class DatadogAssistant(rumps.App):
 
     def _test_jira(self, _):
         threading.Thread(target=self._jira_connection_test, daemon=True).start()
+
+    def _toggle_github(self, _):
+        if self.cfg["github"].get("enabled", False):
+            self._toggle("github", "enabled", default=False)   # switch off
+            self.github = GitHubClient(self.cfg.get("github", {}))
+            self.gh = {}
+            return
+        if self.github.configured():
+            self._toggle("github", "enabled", default=False)   # switch on
+            self.github = GitHubClient(self.cfg.get("github", {}))
+            notify_banner("🐙 GitHub context enabled", "Datadog Assistant 🐶",
+                          "Alerts now show recent deploys, releases & CI")
+            self._poll_tick(None)
+            return
+        self._github_setup()  # unconfigured — wizard enables on success
+
+    def _edit_github(self, _):
+        self._github_setup()
+
+    def _test_github(self, _):
+        threading.Thread(target=self._github_connection_test, daemon=True).start()
+
+    # -------------------- GitHub setup wizard --------------------
+
+    def _connect_github(self, _):
+        """The 'Connect GitHub' button — straight into the browser OAuth flow."""
+        threading.Thread(target=self._github_oauth_flow, daemon=True).start()
+
+    def _github_setup(self):
+        threading.Thread(target=self._github_setup_chooser, daemon=True).start()
+
+    def _github_setup_chooser(self):
+        choice = ask_choice(
+            "🐙 Connect GitHub",
+            "How should the app connect to GitHub?\n\n"
+            "Connect GitHub (OAuth) — click, then log in and approve in your "
+            "browser. A one-time OAuth App registration gives a Client ID and "
+            "secret (see README).\n\n"
+            "Personal token — paste a PAT instead (quickest if you have one).",
+            ["Cancel", "Personal token", "Connect GitHub (OAuth)"])
+        if choice == "Connect GitHub (OAuth)":
+            self._github_oauth_flow()
+        elif choice == "Personal token":
+            self._github_token_flow()
+
+    def _github_finish(self):
+        """Shared tail: default org, enable, test, refresh."""
+        gc = self.cfg["github"]
+        org = ask_text(
+            "🐙 GitHub — default org (optional)",
+            "If your monitors carry a service:<name> tag, set the org so\n"
+            "service:payments auto-resolves to <org>/payments. It also scopes\n"
+            "the code-search that auto-detects a monitor's repo.\n"
+            "Leave blank to map repos via repo_map / per-monitor links.",
+            default=gc.get("default_org") or "")
+        if org is None:
+            return
+        gc["default_org"] = org.strip()
+        gc["enabled"] = True
+        save_config(self.cfg)
+        self.github = GitHubClient(gc)
+        self._gh_cache.clear()
+        self._github_connection_test()
+        self._poll_tick(None)
+
+    def _github_token_flow(self):
+        gc = self.cfg["github"]
+        token = ask_text(
+            "🐙 GitHub — access token",
+            "Create one at github.com/settings/tokens.\n"
+            "• Classic: scope `repo` (+ `workflow` to read Actions runs)\n"
+            "• Fine-grained: Contents + Deployments + Actions = Read,\n"
+            "  scoped to the repos behind your monitors\n"
+            "Stored in the macOS Keychain. Blank keeps the current token.",
+            secure=True, ok="Next")
+        if token is None:
+            return
+        if token:
+            if keychain_set("datadog-assistant-github-token", token):
+                gc["token"] = ""          # keychain wins
+            else:
+                gc["token"] = token
+        base = ask_text(
+            "🐙 GitHub — API base (optional)",
+            "Default: https://api.github.com\n"
+            "GitHub Enterprise Server: https://your-host/api/v3",
+            default=gc.get("api_base") or "https://api.github.com")
+        if base is None:
+            return
+        gc["api_base"] = base.strip() or "https://api.github.com"
+        gc["auth"] = "token"
+        self._github_finish()
+
+    def _github_oauth_flow(self):
+        gc = self.cfg["github"]
+        base = ask_text(
+            "🐙 Connect GitHub — host (optional)",
+            "Default: https://api.github.com\n"
+            "GitHub Enterprise Server: https://your-host/api/v3",
+            default=gc.get("api_base") or "https://api.github.com")
+        if base is None:
+            return
+        gc["api_base"] = base.strip() or "https://api.github.com"
+        save_config(self.cfg)
+        client_id = gc.get("oauth_client_id") or ""
+        blob = GitHubClient(gc)._oauth_blob()
+        if client_id and blob.get("client_secret"):
+            secret = blob["client_secret"]      # reconnect — don't re-ask
+        else:
+            client_id = ask_text(
+                "🐙 Connect GitHub — Client ID",
+                "One-time: GitHub → Settings → Developer settings →\n"
+                "OAuth Apps → New OAuth App, with\n"
+                f"• Authorization callback URL exactly:\n"
+                f"  http://localhost:{GITHUB_OAUTH_PORT}/callback\n"
+                "Then paste the app's Client ID:",
+                default=client_id)
+            if not client_id:
+                return
+            secret = ask_text(
+                "🐙 Connect GitHub — Client Secret",
+                "From the same OAuth App ('Generate a new client secret').\n"
+                "Stored in the macOS Keychain. Your browser opens next to "
+                "log in and approve.",
+                secure=True, ok="Connect")
+            if not secret:
+                return
+            gc["oauth_client_id"] = client_id
+            save_config(self.cfg)
+        if not self._github_oauth_browser_flow(client_id, secret):
+            return
+        gc["auth"] = "oauth"
+        self._github_finish()
+
+    def _github_oauth_browser_flow(self, client_id, secret):
+        gc = self.cfg["github"]
+        ghc = GitHubClient(gc)
+        state = base64.urlsafe_b64encode(os.urandom(16)).decode().rstrip("=")
+        redirect = f"http://localhost:{GITHUB_OAUTH_PORT}/callback"
+        got = {}
+
+        class Callback(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                got["code"] = (q.get("code") or [""])[0]
+                got["state"] = (q.get("state") or [""])[0]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write("<h2>🐙 Connected — close this tab and "
+                                 "return to the menu bar.</h2>".encode())
+
+            def log_message(self, *a):
+                pass
+
+        old = getattr(self, "_oauth_srv", None)
+        if old is not None:
+            old._cancelled = True
+            try:
+                old.server_close()
+            except Exception:
+                pass
+            self._oauth_srv = None
+        try:
+            srv = http.server.HTTPServer(("127.0.0.1", GITHUB_OAUTH_PORT),
+                                         Callback)
+        except OSError as e:
+            notify_modal("❌ GitHub OAuth failed",
+                         f"Can't listen on port {GITHUB_OAUTH_PORT}: {e}\n"
+                         "Another app may be using it, or a previous attempt "
+                         "is still waiting; try again shortly.")
+            return False
+        srv._cancelled = False
+        self._oauth_srv = srv
+        srv.timeout = 240
+        open_url(ghc.oauth_authorize_url() + "?" + urllib.parse.urlencode({
+            "client_id": client_id,
+            "redirect_uri": redirect,
+            "scope": gc.get("oauth_scopes", "repo"),
+            "state": state,
+            "allow_signup": "false",
+        }))
+        try:
+            srv.handle_request()  # one shot: blocks until redirect or timeout
+        except Exception:
+            pass
+        if getattr(srv, "_cancelled", False):
+            return False
+        try:
+            srv.server_close()
+        except Exception:
+            pass
+        self._oauth_srv = None
+        if not got.get("code") or got.get("state") != state:
+            notify_modal("❌ GitHub OAuth failed",
+                         "No authorization code received "
+                         "(timed out or cancelled in the browser).")
+            return False
+        try:
+            data = urllib.parse.urlencode({
+                "client_id": client_id, "client_secret": secret,
+                "code": got["code"], "redirect_uri": redirect}).encode()
+            req = urllib.request.Request(ghc.oauth_token_url(), data=data,
+                                         method="POST")
+            req.add_header("Accept", "application/json")
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                tok = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            notify_modal("❌ GitHub OAuth failed",
+                         f"{e.code}: {http_error_detail(e)}")
+            return False
+        except Exception as e:
+            notify_modal("❌ GitHub OAuth failed", str(e)[:300])
+            return False
+        if not tok.get("access_token"):
+            notify_modal("❌ GitHub OAuth failed",
+                         tok.get("error_description")
+                         or "GitHub returned no access token.")
+            return False
+        new_blob = {"client_secret": secret,
+                    "access_token": tok["access_token"]}
+        if tok.get("refresh_token"):
+            new_blob["refresh_token"] = tok["refresh_token"]
+        if tok.get("expires_in"):
+            new_blob["expires_at"] = time.time() + int(tok["expires_in"])
+        ghc._save_oauth_blob(new_blob)
+        notify_banner("🐙 GitHub connected", "Datadog Assistant 🐶",
+                      "Logged in via your browser ✅")
+        return True
+
+    def _github_connection_test(self):
+        client = GitHubClient(self.cfg.get("github", {}))
+        if not client.configured():
+            notify_modal("🐙 GitHub not configured",
+                         "Not connected. Use Preferences → 🔗 Connect GitHub "
+                         "(OAuth) or 🐙 GitHub settings (token).")
+            return
+        try:
+            me = client.whoami()
+            rl = client.rate_limit()
+            mode = "OAuth (browser)" if client.auth_mode() == "oauth" else "token"
+            lines = [f"Connected as {me.get('login', '?')} · via {mode}"]
+            if rl:
+                lines.append(f"API budget: {rl.get('remaining', '?')}/"
+                             f"{rl.get('limit', '?')} requests left this hour")
+            org = self.cfg["github"].get("default_org")
+            mapped = len(self.cfg["github"].get("repo_map") or {})
+            linked = len(self.state.get("repos") or {})
+            found = sum(1 for e in (self.state.get("repos_auto") or {}).values()
+                        if e.get("repo"))
+            lines.append(f"Resolver: default_org={org or '—'}, "
+                         f"{mapped} mapped, {linked} linked, "
+                         f"{found} auto-detected")
+            notify_modal("🐙 GitHub connection test", "\n".join(lines))
+        except Exception as e:
+            notify_modal("❌ GitHub connection failed", str(e)[:300])
 
     # -------------------- Jira setup wizard --------------------
 
