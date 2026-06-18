@@ -125,6 +125,18 @@ DEFAULT_CONFIG = {
         "probe_lookback_hours": 24,  # metric history window for flowing-then-stopped check
         "max_probes": 6              # metric-history queries per refresh
     },
+    "dlq": {
+        # Pull dead-letter-queue monitors out of the state groups and into one
+        # dedicated 💀 section, so the queues you babysit live in one place.
+        # A monitor is "DLQ" if any pattern appears in its name (or local
+        # rename), query, or tags — case-insensitive.
+        "enabled": True,
+        "patterns": ["dlq", "dead letter", "dead-letter",
+                     "dead_letter", "deadletter"],
+        "match_query": True,
+        "match_tags": True,
+        "exclusive": True            # also hide them from Alert/Warn/OK/… groups
+    },
     "digest_hour": None,                 # e.g. 9 = morning summary at 9am
     "jira": {
         "enabled": False,
@@ -175,7 +187,11 @@ GROUP_HEADERS = {
     "Quiet": "🤫 QUIET (no data, expected)",
     "OK": "🟢 OK",
     "Muted": "🔇 MUTED",
+    "DLQ": "💀 DEAD LETTER QUEUES",
 }
+
+# Severity ordering for sorting within the DLQ section (lower = more urgent).
+SEV_RANK = {"Alert": 0, "Warn": 1, "No Data": 2, "Quiet": 3, "OK": 4, "Muted": 5}
 
 # Monitor types watching event streams: zero matching events is usually the
 # healthy state, so No Data on these rarely means anything is broken.
@@ -1045,10 +1061,11 @@ class DatadogAssistant(rumps.App):
 
     def _menu_fingerprint(self):
         mons = tuple(sorted(
-            (m.get("id") or 0, m.get("name") or "", m.get("overall_state") or "",
+            (m.get("id") or 0, self._display_name(m), m.get("overall_state") or "",
              parse_priority(m) or 0,
              bool((m.get("options") or {}).get("silenced")),
              len(self._triggered_groups(m)),
+             self._is_dlq(m),
              self._triage_no_data(m)[0]
              if m.get("overall_state") == "No Data" else "")
             for m in self.monitors))
@@ -1228,7 +1245,7 @@ class DatadogAssistant(rumps.App):
             mid = m.get("id")
             state = m.get("overall_state", "Unknown")
             prev = self.prev_states.get(mid)
-            name = m.get("name", f"monitor {mid}")
+            name = self._display_name(m)
             url = self.client.monitor_url(mid)
             muted = bool((m.get("options") or {}).get("silenced"))
 
@@ -1369,22 +1386,57 @@ class DatadogAssistant(rumps.App):
 
     # -------------------- title (menu bar icon) --------------------
 
+    def _bucket_of(self, m):
+        """Which display group a monitor belongs in, by mute/state/triage."""
+        if bool((m.get("options") or {}).get("silenced")):
+            return "Muted"
+        state = m.get("overall_state", "Unknown")
+        if state == "No Data":
+            verdict, _ = self._triage_no_data(m)
+            return "Quiet" if verdict == "quiet" else "No Data"
+        if state in ("Alert", "Warn", "OK"):
+            return state
+        return "OK"
+
     def _grouped(self):
         groups = {"Alert": [], "Warn": [], "No Data": [], "Quiet": [],
                   "OK": [], "Muted": []}
         for m in self.monitors:
-            muted = bool((m.get("options") or {}).get("silenced"))
-            state = m.get("overall_state", "Unknown")
-            if muted:
-                groups["Muted"].append(m)
-            elif state == "No Data":
-                verdict, _ = self._triage_no_data(m)
-                groups["Quiet" if verdict == "quiet" else "No Data"].append(m)
-            elif state in groups:
-                groups[state].append(m)
-            else:
-                groups["OK"].append(m)
+            groups[self._bucket_of(m)].append(m)
         return groups
+
+    # -------------------- local renames & DLQ grouping --------------------
+
+    def _aliases(self):
+        return self.state.setdefault("aliases", {})
+
+    def _display_name(self, m):
+        """The monitor's name as shown in the menu — a local rename if the
+        user set one, otherwise the real Datadog name. Renames never touch DD."""
+        mid = m.get("id")
+        alias = self._aliases().get(str(mid))
+        return alias or m.get("name", f"monitor {mid}")
+
+    def _is_dlq(self, m):
+        dcfg = self.cfg.get("dlq", {})
+        if not dcfg.get("enabled", True):
+            return False
+        pats = [p.lower() for p in dcfg.get("patterns", []) if p]
+        if not pats:
+            return False
+        hay = [m.get("name") or "", self._display_name(m)]
+        if dcfg.get("match_query", True):
+            hay.append(m.get("query") or "")
+        if dcfg.get("match_tags", True):
+            hay.extend(str(t) for t in (m.get("tags") or []))
+        blob = " ".join(hay).lower()
+        return any(p in blob for p in pats)
+
+    def _dlq_monitors(self):
+        mons = [m for m in self.monitors if self._is_dlq(m)]
+        mons.sort(key=lambda m: (SEV_RANK.get(self._bucket_of(m), 9),
+                                 self._display_name(m).lower()))
+        return mons
 
     def _update_title(self):
         icons = self.cfg["icons"]
@@ -1424,6 +1476,9 @@ class DatadogAssistant(rumps.App):
 
         # ---- status header ----
         g = self._grouped()
+        dlq_all = self._dlq_monitors()
+        dlq_exclusive = bool(self.cfg.get("dlq", {}).get("exclusive", True))
+        dlq_ids = {m.get("id") for m in dlq_all} if dlq_exclusive else set()
         if self.last_error:
             items.append(rumps.MenuItem(f"🔌 Error: {self.last_error}"))
         if self.monitors or not self.last_error:
@@ -1434,6 +1489,8 @@ class DatadogAssistant(rumps.App):
             if g["No Data"] or g["Quiet"]:
                 summary += (f" · {len(g['No Data'])} no-data"
                             f" ({len(g['Quiet'])} quiet)")
+            if dlq_all:
+                summary += f" · 💀 {len(dlq_all)} dlq"
             hdr = rumps.MenuItem(summary, callback=self._open_manage_monitors)
             items.append(hdr)
 
@@ -1460,6 +1517,27 @@ class DatadogAssistant(rumps.App):
                         self.client.incident_url(inc.get("public_id")))))
             items.append(None)
 
+        # ---- dead letter queues (consolidated, severity-sorted) ----
+        if dlq_all:
+            urgent = [m for m in dlq_all
+                      if self._bucket_of(m) in ("Alert", "Warn", "No Data")]
+            healthy = [m for m in dlq_all if m not in urgent]
+            badge = ""
+            n_alert = sum(1 for m in dlq_all if self._bucket_of(m) == "Alert")
+            if n_alert:
+                badge = f" · {n_alert} alerting 🔴"
+            items.append(rumps.MenuItem(
+                f"{GROUP_HEADERS['DLQ']} ({len(dlq_all)}){badge}"))
+            for m in urgent:
+                items.append(self._monitor_item(m, self._bucket_of(m), seen))
+            if healthy:
+                sub = rumps.MenuItem(f"🟢 healthy ({len(healthy)})")
+                sub_seen = set()
+                for m in healthy:
+                    sub.add(self._monitor_item(m, self._bucket_of(m), sub_seen))
+                items.append(sub)
+            items.append(None)
+
         # ---- monitor groups ----
         show_ok = self.cfg["menu"].get("show_ok_monitors", True)
         max_per = int(self.cfg["menu"].get("max_per_group", 25))
@@ -1469,7 +1547,8 @@ class DatadogAssistant(rumps.App):
             order.insert(order.index("No Data") + 1 if "No Data" in order
                          else len(order), "Quiet")
         for group in order:
-            monitors = g.get(group, [])
+            monitors = [m for m in g.get(group, [])
+                        if m.get("id") not in dlq_ids]
             if not monitors:
                 continue
             if group == "OK" and not show_ok:
@@ -1525,7 +1604,9 @@ class DatadogAssistant(rumps.App):
 
     def _monitor_item(self, m, group, seen=None):
         mid = m.get("id")
-        name = m.get("name", f"monitor {mid}")
+        dd_name = m.get("name", f"monitor {mid}")
+        name = self._display_name(m)
+        renamed = name != dd_name
         emoji = STATE_EMOJI.get(group if group in ("Muted", "Quiet") else
                                 m.get("overall_state", "Unknown"), "❓")
         label = f"{emoji} {name}"
@@ -1582,7 +1663,13 @@ class DatadogAssistant(rumps.App):
         item.add(rumps.MenuItem("🔇 Mute forever", callback=self._make_muter(mid, None)))
         item.add(rumps.MenuItem("🔊 Unmute", callback=self._make_unmuter(mid)))
         item.add(None)
-        item.add(rumps.MenuItem("🗑 Delete monitor…", callback=self._make_deleter(mid, name)))
+        item.add(rumps.MenuItem("✏️ Rename (local only)…",
+                                callback=self._make_renamer(mid, dd_name)))
+        if renamed:
+            item.add(rumps.MenuItem(f"↩️ Reset to Datadog name “{dd_name[:30]}”",
+                                    callback=self._make_alias_resetter(mid)))
+        item.add(rumps.MenuItem("🗑 Delete monitor…",
+                                callback=self._make_deleter(mid, dd_name)))
         return item
 
     def _prefs_menu(self):
@@ -1626,6 +1713,10 @@ class DatadogAssistant(rumps.App):
                                callback=self._toggle_show_ok)
         okmon.state = 1 if self.cfg["menu"].get("show_ok_monitors", True) else 0
         prefs.add(okmon)
+        dlq = rumps.MenuItem("💀 Group dead letter queues",
+                             callback=self._toggle_dlq)
+        dlq.state = 1 if self.cfg.get("dlq", {}).get("enabled", True) else 0
+        prefs.add(dlq)
         inc = rumps.MenuItem("🔥 Show incidents", callback=self._toggle_incidents)
         inc.state = 1 if self.cfg["context"].get("show_incidents", True) else 0
         prefs.add(inc)
@@ -1724,6 +1815,36 @@ class DatadogAssistant(rumps.App):
                                  f"Deleted “{name[:40]}” 🗑")
         return cb
 
+    def _make_renamer(self, mid, dd_name):
+        def cb(_):
+            current = self._aliases().get(str(mid), dd_name)
+            win = rumps.Window(
+                title="✏️ Rename monitor (local only)",
+                message=(f'Datadog name:\n"{dd_name}"\n\n'
+                         "Your label shows only in this app — Datadog is "
+                         "untouched. Leave blank to reset."),
+                default_text=current, ok="Save", cancel="Cancel",
+                dimensions=(320, 24))
+            resp = win.run()
+            if not resp.clicked:
+                return
+            new = resp.text.strip()
+            aliases = self._aliases()
+            if not new or new == dd_name:
+                aliases.pop(str(mid), None)
+            else:
+                aliases[str(mid)] = new
+            save_state(self.state)
+            self._rebuild_menu()
+        return cb
+
+    def _make_alias_resetter(self, mid):
+        def cb(_):
+            self._aliases().pop(str(mid), None)
+            save_state(self.state)
+            self._rebuild_menu()
+        return cb
+
     def _add_monitor(self, _):
         w1 = rumps.Window(title="➕ New monitor — name",
                           message="A clear, human-readable monitor name:",
@@ -1787,6 +1908,9 @@ class DatadogAssistant(rumps.App):
 
     def _toggle_show_ok(self, _):
         self._toggle("menu", "show_ok_monitors")
+
+    def _toggle_dlq(self, _):
+        self._toggle("dlq", "enabled")
 
     def _toggle_incidents(self, _):
         self._toggle("context", "show_incidents")

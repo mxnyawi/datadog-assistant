@@ -411,4 +411,69 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
     app._handle_new_monitors(FAKE4)
     assert notifications == [], notifications
 
+    # ---- local renames ----
+    app.state.setdefault("aliases", {})["1"] = "💳 Payments CPU"
+    assert app._display_name(FAKE[0]) == "💳 Payments CPU"
+    assert app._display_name(FAKE[1]) == "P95 latency checkout-api"  # unaliased
+    app.monitors = json.loads(json.dumps(FAKE))
+    app.snooze_until = 0
+    app._rebuild_menu()
+    titles = [getattr(i, "title", "") for i in app.menu if i]
+    assert any("💳 Payments CPU" in t for t in titles), titles
+    assert not any("High CPU on prod-web" in t for t in titles), titles
+    # rename feeds notifications + fingerprint
+    assert "💳 Payments CPU" in str(app._menu_fingerprint())
+    # reset restores the Datadog name
+    app._make_alias_resetter(1)(None)
+    assert "1" not in app.state.get("aliases", {})
+    titles = [getattr(i, "title", "") for i in app.menu if i]
+    assert any("High CPU on prod-web" in t for t in titles), titles
+
+    # ---- DLQ grouping ----
+    DLQ = [
+        {"id": 101, "name": "payments-dlq depth", "overall_state": "Alert",
+         "options": {}},
+        {"id": 102, "name": "orders DLQ age", "overall_state": "OK",
+         "options": {}},
+        {"id": 103, "name": "billing backlog", "overall_state": "Warn",
+         "options": {},
+         "query": "sum(last_5m):sum:sqs.dead_letter.messages{*} > 1"},
+        {"id": 104, "name": "shipping queue", "overall_state": "OK",
+         "options": {}, "tags": ["queue:deadletter"]},
+        {"id": 105, "name": "regular cpu", "overall_state": "Alert",
+         "options": {}},
+    ]
+    assert [app._is_dlq(m) for m in DLQ] == [True, True, True, True, False]
+    # alias can also tip a monitor into the DLQ bucket
+    app.state.setdefault("aliases", {})["105"] = "orders DLQ retries"
+    assert app._is_dlq(DLQ[4]) is True
+    app.state["aliases"].pop("105")
+
+    app.monitors = DLQ
+    app.enrich = {}
+    app._rebuild_menu()
+    dlq = app._dlq_monitors()
+    assert [m["id"] for m in dlq] == [101, 103, 102, 104], dlq  # severity-sorted
+    titles = [getattr(i, "title", "") for i in app.menu if i]
+    assert any(t.startswith("💀 DEAD LETTER QUEUES (4)") and "1 alerting" in t
+               for t in titles), titles
+    # exclusive: DLQ alert is pulled out of the ALERTING group (only 105 left)
+    assert any("🔴 ALERTING (1)" == t for t in titles), titles
+    # healthy DLQs collapse into a submenu
+    healthy = next(i for i in app.menu
+                   if i and getattr(i, "title", "").startswith("🟢 healthy"))
+    assert "(2)" in healthy.title, healthy.title
+    assert {c.title.split(" ", 1)[1].split(" age")[0].split(" queue")[0]
+            for c in healthy.children if c} == {"orders DLQ", "shipping"}, \
+        [c.title for c in healthy.children]
+    # summary advertises the DLQ count
+    assert any("💀 4 dlq" in t for t in titles), titles
+
+    # toggle DLQ grouping off -> section gone, DLQ alert back in ALERTING (2)
+    app._toggle_dlq(None)
+    titles = [getattr(i, "title", "") for i in app.menu if i]
+    assert not any("DEAD LETTER" in t for t in titles), titles
+    assert any("🔴 ALERTING (2)" == t for t in titles), titles
+    app._toggle_dlq(None)  # restore
+
 print("SMOKE TEST PASSED ✅")

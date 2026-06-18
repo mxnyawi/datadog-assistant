@@ -44,6 +44,8 @@ alerts, sparklines, incidents, Jira, snooze and more, no config editing needed.
 | 🚨 | Menu bar icon flips from 🐶 to **🚨 2** the second a monitor alerts |
 | 🛑 | Optional **modal popup** (critical alert you must dismiss) + 🪧 banner + 🔊 sound |
 | 🔴🟡🟢 | All monitors grouped by state — Alert / Warn / No Data / OK / Muted |
+| 💀 | **Dead-letter-queue grouping** — auto-detects DLQ monitors (by name, query, or tag) and consolidates them into one severity-sorted 💀 section so the queues you babysit live in one place. Firing ones stay inline; healthy ones tuck into a 🟢 submenu |
+| ✏️ | **Local rename** — relabel any monitor to something you recognise (`💳 Payments CPU`). The label is yours only — Datadog is never touched — and it follows the monitor into menus, notifications, and DLQ detection. ↩️ reset anytime |
 | 🤫 | **No Data triage** — splits No Data into *likely broken* (metric was flowing then stopped, monitor wants no-data alerts) vs *expected quiet* (no-data notifications off, event-stream monitors, stale/retired, metric silent for 24h+). Only broken ones notify; quiet ones collapse into a 🤫 submenu with the reason |
 | 🔇 | Mute any monitor for 1h / 4h / 24h / forever, unmute, 🗑 delete (type-DELETE confirm) |
 | ➕ | Create new metric monitors from the menu bar |
@@ -182,6 +184,21 @@ New in v0.2:
   metric queries per refresh; set `"enabled": false` for the old flat
   behavior. Ambiguity defaults to *broken* — a dead service looks exactly
   like No Data.
+- **`dlq`** — dead-letter-queue grouping. A monitor is treated as a DLQ when any
+  of `patterns` (default `dlq`, `dead letter`, `dead-letter`, `dead_letter`,
+  `deadletter`) appears, case-insensitively, in its name (or your local
+  rename), its `query` (when `match_query`), or its tags (when `match_tags`).
+  Matches are pulled into one 💀 section sorted by severity. With
+  `"exclusive": true` (default) they're also removed from the normal
+  state groups so they aren't listed twice; set it `false` to show them in
+  both. Tune `patterns` to match your naming (`"retry-queue"`, `"poison"`, …),
+  or set `"enabled": false` to switch the whole thing off. Counts (including
+  alerting DLQs) still flow into the menu-bar icon and the 📊 summary line.
+
+> **Local renames** live in `state.json`, not `config.json` — use the
+> **✏️ Rename (local only)…** item on any monitor (Datadog stays untouched).
+> Renames carry into notifications and feed DLQ detection, so naming a monitor
+> `Orders DLQ` is enough to group it.
 
 Most common settings are also flippable live from **⚙️ Preferences** in the
 menu — no editing or restart needed.
