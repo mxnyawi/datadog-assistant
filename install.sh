@@ -18,7 +18,14 @@ cp "$SRC_DIR/datadog_assistant.py" "$APP_DIR/"
 if [ ! -d "$APP_DIR/venv" ]; then
   python3 -m venv "$APP_DIR/venv"
 fi
-"$APP_DIR/venv/bin/pip" install --quiet --upgrade pip rumps
+"$APP_DIR/venv/bin/pip" install --quiet --upgrade pip
+# Install from the pinned requirements (avoids pulling an arbitrary latest
+# rumps/pyobjc); fall back to a pinned spec if the file is somehow absent.
+if [ -f "$SRC_DIR/requirements.txt" ]; then
+  "$APP_DIR/venv/bin/pip" install --quiet -r "$SRC_DIR/requirements.txt"
+else
+  "$APP_DIR/venv/bin/pip" install --quiet 'rumps>=0.4.0,<0.5'
+fi
 echo "✅ Python environment ready"
 
 # 2. Datadog site/region (wrong region = 403 from the API)
