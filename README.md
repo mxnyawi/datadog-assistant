@@ -76,9 +76,9 @@ alerts, sparklines, incidents, Jira, snooze and more, no config editing needed.
    it, go to **System Settings → Privacy & Security → Open Anyway**).
 4. Follow the steps: pick your site, sign in, done. The 🐶 appears in your menu bar.
 
-The installer is a native macOS app (built by CI on every release , see
-[`installer/`](installer/)). You can also run it without building anything:
-`osascript installer/install.applescript`.
+The installer is a native macOS app, built from [`installer/`](installer/) and
+published to Releases via `installer/release.sh` (run on a Mac). You can also run
+it without building anything: `osascript installer/install.applescript`.
 
 ### Or the script:
 

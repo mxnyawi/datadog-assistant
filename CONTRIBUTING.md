@@ -72,8 +72,8 @@ an issue or discussion first so we can agree on the approach before you build it
 - **Never commit API keys, app keys, or Jira tokens.** `config.json` is already
   in `.gitignore`; keys belong in the macOS Keychain, env vars, or a password
   manager (see the README).
-- If you find a security issue, please **don't** open a public issue — email the
-  maintainer instead (see the profile on the repo).
+- If you find a security issue, please **don't** open a public issue — follow
+  [`SECURITY.md`](SECURITY.md) (GitHub private vulnerability reporting).
 
 ## Code of Conduct
 

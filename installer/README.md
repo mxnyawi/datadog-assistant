@@ -55,10 +55,11 @@ button (`releases/latest/download/Datadog-Assistant-Installer.zip`) then resolve
 
 ### Optional: build on GitHub instead of your Mac
 
-`.github/workflows/release.yml` builds the `.app` on a macOS runner and
-publishes the release automatically when you push a `v*` tag , no local Mac
-needed. Adding a workflow file requires a token with the `workflow` scope, so it
-has to be committed by someone with that scope (or via the GitHub web UI).
+There is no release workflow yet — releases are currently built and published
+**locally** with `installer/release.sh` on a Mac. A `.github/workflows/release.yml`
+that builds the `.app` on a macOS runner and publishes on a `v*` tag would remove
+the need for a local Mac; contributions welcome. (Committing a workflow file
+requires a token with the `workflow` scope, or adding it via the GitHub web UI.)
 
 ## Gatekeeper note
 
