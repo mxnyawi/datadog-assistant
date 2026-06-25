@@ -34,6 +34,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import queue
@@ -252,11 +253,42 @@ def deep_merge(base, override):
     return out
 
 
-def load_config():
+def _ensure_config_dir():
+    """Create CONFIG_DIR owner-only (0700). config.json / state.json can hold
+    credentials (api_key/app_key, oauth_blob with client_secret + refresh
+    token) when the Keychain isn't used, so they must not be world-readable."""
     os.makedirs(CONFIG_DIR, exist_ok=True)
+    try:
+        os.chmod(CONFIG_DIR, 0o700)
+    except OSError:
+        pass
+
+
+def _write_private_json(path, obj):
+    """Write JSON atomically with 0600 perms: render to a temp file in the same
+    dir, fsync, then os.replace() so a crash mid-write can't truncate the real
+    file and concurrent writers can't interleave."""
+    _ensure_config_dir()
+    fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".tmp-", suffix=".json")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def load_config():
+    _ensure_config_dir()
     if not os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, "w") as f:
-            json.dump(DEFAULT_CONFIG, f, indent=2)
+        _write_private_json(CONFIG_PATH, DEFAULT_CONFIG)
     try:
         with open(CONFIG_PATH) as f:
             user_cfg = json.load(f)
@@ -278,9 +310,7 @@ def _strip_ephemeral(obj):
 
 
 def save_config(cfg):
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(_strip_ephemeral(cfg), f, indent=2)
+    _write_private_json(CONFIG_PATH, _strip_ephemeral(cfg))
 
 
 OPEN_BROWSER = ""  # set from cfg at startup; "" = system default browser
@@ -449,9 +479,7 @@ def load_state():
 
 def save_state(state):
     try:
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        with open(STATE_PATH, "w") as f:
-            json.dump(state, f, indent=2)
+        _write_private_json(STATE_PATH, state)
     except Exception:
         pass
 
