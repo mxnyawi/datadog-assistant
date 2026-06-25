@@ -169,7 +169,10 @@ DEFAULT_CONFIG = {
         "cache_seconds": 180,
         "show_on": ["Alert", "Warn", "No Data"],
         "notify_correlation": True,  # add the "🚀 deployed Nm before" line to alerts
-        "show_unresolved_hint": True # tell you when a monitor has no service/repo
+        "show_unresolved_hint": True, # tell you when a monitor has no service/repo
+        "show_releases": True,       # 🚀 latest GitHub releases for the repo (uses
+                                     # your local `gh` CLI auth — no keys needed)
+        "max_releases": 5,           # how many releases to list in the dropdown
     },
     "digest_hour": None,                 # e.g. 9 = morning summary at 9am
     "jira": {
@@ -453,6 +456,100 @@ def lpass_get(entry, field):
     if val:
         _cache_set(cache_key, val)
     return val
+
+
+# --------------------------------------------------------------------------
+# GitHub releases via the user's local `gh` CLI auth (no new credentials)
+# --------------------------------------------------------------------------
+
+def _find_gh():
+    """Locate the GitHub CLI, checking the Homebrew paths a LaunchAgent's PATH
+    misses (same problem as lpass)."""
+    for p in ("/opt/homebrew/bin/gh", "/usr/local/bin/gh"):
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return shutil.which("gh") or "gh"
+
+
+_GH = _find_gh()
+
+
+def github_repo_parts(repo_url):
+    """('host', 'owner', 'repo') for a GitHub (.com or Enterprise) repo URL,
+    else None. Enterprise hosts are matched by the 'github' substring
+    (github.com, github.acme.com, …)."""
+    try:
+        p = urllib.parse.urlparse(repo_url or "")
+    except ValueError:
+        return None
+    host = p.netloc
+    if not host or "github" not in host.lower():
+        return None
+    parts = [x for x in p.path.split("/") if x]
+    if len(parts) < 2:
+        return None
+    owner, repo = parts[0], parts[1]
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    return host, owner, repo
+
+
+def _iso_to_epoch(s):
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def parse_gh_releases(raw, limit=5):
+    """`gh api .../releases` JSON → a trimmed list of release dicts."""
+    try:
+        data = json.loads(raw) if raw else []
+    except ValueError:
+        return []
+    out = []
+    for r in data:
+        if not isinstance(r, dict):
+            continue
+        out.append({"tag": r.get("tag_name") or "",
+                    "name": r.get("name") or "",
+                    "when": _iso_to_epoch(r.get("published_at")
+                                          or r.get("created_at")),
+                    "url": r.get("html_url") or "",
+                    "prerelease": bool(r.get("prerelease"))})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def gh_releases(repo_url, limit=5):
+    """Latest GitHub releases for a repo, fetched through the user's already
+    authenticated local `gh` (works for github.com and Enterprise via
+    --hostname). Returns [] if gh is missing/unauthenticated or the repo has
+    no releases. Results — including empties — are cached so we don't re-shell
+    on every poll."""
+    parts = github_repo_parts(repo_url)
+    if not parts:
+        return []
+    host, owner, repo = parts
+    cache_key = f"gh:releases:{host}/{owner}/{repo}:{limit}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    rels = []
+    try:
+        out = subprocess.run(
+            [_GH, "api", f"repos/{owner}/{repo}/releases?per_page={int(limit)}",
+             "--hostname", host],
+            capture_output=True, text=True, timeout=15)
+        if out.returncode == 0:
+            rels = parse_gh_releases(out.stdout, limit)
+    except Exception:
+        rels = []
+    _cache_set(cache_key, rels)
+    return rels
 
 
 def keychain_get(service):
@@ -1431,6 +1528,7 @@ class DatadogAssistant(rumps.App):
         self.nodata_probe = {}       # monitor id -> "stopped" | "silent"
         self.services = {}           # service name -> parsed Software Catalog entry
         self.deploys = {}            # monitor id -> {events, headline, suspect_url}
+        self.releases = {}           # repo url -> [latest GitHub releases]
         self._deploy_cache = {}      # service -> (ts, events)  (shared across monitors)
         self._svc_ts = 0             # last Software Catalog refresh
         self.state = load_state()    # persists jira tickets + digest date
@@ -1527,6 +1625,8 @@ class DatadogAssistant(rumps.App):
                                   # from tags + the monitor message
                     if scfg.get("show_deploys", True):
                         payload["deploys"] = self._fetch_deploys(payload["monitors"])
+                    if scfg.get("show_releases", True):
+                        payload["releases"] = self._fetch_releases(payload["monitors"])
                 # Snapshot the probe state so the worker never reads the live
                 # self.nodata_probe that the main thread reassigns in
                 # _drain_results.
@@ -1559,6 +1659,8 @@ class DatadogAssistant(rumps.App):
                     self.services = payload["services"]
                 if "deploys" in payload:
                     self.deploys = payload["deploys"]
+                if "releases" in payload:
+                    self.releases = payload["releases"]
                 # keep probe verdicts for monitors still in No Data, fold in
                 # the new ones (only a capped batch is probed per refresh)
                 nodata_ids = {m.get("id") for m in payload["monitors"]
@@ -1751,6 +1853,31 @@ class DatadogAssistant(rumps.App):
     def _deploy_headline(self, mid):
         ctx = self.deploys.get(mid)
         return ctx.get("headline") if ctx else None
+
+    def _fetch_releases(self, monitors):
+        """Latest GitHub releases for the repos of currently-firing monitors,
+        via local `gh`. Keyed by repo URL (the same URL the 🧭 submenu shows),
+        deduped and capped so we make at most a handful of `gh` calls per poll.
+        Runs in the fetch thread; results are cached with a TTL in gh_releases."""
+        scfg = self.cfg.get("service_context", {})
+        limit = int(scfg.get("max_releases", 5))
+        show_on = set(scfg.get("show_on", ["Alert", "Warn", "No Data"]))
+        out = {}
+        for m in monitors:
+            if m.get("overall_state") not in show_on:
+                continue
+            repos = self._service_links(m).get("links", {}).get("repo", [])
+            if not repos:
+                continue
+            url = repos[0]["url"]
+            if url in out:
+                continue
+            if len(out) >= 12:        # hard cap on gh calls per refresh
+                break
+            rels = gh_releases(url, limit)
+            if rels:
+                out[url] = rels
+        return out
 
     def _probe_no_data(self, monitors, already=None):
         """For No Data metric monitors: query the metric's recent history.
@@ -2388,6 +2515,20 @@ class DatadogAssistant(rumps.App):
                                        callback=self._make_opener(it["url"])))
 
         add_links("📦", "repo", "Repo")
+        # 🚀 Latest GitHub releases for the repo (fetched in the poll via `gh`).
+        repos = links.get("repo", [])
+        if repos and self.cfg.get("service_context", {}).get("show_releases", True):
+            rels = self.releases.get(repos[0]["url"]) or []
+            if rels:
+                sub.add(rumps.MenuItem("🚀 Latest releases"))
+                for r in rels:
+                    tag = r.get("tag") or r.get("name") or "release"
+                    pre = " (pre)" if r.get("prerelease") else ""
+                    when = fmt_ago(r.get("when"))
+                    t = f"   🏷 {tag}{pre}" + (f" · {when}" if when else "")
+                    sub.add(rumps.MenuItem(
+                        unique_title(t[:62], seen),
+                        callback=self._make_opener(r.get("url"))))
         git = info.get("git") or {}
         if info.get("version") or git.get("sha"):
             ver = info.get("version") or ""

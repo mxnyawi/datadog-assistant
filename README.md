@@ -360,6 +360,16 @@ line when something shipped right before:
 
 (that line is also appended to the notification).
 
+### 🚀 Latest GitHub releases on the alert
+If the monitor resolves to a GitHub repo, the 🧭 submenu also lists that repo's
+**latest releases** with when each shipped and a click-through link — pulled at
+poll time through your **local [`gh` CLI](https://cli.github.com) auth**, so
+there are **no new tokens or OAuth** to set up (and it works with GitHub
+Enterprise via your existing `gh` host). Just `brew install gh && gh auth login`
+once. Turn it off with `service_context.show_releases: false`, or change how
+many show with `max_releases`. If `gh` isn't installed or signed in, the
+section is simply omitted.
+
 ### Finding the service (monitors are tagged inconsistently)
 Datadog's Unified Service Tagging (`service`/`env`/`version`) is **not applied
 to monitors automatically** — a monitor only carries `service:` if someone put

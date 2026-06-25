@@ -88,7 +88,9 @@
     "cache_seconds": 180,
     "show_on": ["Alert", "Warn", "No Data"],
     "notify_correlation": true,
-    "show_unresolved_hint": true
+    "show_unresolved_hint": true,
+    "show_releases": true,
+    "max_releases": 5
   },
   "digest_hour": 9,
   "jira": {
