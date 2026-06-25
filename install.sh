@@ -105,8 +105,8 @@ if [ "${authm:-1}" = "3" ]; then
   echo "   You need the LastPass entry name where the secure note is stored."
   echo ""
   echo "   Expected secure note layout (key=value lines):"
-  echo "     clientID=..."
-  echo "     clientSecret=..."
+  echo "     jiraClientID=..."
+  echo "     jiraClientSecret=..."
   echo "     datadogAPIKey=..."
   echo "     datadogAPPKey=..."
   echo ""
@@ -119,15 +119,20 @@ if [ "${authm:-1}" = "3" ]; then
   LP_API_FIELD="${LP_API_FIELD:-datadogAPIKey}"
   read -r -p "   Field name for Datadog App key [datadogAPPKey]: " LP_APP_FIELD
   LP_APP_FIELD="${LP_APP_FIELD:-datadogAPPKey}"
-  read -r -p "   Field name for Jira token (leave empty to skip): " LP_JIRA_FIELD
-  python3 - "$CONFIG_DIR/config.json" "$LP_ENTRY" "$LP_API_FIELD" "$LP_APP_FIELD" "$LP_JIRA_FIELD" <<'EOF'
+  read -r -p "   Field name for Jira OAuth client ID (leave empty to skip) [jiraClientID]: " LP_JIRA_CID
+  LP_JIRA_CID="${LP_JIRA_CID:-jiraClientID}"
+  read -r -p "   Field name for Jira OAuth client secret [jiraClientSecret]: " LP_JIRA_SEC
+  LP_JIRA_SEC="${LP_JIRA_SEC:-jiraClientSecret}"
+  python3 - "$CONFIG_DIR/config.json" "$LP_ENTRY" "$LP_API_FIELD" "$LP_APP_FIELD" "$LP_JIRA_CID" "$LP_JIRA_SEC" <<'EOF'
 import json, sys, os
-p, entry, api_f, app_f, jira_f = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+p, entry, api_f, app_f, jira_cid, jira_sec = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 cfg = json.load(open(p)) if os.path.exists(p) else {}
 cfg["auth"] = "lastpass"
 cfg["lastpass"] = {"entry": entry, "api_key_field": api_f, "app_key_field": app_f}
-if jira_f.strip():
-    cfg["lastpass"]["jira_token_field"] = jira_f
+if jira_cid.strip():
+    cfg["lastpass"]["jira_client_id_field"] = jira_cid
+if jira_sec.strip():
+    cfg["lastpass"]["jira_client_secret_field"] = jira_sec
 json.dump(cfg, open(p, "w"), indent=2)
 EOF
   echo "✅ LastPass CLI configured. Keys will be fetched from '$LP_ENTRY' at runtime."

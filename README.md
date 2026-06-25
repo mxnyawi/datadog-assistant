@@ -151,8 +151,8 @@ keys stored on any workstation. Access is controlled by LastPass folder membersh
 **Secure Note layout** (key=value lines in the Notes body):
 
 ```
-clientID=your-oauth-client-id
-clientSecret=your-oauth-client-secret
+jiraClientID=your-jira-oauth-client-id
+jiraClientSecret=your-jira-oauth-client-secret
 datadogAPIKey=your-datadog-api-key
 datadogAPPKey=your-datadog-app-key
 ```
@@ -175,7 +175,8 @@ Or configure manually in `~/.config/datadog-assistant/config.json`:
     "entry": "Shared-SRE/datadog-assistant",
     "api_key_field": "datadogAPIKey",
     "app_key_field": "datadogAPPKey",
-    "jira_token_field": ""
+    "jira_client_id_field": "jiraClientID",
+    "jira_client_secret_field": "jiraClientSecret"
   }
 }
 ```

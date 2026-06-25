@@ -66,7 +66,9 @@ DEFAULT_CONFIG = {
         "entry": "",               # e.g. "Shared-SRE/datadog-assistant"
         "api_key_field": "datadogAPIKey",
         "app_key_field": "datadogAPPKey",
-        "jira_token_field": ""     # optional — also fetches Jira token
+        "jira_client_id_field": "jiraClientID",
+        "jira_client_secret_field": "jiraClientSecret",
+        "jira_token_field": ""     # optional — API token (non-OAuth) fallback
     },
     "oauth_client_id": "",         # OAuth mode: Client ID of your Datadog OAuth client
     "oauth_domain": "",            # OAuth mode: org region (datadoghq.eu...) — set on connect
@@ -1300,13 +1302,31 @@ class DatadogAssistant(rumps.App):
         global OPEN_BROWSER
         OPEN_BROWSER = self.cfg.get("browser", "")
         self.client = DatadogClient(self.cfg)
-        # If using LastPass auth and a jira_token_field is set, auto-wire it
+        # If using LastPass auth, auto-wire Jira OAuth credentials from the note
         lp = self.cfg.get("lastpass", {})
         jira_cfg = self.cfg.get("jira", {})
-        if (self.cfg.get("auth") == "lastpass" and lp.get("entry")
-                and lp.get("jira_token_field") and not jira_cfg.get("api_token_cmd")):
-            entry, field = lp["entry"], lp["jira_token_field"]
-            jira_cfg["api_token_cmd"] = f"lpass show --field='{field}' '{entry}'"
+        if self.cfg.get("auth") == "lastpass" and lp.get("entry"):
+            entry = lp["entry"]
+            # Jira OAuth client ID
+            if lp.get("jira_client_id_field"):
+                cid = lpass_get(entry, lp["jira_client_id_field"])
+                if cid:
+                    jira_cfg["oauth_client_id"] = cid
+            # Jira OAuth client secret — inject into oauth blob
+            if lp.get("jira_client_secret_field"):
+                sec = lpass_get(entry, lp["jira_client_secret_field"])
+                if sec:
+                    raw = (keychain_get("datadog-assistant-jira-oauth")
+                           or jira_cfg.get("oauth_blob", ""))
+                    try:
+                        blob = json.loads(raw) if raw else {}
+                    except ValueError:
+                        blob = {}
+                    blob["client_secret"] = sec
+                    jira_cfg["oauth_blob"] = json.dumps(blob)
+            # Jira API token (non-OAuth fallback)
+            if lp.get("jira_token_field") and not jira_cfg.get("api_token_cmd"):
+                jira_cfg["api_token_cmd"] = f"lpass show --field='{lp['jira_token_field']}' '{entry}'"
         self.jira = JiraClient(jira_cfg)
         icons = self.cfg["icons"]
         super().__init__(APP_NAME, title=icons["ok"], quit_button=None)
