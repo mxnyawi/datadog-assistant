@@ -49,3 +49,57 @@ jobs:
           for f in $(git ls-files '*.sh'); do
             shellcheck -S warning "$f" || true
           done
+
+  unattended:
+    name: Unattended install contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # With no TTY and env vars set, install.sh must write config.json
+      # non-interactively and never block on a prompt. macOS-only tools are
+      # stubbed and a fake venv is pre-seeded so this runs on Linux with no network.
+      - name: install.sh writes config.json from env (no prompts)
+        run: |
+          set -euo pipefail
+          export HOME="$(mktemp -d)"
+          mkdir -p "$HOME/Library/LaunchAgents"
+          shim="$(mktemp -d)"
+          printf '#!/bin/bash\nexit 0\n' > "$shim/launchctl"
+          printf '#!/bin/bash\nexit 0\n' > "$shim/security"
+          chmod +x "$shim/launchctl" "$shim/security"
+          mkdir -p "$HOME/.datadog-assistant/venv/bin"
+          printf '#!/bin/bash\nexit 0\n' > "$HOME/.datadog-assistant/venv/bin/pip"
+          chmod +x "$HOME/.datadog-assistant/venv/bin/pip"
+          PATH="$shim:$PATH" DD_NONINTERACTIVE=1 DD_SITE=datadoghq.eu \
+            DD_APP_SUBDOMAIN=acme DD_TAG_FILTER="team:ci" DD_AUTH=keys \
+            DD_API_KEY=dummy DD_APP_KEY=dummy bash install.sh
+          python3 - "$HOME/.config/datadog-assistant/config.json" <<'PY'
+          import json, sys
+          cfg = json.load(open(sys.argv[1]))
+          assert cfg["site"] == "datadoghq.eu", cfg
+          assert cfg["app_subdomain"] == "acme", cfg
+          assert cfg["tag_filter"] == "team:ci", cfg
+          assert cfg["auth"] == "keys", cfg
+          assert cfg["use_keychain"] is True, cfg
+          print("unattended config OK:", cfg)
+          PY
+
+      - name: invalid DD_AUTH fails fast
+        run: |
+          set +e
+          export HOME="$(mktemp -d)"
+          mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.datadog-assistant/venv/bin"
+          shim="$(mktemp -d)"
+          printf '#!/bin/bash\nexit 0\n' > "$shim/launchctl"
+          printf '#!/bin/bash\nexit 0\n' > "$shim/security"
+          printf '#!/bin/bash\nexit 0\n' > "$HOME/.datadog-assistant/venv/bin/pip"
+          chmod +x "$shim/launchctl" "$shim/security" "$HOME/.datadog-assistant/venv/bin/pip"
+          PATH="$shim:$PATH" DD_NONINTERACTIVE=1 DD_AUTH=bogus bash install.sh
+          rc=$?
+          if [ "$rc" -eq 0 ]; then echo "expected non-zero exit for bad DD_AUTH"; exit 1; fi
+          echo "correctly rejected DD_AUTH=bogus (rc=$rc)"
