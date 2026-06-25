@@ -921,13 +921,27 @@ class DatadogClient:
 
     def get_monitors(self):
         # Paginate so one giant response can't stall mid-read on large orgs.
-        params = {"group_states": "all", "page_size": 200}
         tag_filter = self.cfg.get("tag_filter", "").strip()
-        if tag_filter:
-            params["monitor_tags"] = ",".join(tag_filter.split())
         name_filter = self.cfg.get("name_filter", "").strip()
-        if name_filter:
-            params["name"] = name_filter
+        tags = tag_filter.split() if tag_filter else []
+
+        # Datadog's monitor_tags param is AND logic. For OR, we fetch per tag
+        # and dedupe by monitor ID.
+        if len(tags) > 1:
+            seen = {}
+            for tag in tags:
+                for m in self._fetch_monitors_page(monitor_tags=tag, name=name_filter):
+                    seen.setdefault(m["id"], m)
+            return list(seen.values())
+        return self._fetch_monitors_page(
+            monitor_tags=tags[0] if tags else "", name=name_filter)
+
+    def _fetch_monitors_page(self, monitor_tags="", name=""):
+        params = {"group_states": "all", "page_size": 200}
+        if monitor_tags:
+            params["monitor_tags"] = monitor_tags
+        if name:
+            params["name"] = name
         monitors, page = [], 0
         while True:
             batch = self._request("GET", "/monitor",
@@ -2870,15 +2884,18 @@ class DatadogAssistant(rumps.App):
     def _set_tag_filter(self, _):
         win = rumps.Window(
             title="🏷 Tag filter",
-            message="Space-separated tags — only monitors matching ALL tags "
-                    "are shown.\nLeave empty for all monitors.\n"
-                    "Example: team:payments env:prod",
+            message="Space-separated tags — monitors matching ANY tag are "
+                    "shown (OR logic).\nLeave empty for all monitors.\n"
+                    "Example: team:payments team:platform",
             default_text=self.cfg.get("tag_filter", ""),
             ok="Save", cancel="Cancel", dimensions=(320, 24))
         resp = win.run()
         if resp.clicked:
             self.cfg["tag_filter"] = resp.text.strip()
             save_config(self.cfg)
+            # Clear stale data so the menu reflects the change immediately
+            self.monitors = []
+            self._fetching = False
             self._poll_tick(None)
 
     # -------------------- Datadog credentials wizard --------------------
