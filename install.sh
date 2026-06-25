@@ -4,6 +4,10 @@
 # and installs a LaunchAgent so the app starts at login.
 set -euo pipefail
 
+# config.json may hold credentials (api_key/app_key or oauth_client_id), so
+# everything this script creates should be owner-only.
+umask 077
+
 APP_DIR="$HOME/.datadog-assistant"
 CONFIG_DIR="$HOME/.config/datadog-assistant"
 PLIST="$HOME/Library/LaunchAgents/com.nour.datadog-assistant.plist"
@@ -148,6 +152,12 @@ EOF
   echo "   ⏱  The lpass agent logs you out after a timeout (default: 1 hour)."
   read -r -p "   Session timeout in seconds (leave empty for never): " LP_TIMEOUT
   LP_TIMEOUT="${LP_TIMEOUT:-0}"
+  # Must be a plain integer: it's interpolated into ~/.zshrc and the plist, so a
+  # non-numeric value could inject a shell command that runs on next login.
+  if ! [[ "$LP_TIMEOUT" =~ ^[0-9]+$ ]]; then
+    echo "   ⚠️  '$LP_TIMEOUT' is not a number of seconds — using 0 (never)." >&2
+    LP_TIMEOUT=0
+  fi
   # The app runs from a LaunchAgent, which does NOT source your shell rc — so
   # the authoritative place for the timeout is the plist's EnvironmentVariables
   # (wired in below). We also drop it in the shell rc so manual `lpass` use in a

@@ -14,6 +14,9 @@
 #   DD_DRY_RUN        1 = skip venv/pip/keychain/launchctl (for tests)
 set -euo pipefail
 
+# config.json may hold credentials, so create everything owner-only.
+umask 077
+
 APP_DIR="$HOME/.datadog-assistant"
 CONFIG_DIR="$HOME/.config/datadog-assistant"
 CONFIG="$CONFIG_DIR/config.json"
