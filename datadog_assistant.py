@@ -1413,6 +1413,8 @@ class DatadogAssistant(rumps.App):
         if self._fetching:
             return
         self._fetching = True
+        if self._refresh_item is not None:
+            self._refresh_item.title = "⏳ Refreshing…"
         threading.Thread(target=self._fetch, daemon=True).start()
 
     def _fetch(self):
