@@ -136,6 +136,20 @@ if jira_sec.strip():
 json.dump(cfg, open(p, "w"), indent=2)
 EOF
   echo "✅ LastPass CLI configured. Keys will be fetched from '$LP_ENTRY' at runtime."
+  echo ""
+  echo "   ⏱  The lpass agent logs you out after a timeout (default: 1 hour)."
+  read -r -p "   Session timeout in seconds (leave empty for never): " LP_TIMEOUT
+  LP_TIMEOUT="${LP_TIMEOUT:-0}"
+  SHELL_RC="$HOME/.zshrc"
+  [ -f "$HOME/.bash_profile" ] && ! [ -f "$HOME/.zshrc" ] && SHELL_RC="$HOME/.bash_profile"
+  if ! grep -q "LPASS_AGENT_TIMEOUT" "$SHELL_RC" 2>/dev/null; then
+    echo "export LPASS_AGENT_TIMEOUT=$LP_TIMEOUT" >> "$SHELL_RC"
+    echo "   ✅ Added LPASS_AGENT_TIMEOUT=$LP_TIMEOUT to $SHELL_RC"
+  else
+    sed -i '' "s/export LPASS_AGENT_TIMEOUT=.*/export LPASS_AGENT_TIMEOUT=$LP_TIMEOUT/" "$SHELL_RC"
+    echo "   ✅ Updated LPASS_AGENT_TIMEOUT=$LP_TIMEOUT in $SHELL_RC"
+  fi
+  export LPASS_AGENT_TIMEOUT="$LP_TIMEOUT"
   echo "   Make sure you're logged in: lpass login your@email.com"
 elif [ "${authm:-1}" = "2" ]; then
   echo ""
