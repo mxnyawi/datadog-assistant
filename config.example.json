@@ -5,6 +5,14 @@
   "use_keychain": true,
   "api_key_cmd": "",
   "app_key_cmd": "",
+  "lastpass": {
+    "entry": "Shared-SRE/datadog-assistant",
+    "api_key_field": "datadogAPIKey",
+    "app_key_field": "datadogAPPKey",
+    "jira_client_id_field": "jiraClientID",
+    "jira_client_secret_field": "jiraClientSecret",
+    "jira_token_field": ""
+  },
   "oauth_client_id": "",
   "oauth_domain": "",
   "site": "datadoghq.com",
