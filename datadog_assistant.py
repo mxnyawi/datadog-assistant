@@ -956,7 +956,9 @@ class DatadogClient:
             seen = {}
             for tag in tags:
                 for m in self._fetch_monitors_page(monitor_tags=tag, name=name_filter):
-                    seen.setdefault(m["id"], m)
+                    mid = m.get("id")
+                    if mid is not None:
+                        seen.setdefault(mid, m)
             return list(seen.values())
         return self._fetch_monitors_page(
             monitor_tags=tags[0] if tags else "", name=name_filter)
@@ -968,13 +970,16 @@ class DatadogClient:
         if name:
             params["name"] = name
         monitors, page = [], 0
-        while True:
+        # Hard page cap (200/page => 100k monitors) so a server that keeps
+        # returning full pages can't spin this loop forever and hammer the API.
+        while page < 500:
             batch = self._request("GET", "/monitor",
                                   params={**params, "page": page})
             monitors.extend(batch)
             if len(batch) < params["page_size"]:
-                return monitors
+                break
             page += 1
+        return monitors
 
     def mute_monitor(self, monitor_id, hours=None):
         params = {}
@@ -1050,7 +1055,8 @@ class DatadogClient:
         home of a service's repo/runbook/docs/on-call links inside Datadog.
         schema_version=v2.2 returns the unified `links[]` shape."""
         out, page = [], 0
-        while True:
+        # Page cap as a safety net against a non-terminating pagination loop.
+        while page < 500:
             data = self._request("GET", "/services/definitions",
                                  params={"page[size]": 100, "page[number]": page,
                                          "schema_version": "v2.2"},
@@ -1058,8 +1064,9 @@ class DatadogClient:
             batch = data.get("data") or []
             out.extend(batch)
             if len(batch) < 100:
-                return out
+                break
             page += 1
+        return out
 
     def get_events(self, tags, start, end, sources=None):
         params = {"start": int(start), "end": int(end)}
@@ -1910,6 +1917,14 @@ class DatadogAssistant(rumps.App):
             if state == "Alert" and prev is not None and prev != "Alert" \
                     and not muted:
                 self._maybe_auto_jira(m)
+
+        # Prune tracking dicts to the monitors we still see, so a long-running
+        # session doesn't accumulate state for deleted/filtered-out monitors
+        # (matches how nodata_probe / _deploy_cache are pruned).
+        live_ids = {m.get("id") for m in monitors}
+        for d in (self.prev_states, self.last_notified):
+            for stale in [k for k in d if k not in live_ids]:
+                del d[stale]
 
     # -------------------- jira --------------------
 
