@@ -88,6 +88,11 @@ chmod +x install.sh
 ./install.sh
 ```
 
+> **Requires Python 3.10+.** On system Python 3.9, `pip` builds `pyobjc` from
+> source — slow, and needs the Xcode Command Line Tools. If `python3 --version`
+> is below 3.10, install a newer one (`brew install python@3.12`) and run the
+> script with it on your `PATH` (a prebuilt `pyobjc` wheel installs in seconds).
+
 The installer:
 1. creates a venv at `~/.datadog-assistant` and installs `rumps`
 2. lets you authenticate with **API + App keys** (stored in the macOS
@@ -104,6 +109,36 @@ banners/popups work (grant notification permission if macOS asks), and
 pip3 install rumps
 DD_API_KEY=xxx DD_APP_KEY=yyy python3 datadog_assistant.py
 ```
+
+### Automated / unattended install (agents & CI) 🤖
+
+`install.sh` also runs **non-interactively** — handy for coding agents,
+dotfiles, or fleet setup. Set `DD_NONINTERACTIVE=1` (auto-enabled whenever stdin
+isn't a terminal) and pass your settings as environment variables instead of
+answering prompts:
+
+```bash
+DD_NONINTERACTIVE=1 \
+DD_SITE=datadoghq.eu \
+DD_APP_SUBDOMAIN=yourorg \
+DD_TAG_FILTER="team:payments env:prod" \
+DD_API_KEY=… DD_APP_KEY=… \
+./install.sh
+```
+
+| Variable | Maps to | Default |
+|---|---|---|
+| `DD_NONINTERACTIVE` | skip all prompts (auto-on with no TTY) | _interactive_ |
+| `DD_SITE` | `site` | `datadoghq.com` |
+| `DD_APP_SUBDOMAIN` | `app_subdomain` | `app` |
+| `DD_TAG_FILTER` | `tag_filter` | _(all monitors)_ |
+| `DD_AUTH` | `auth` (`keys` or `oauth`) | `keys` |
+| `DD_API_KEY` / `DD_APP_KEY` | stored in the Keychain (keys auth) | — |
+| `DD_OAUTH_CLIENT_ID` | `oauth_client_id` (oauth auth) | — |
+
+Keys passed this way go straight into the macOS Keychain — never written to
+`config.json`. Full agent guide, including read-only verification steps:
+**[AGENTS.md](AGENTS.md)**.
 
 ## 🔑 Authentication — API keys or OAuth
 
