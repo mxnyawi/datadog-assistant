@@ -79,13 +79,60 @@ else
   echo "ℹ️  No tag filter — fetching all monitors (you can set tag_filter in config.json later)"
 fi
 
-# 4. Authentication — API + App keys, or OAuth (browser login)
+# 4. Authentication — API + App keys, OAuth, or LastPass CLI
 echo ""
 echo "🔐 How do you want to authenticate to Datadog?"
 echo "   1) API + App keys  (quickest — paste them now, stored in the Keychain)"
 echo "   2) OAuth           (log in via the browser; needs a Datadog OAuth client)"
-read -r -p "   Choice [1-2, default 1]: " authm
-if [ "${authm:-1}" = "2" ]; then
+echo "   3) LastPass CLI    (shared vault — keys fetched at runtime via lpass)"
+read -r -p "   Choice [1-3, default 1]: " authm
+if [ "${authm:-1}" = "3" ]; then
+  # --- LastPass CLI integration ---
+  if ! command -v lpass &>/dev/null; then
+    echo ""
+    echo "   ⚠️  LastPass CLI (lpass) not found. Installing via Homebrew..."
+    if ! command -v brew &>/dev/null; then
+      echo "   ERROR: Homebrew not installed. Install it from https://brew.sh then re-run." >&2
+      exit 1
+    fi
+    brew install lastpass-cli
+    echo "   ✅ lpass installed"
+  else
+    echo "   ✅ lpass already installed"
+  fi
+  echo ""
+  echo "   The tool will call 'lpass show' at runtime to fetch your team's shared keys."
+  echo "   You need the LastPass entry name where the secure note is stored."
+  echo ""
+  echo "   Expected secure note layout (key=value lines):"
+  echo "     clientID=..."
+  echo "     clientSecret=..."
+  echo "     datadogAPIKey=..."
+  echo "     datadogAPPKey=..."
+  echo ""
+  read -r -p "   LastPass entry name (e.g. Shared-SRE/datadog-assistant): " LP_ENTRY
+  if [ -z "$LP_ENTRY" ]; then
+    echo "   ERROR: entry name is required." >&2
+    exit 1
+  fi
+  read -r -p "   Field name for Datadog API key [datadogAPIKey]: " LP_API_FIELD
+  LP_API_FIELD="${LP_API_FIELD:-datadogAPIKey}"
+  read -r -p "   Field name for Datadog App key [datadogAPPKey]: " LP_APP_FIELD
+  LP_APP_FIELD="${LP_APP_FIELD:-datadogAPPKey}"
+  read -r -p "   Field name for Jira token (leave empty to skip): " LP_JIRA_FIELD
+  python3 - "$CONFIG_DIR/config.json" "$LP_ENTRY" "$LP_API_FIELD" "$LP_APP_FIELD" "$LP_JIRA_FIELD" <<'EOF'
+import json, sys, os
+p, entry, api_f, app_f, jira_f = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+cfg = json.load(open(p)) if os.path.exists(p) else {}
+cfg["auth"] = "lastpass"
+cfg["lastpass"] = {"entry": entry, "api_key_field": api_f, "app_key_field": app_f}
+if jira_f.strip():
+    cfg["lastpass"]["jira_token_field"] = jira_f
+json.dump(cfg, open(p, "w"), indent=2)
+EOF
+  echo "✅ LastPass CLI configured. Keys will be fetched from '$LP_ENTRY' at runtime."
+  echo "   Make sure you're logged in: lpass login your@email.com"
+elif [ "${authm:-1}" = "2" ]; then
   echo ""
   echo "   OAuth needs a one-time OAuth client registered in Datadog"
   echo "   (Organization Settings → OAuth). Set its redirect URI to exactly:"

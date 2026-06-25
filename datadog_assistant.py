@@ -55,13 +55,19 @@ CONFIG_DIR = os.path.expanduser("~/.config/datadog-assistant")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 
 DEFAULT_CONFIG = {
-    "auth": "keys",                # "keys" (API + APP key) or "oauth" (browser login)
+    "auth": "keys",                # "keys" | "oauth" | "lastpass"
     "api_key": "",                 # or set DD_API_KEY env var, or use keychain
     "app_key": "",                 # or set DD_APP_KEY env var, or use keychain
     "use_keychain": False,         # read keys from macOS Keychain (see README)
     "api_key_cmd": "",             # pull keys from a password manager instead,
     "app_key_cmd": "",             # e.g. "lpass show --password dd-api-key" or
                                    # "op read op://Engineering/Datadog/api-key"
+    "lastpass": {                  # auth=lastpass: shared vault entry
+        "entry": "",               # e.g. "Shared-SRE/datadog-assistant"
+        "api_key_field": "datadogAPIKey",
+        "app_key_field": "datadogAPPKey",
+        "jira_token_field": ""     # optional — also fetches Jira token
+    },
     "oauth_client_id": "",         # OAuth mode: Client ID of your Datadog OAuth client
     "oauth_domain": "",            # OAuth mode: org region (datadoghq.eu...) — set on connect
     "site": "datadoghq.com",       # datadoghq.eu, us3.datadoghq.com, us5..., ap1...
@@ -312,6 +318,53 @@ def secret_from_cmd(cmd):
         val = ""
     if val:
         _SECRET_CMD_CACHE[cmd] = val
+    return val
+
+
+def lpass_logged_in():
+    """Check if the user is logged into LastPass CLI."""
+    try:
+        out = subprocess.run(["lpass", "status"], capture_output=True,
+                             text=True, timeout=10)
+        return out.returncode == 0 and "Logged in" in out.stdout
+    except Exception:
+        return False
+
+
+def lpass_get(entry, field):
+    """Retrieve a field from a LastPass secure note (key=value format in Notes).
+    Falls back to --field for custom-field entries."""
+    if not entry or not field:
+        return ""
+    cache_key = f"lpass:{entry}:{field}"
+    if cache_key in _SECRET_CMD_CACHE:
+        return _SECRET_CMD_CACHE[cache_key]
+    # Try --field first (works for custom fields)
+    val = ""
+    try:
+        out = subprocess.run(
+            ["lpass", "show", "--field", field, entry],
+            capture_output=True, text=True, timeout=30)
+        val = out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:
+        pass
+    # Fallback: parse key=value lines from --notes (secure notes)
+    if not val:
+        try:
+            out = subprocess.run(
+                ["lpass", "show", "--notes", entry],
+                capture_output=True, text=True, timeout=30)
+            if out.returncode == 0:
+                for line in out.stdout.splitlines():
+                    if "=" in line:
+                        k, _, v = line.partition("=")
+                        if k.strip() == field:
+                            val = v.strip()
+                            break
+        except Exception:
+            pass
+    if val:
+        _SECRET_CMD_CACHE[cache_key] = val
     return val
 
 
@@ -724,6 +777,14 @@ class DatadogClient:
         if self.cfg.get("use_keychain"):
             api = keychain_get("datadog-assistant-api-key") or api
             app = keychain_get("datadog-assistant-app-key") or app
+        # lastpass mode: retrieve from secure note
+        if self.auth_mode() == "lastpass":
+            lp = self.cfg.get("lastpass", {})
+            entry = lp.get("entry", "")
+            if entry:
+                api = lpass_get(entry, lp.get("api_key_field", "datadogAPIKey")) or api
+                app = lpass_get(entry, lp.get("app_key_field", "datadogAPPKey")) or app
+                return api, app
         # password-manager commands win when configured
         api = secret_from_cmd(self.cfg.get("api_key_cmd")) or api
         app = secret_from_cmd(self.cfg.get("app_key_cmd")) or app
@@ -753,6 +814,9 @@ class DatadogClient:
         if self.auth_mode() == "oauth":
             return bool(self.cfg.get("oauth_client_id")
                         and self._oauth_blob().get("refresh_token"))
+        if self.auth_mode() == "lastpass":
+            lp = self.cfg.get("lastpass", {})
+            return bool(lp.get("entry")) and lpass_logged_in()
         return self.has_keys()
 
     def _oauth_api(self):
@@ -1224,7 +1288,14 @@ class DatadogAssistant(rumps.App):
         global OPEN_BROWSER
         OPEN_BROWSER = self.cfg.get("browser", "")
         self.client = DatadogClient(self.cfg)
-        self.jira = JiraClient(self.cfg.get("jira", {}))
+        # If using LastPass auth and a jira_token_field is set, auto-wire it
+        lp = self.cfg.get("lastpass", {})
+        jira_cfg = self.cfg.get("jira", {})
+        if (self.cfg.get("auth") == "lastpass" and lp.get("entry")
+                and lp.get("jira_token_field") and not jira_cfg.get("api_token_cmd")):
+            entry, field = lp["entry"], lp["jira_token_field"]
+            jira_cfg["api_token_cmd"] = f"lpass show --field='{field}' '{entry}'"
+        self.jira = JiraClient(jira_cfg)
         icons = self.cfg["icons"]
         super().__init__(APP_NAME, title=icons["ok"], quit_button=None)
 
@@ -2772,8 +2843,8 @@ class DatadogAssistant(rumps.App):
         threading.Thread(target=self._datadog_connection_test, daemon=True).start()
 
     def _datadog_setup(self):
-        """One wizard for both auth methods: pick API keys vs OAuth, run the
-        matching credential steps, then test the connection."""
+        """One wizard for both auth methods: pick API keys vs OAuth vs
+        LastPass, run the matching credential steps, then test."""
         choice = ask_choice(
             "🔐 Datadog credentials",
             "How should the app authenticate to Datadog?\n\n"
@@ -2783,17 +2854,18 @@ class DatadogAssistant(rumps.App):
             "OAuth — log in once in the browser; the app stores rotating "
             "tokens instead of your keys, and detects your region "
             "automatically. Needs a one-time OAuth client in Datadog "
-            "(see README).",
-            ["Cancel", "OAuth", "API + App keys"])
+            "(see README).\n\n"
+            "LastPass CLI — fetch keys from a shared LastPass vault entry "
+            "at runtime. No keys stored on disk.",
+            ["Cancel", "LastPass CLI", "OAuth", "API + App keys"])
         if choice == "API + App keys":
             mode = "keys"
         elif choice == "OAuth":
             mode = "oauth"
+        elif choice == "LastPass CLI":
+            mode = "lastpass"
         else:
             return
-        # Background thread: the OAuth leg blocks on the browser redirect, and
-        # ask_text/ask_choice are osascript-based so they don't need the main
-        # thread (same pattern as the Jira wizard).
         threading.Thread(target=self._datadog_setup_flow, args=(mode,),
                          daemon=True).start()
 
@@ -2827,6 +2899,49 @@ class DatadogAssistant(rumps.App):
                     self.cfg["app_key"] = app
             self.cfg["auth"] = "keys"
             self.cfg["use_keychain"] = True
+            save_config(self.cfg)
+        elif mode == "lastpass":
+            # Check lpass is installed
+            try:
+                subprocess.run(["lpass", "--version"], capture_output=True, timeout=5)
+            except Exception:
+                notify_modal("❌ LastPass CLI not found",
+                             "Install it with: brew install lastpass-cli\n"
+                             "Then re-run this setup.")
+                return
+            if not lpass_logged_in():
+                notify_modal("⚠️ Not logged into LastPass",
+                             "Run in Terminal:\n  lpass login your@email.com\n"
+                             "Then re-run this setup.")
+                return
+            entry = ask_text(
+                "🔐 LastPass — Entry name",
+                "The full path to the shared entry, e.g.:\n"
+                "  Shared-SRE/datadog-assistant\n\n"
+                "This entry should have custom fields for the API keys.",
+                default=self.cfg.get("lastpass", {}).get("entry", ""))
+            if not entry:
+                return
+            api_field = ask_text(
+                "🔐 LastPass — API Key field name",
+                "The key name in the secure note that holds the "
+                "Datadog API key (e.g. datadogAPIKey).",
+                default=self.cfg.get("lastpass", {}).get("api_key_field", "datadogAPIKey"))
+            if not api_field:
+                return
+            app_field = ask_text(
+                "🔐 LastPass — App Key field name",
+                "The key name in the secure note that holds the "
+                "Datadog Application key (e.g. datadogAPPKey).",
+                default=self.cfg.get("lastpass", {}).get("app_key_field", "datadogAPPKey"))
+            if not app_field:
+                return
+            self.cfg["auth"] = "lastpass"
+            self.cfg["lastpass"] = {
+                "entry": entry,
+                "api_key_field": api_field,
+                "app_key_field": app_field,
+            }
             save_config(self.cfg)
         else:
             client_id = ask_text(
@@ -2973,7 +3088,8 @@ class DatadogAssistant(rumps.App):
         """Fetch monitors with the active credentials and report what worked —
         run this first when the menu bar shows 🔌."""
         client = DatadogClient(self.cfg)
-        mode = "OAuth" if client.auth_mode() == "oauth" else "API + App keys"
+        mode = {"oauth": "OAuth", "lastpass": "LastPass CLI"}.get(
+            client.auth_mode(), "API + App keys")
         if not client.configured():
             notify_modal("❌ Datadog not configured",
                          f"Auth mode: {mode}\nNo credentials yet — run "
