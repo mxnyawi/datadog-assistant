@@ -1304,6 +1304,28 @@ def _osa(script):
         pass
 
 
+def activate_app():
+    """Bring this menu-bar (LSUIElement) app to the foreground.
+
+    Without this, a modal dialog (rumps.Window / NSAlert) opens *behind* the
+    frontmost app and the dock icon bounces to get attention instead of the
+    dialog showing up front — the "hidden popup + bouncing Python icon" issue.
+    Must be called on the main thread, right before showing a window."""
+    try:
+        from AppKit import NSApplication
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+    except Exception:
+        pass  # non-macOS / no pyobjc — nothing to do
+
+
+def run_window(win):
+    """Show a rumps.Window with the app pulled to the foreground first, so the
+    dialog appears in front instead of behind the active app. Returns the
+    Window response, exactly like win.run()."""
+    activate_app()
+    return win.run()
+
+
 def play_sound(name):
     path = f"/System/Library/Sounds/{name}.aiff"
     if os.path.exists(path):
@@ -1454,7 +1476,10 @@ class DatadogAssistant(rumps.App):
         interval = max(15, int(self.cfg.get("refresh_seconds", 60)))
         self.poll_timer = rumps.Timer(self._poll_tick, interval)
         self.poll_timer.start()
-        self.drain_timer = rumps.Timer(self._drain_results, 2)
+        # Backstop timer that applies fetched results to the menu. The worker
+        # also pings the main thread the instant data lands (_request_drain),
+        # so this only catches anything that ping missed; 1s keeps it snappy.
+        self.drain_timer = rumps.Timer(self._drain_results, 1)
         self.drain_timer.start()
         self._poll_tick(None)  # immediate first fetch
 
@@ -1539,6 +1564,18 @@ class DatadogAssistant(rumps.App):
             self.results.put(("error", str(e)[:120]))
         finally:
             self._fetching = False
+            self._request_drain()
+
+    def _request_drain(self):
+        """Apply results to the menu as soon as the worker finishes, from the
+        worker thread, instead of waiting up to a full drain-timer tick. UI
+        work must happen on the main thread, so hop there via AppHelper. The
+        drain_timer is the fallback if this can't be scheduled."""
+        try:
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(self._drain_results, None)
+        except Exception:
+            pass  # no pyobjc — the 1s drain_timer still applies the results
 
     def _drain_results(self, _):
         updated = False
@@ -2560,7 +2597,7 @@ class DatadogAssistant(rumps.App):
                 message=f'This permanently deletes:\n\n"{name}"\n\n'
                         f'Type DELETE to confirm.',
                 default_text="", ok="Delete", cancel="Cancel", dimensions=(220, 24))
-            resp = win.run()
+            resp = run_window(win)
             if resp.clicked and resp.text.strip() == "DELETE":
                 self._api_action(lambda: self.client.delete_monitor(mid),
                                  f"Deleted “{name[:40]}” 🗑")
@@ -2576,7 +2613,7 @@ class DatadogAssistant(rumps.App):
                          "untouched. Leave blank to reset."),
                 default_text=current, ok="Save", cancel="Cancel",
                 dimensions=(320, 24))
-            resp = win.run()
+            resp = run_window(win)
             if not resp.clicked:
                 return
             new = resp.text.strip()
@@ -2601,7 +2638,7 @@ class DatadogAssistant(rumps.App):
                           message="A clear, human-readable monitor name:",
                           default_text="High CPU on prod",
                           ok="Next", cancel="Cancel", dimensions=(320, 24))
-        r1 = w1.run()
+        r1 = run_window(w1)
         if not r1.clicked or not r1.text.strip():
             return
         w2 = rumps.Window(
@@ -2610,7 +2647,7 @@ class DatadogAssistant(rumps.App):
                     "avg(last_5m):avg:system.cpu.user{env:prod} by {host} > 90",
             default_text="avg(last_5m):avg:system.cpu.user{*} > 90",
             ok="Next", cancel="Cancel", dimensions=(420, 48))
-        r2 = w2.run()
+        r2 = run_window(w2)
         if not r2.clicked or not r2.text.strip():
             return
         w3 = rumps.Window(
@@ -2618,7 +2655,7 @@ class DatadogAssistant(rumps.App):
             message="Notification message (supports @-handles):",
             default_text="🚨 {{name}} triggered — check it out! @your-team",
             ok="Create ✅", cancel="Cancel", dimensions=(420, 48))
-        r3 = w3.run()
+        r3 = run_window(w3)
         if not r3.clicked:
             return
         name, query, msg = r1.text.strip(), r2.text.strip(), r3.text.strip()
@@ -2990,7 +3027,7 @@ class DatadogAssistant(rumps.App):
                     "Example: team:payments team:platform",
             default_text=self.cfg.get("tag_filter", ""),
             ok="Save", cancel="Cancel", dimensions=(320, 24))
-        resp = win.run()
+        resp = run_window(win)
         if resp.clicked:
             self.cfg["tag_filter"] = resp.text.strip()
             save_config(self.cfg)
