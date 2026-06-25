@@ -1432,6 +1432,7 @@ class DatadogAssistant(rumps.App):
         self.state = load_state()    # persists jira tickets + digest date
         self._dash_ts = 0
         self.prev_states = {}        # id -> overall_state
+        self.prev_muted = {}         # id -> bool (was muted last poll)
         self.last_notified = {}      # id -> unix ts (for renotify)
         self.snooze_until = 0
         self.last_refresh = None
@@ -1913,7 +1914,27 @@ class DatadogAssistant(rumps.App):
                         should = True
                         title, body = "🔴 STILL ALERTING — Datadog", name
 
+            # Unmute edge: a monitor that started (or kept) firing while muted
+            # has its prev_state already at the firing value, so the transition
+            # logic above stays silent. When the mute is lifted, surface the
+            # still-active alert so it isn't silently missed.
+            was_muted = self.prev_muted.get(mid, False)
+            if not should and was_muted and not muted and prev is not None:
+                if state == "Alert":
+                    should = True
+                    title, body = "🔴 ALERT — Datadog", name
+                elif state == "Warn" and ncfg.get("notify_on_warn", True):
+                    should = True
+                    title, body = "🟡 Warning — Datadog", name
+                elif state == "No Data" and ncfg.get("notify_on_no_data", True):
+                    verdict, reason = self._triage_no_data(m)
+                    if verdict == "broken":
+                        should = True
+                        title = "⚪ No Data — Datadog"
+                        body = f"{name} ({reason})" if reason else name
+
             self.prev_states[mid] = state
+            self.prev_muted[mid] = muted
 
             if should and ncfg.get("enabled", True) and not snoozed and not muted:
                 self.last_notified[mid] = now
@@ -1950,7 +1971,7 @@ class DatadogAssistant(rumps.App):
         # session doesn't accumulate state for deleted/filtered-out monitors
         # (matches how nodata_probe / _deploy_cache are pruned).
         live_ids = {m.get("id") for m in monitors}
-        for d in (self.prev_states, self.last_notified):
+        for d in (self.prev_states, self.prev_muted, self.last_notified):
             for stale in [k for k in d if k not in live_ids]:
                 del d[stale]
 
