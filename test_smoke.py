@@ -707,4 +707,11 @@ finally:
 # falls back to the osascript path instead of the clickable rumps one.
 assert da._bundle_id() is None, da._bundle_id()
 
+# ---- LastPass in-app unlock helper degrades gracefully ----
+# Missing email/password fails fast; a non-existent lpass binary doesn't raise.
+ok, mfa, err = da.lpass_login("", "")
+assert ok is False and "required" in err.lower(), (ok, err)
+ok, mfa, err = da.lpass_login("a@b.com", "pw")   # lpass almost certainly absent
+assert ok is False, (ok, mfa, err)
+
 print("SMOKE TEST PASSED ✅")

@@ -417,6 +417,32 @@ def lpass_logged_in():
     return ok
 
 
+def lpass_login(email, password, otp=""):
+    """Non-interactive `lpass login` for the in-app 'Unlock LastPass' prompt
+    (after a reboot wipes the agent). Returns (ok, mfa_required, error). The
+    master password / OTP go via stdin, never argv or disk."""
+    if not _LPASS or not email or not password:
+        return (False, False, "Email and master password are required.")
+    env = dict(os.environ)
+    env["LPASS_DISABLE_PINENTRY"] = "1"
+    stdin = password + "\n" + (otp + "\n" if otp else "")
+    try:
+        p = subprocess.run([_LPASS, "login", "--trust", email], input=stdin,
+                           capture_output=True, text=True, timeout=120, env=env)
+    except Exception as e:
+        return (False, False, str(e)[:120])
+    if p.returncode == 0:
+        _LPASS_LOGIN_CACHE["ok"] = False  # force a fresh status check next poll
+        return (True, False, "")
+    low = (p.stderr or p.stdout or "").lower()
+    if not otp and ("multifactor" in low or "out-of-band" in low
+                    or "code" in low or "otp" in low):
+        return (False, True, "")
+    if "invalid" in low and "password" in low:
+        return (False, False, "Incorrect email or master password.")
+    return (False, False, (p.stderr or p.stdout or "lpass login failed").strip()[:160])
+
+
 def lpass_get(entry, field):
     """Retrieve a field from a LastPass secure note (key=value format in Notes).
     Falls back to --field for custom-field entries."""
@@ -1561,6 +1587,10 @@ class DatadogAssistant(rumps.App):
                     self.results.put(("error",
                                       "Datadog OAuth not connected — "
                                       "Preferences → 🔐 Datadog credentials"))
+                elif self.client.auth_mode() == "lastpass" and not lpass_logged_in():
+                    self.results.put(("error",
+                                      "LastPass is locked — click 🔓 Unlock "
+                                      "LastPass in the menu"))
                 elif self.cfg.get("api_key_cmd") or self.cfg.get("app_key_cmd"):
                     self.results.put(("error",
                                       "Secret command returned nothing — "
@@ -2580,6 +2610,13 @@ class DatadogAssistant(rumps.App):
             snooze.add(rumps.MenuItem(label, callback=self._make_snoozer(mins)))
         prefs.add(snooze)
 
+        # LastPass unlock (only relevant in lastpass auth mode)
+        if self.cfg.get("auth") == "lastpass":
+            locked = not lpass_logged_in()
+            prefs.add(rumps.MenuItem(
+                "🔓 Unlock LastPass" + ("  ⚠️" if locked else ""),
+                callback=self._unlock_lastpass))
+
         # filters
         prefs.add(rumps.MenuItem("🏷 Set tag filter…", callback=self._set_tag_filter))
         prefs.add(None)
@@ -3066,6 +3103,37 @@ class DatadogAssistant(rumps.App):
         self.snooze_until = 0
         self._rebuild_menu()
         self._update_title()
+
+    def _unlock_lastpass(self, _):
+        """Re-login to LastPass from the menu (e.g. after a reboot dropped the
+        agent). Reuses the osascript dialogs so no GUI dependency is needed."""
+        lp = self.cfg.get("lastpass", {})
+        email = ask_text("🔓 Unlock LastPass", "Your LastPass email:",
+                         default=lp.get("email", ""))
+        if not email:
+            return
+        pw = ask_text("🔓 Unlock LastPass",
+                      f"Master password for {email}:", secure=True)
+        if pw is None:
+            return
+        ok, mfa, err = lpass_login(email, pw)
+        if mfa:
+            otp = ask_text("🔓 LastPass — verification code",
+                           "Enter your 2-factor code:")
+            if otp is None:
+                return
+            ok, _, err = lpass_login(email, pw, otp)
+        if ok:
+            # Remember the email (non-secret) so next time it's pre-filled.
+            self.cfg.setdefault("lastpass", {})["email"] = email
+            save_config(self.cfg)
+            notify_banner("🔓 LastPass unlocked", "Datadog Assistant 🐶",
+                          "Fetching your monitors…")
+            self.monitors = []
+            self._poll_tick(None)
+        else:
+            notify_modal("❌ LastPass unlock failed",
+                         err or "Could not log in to LastPass.")
 
     def _set_tag_filter(self, _):
         win = rumps.Window(
