@@ -3424,6 +3424,27 @@ class DatadogAssistant(rumps.App):
                          self.client.app_base + "/monitors/manage")
 
 
+def _should_onboard():
+    """First run (no config yet) → show the onboarding GUI instead of the menu
+    bar app. `--onboard` / DD_ONBOARD=1 force it; `--run` / DD_NO_ONBOARD=1
+    skip it (e.g. when the LaunchAgent relaunches the bundle in run mode)."""
+    if "--onboard" in sys.argv or os.environ.get("DD_ONBOARD") == "1":
+        return True
+    if "--run" in sys.argv or os.environ.get("DD_NO_ONBOARD") == "1":
+        return False
+    return not os.path.exists(CONFIG_PATH)
+
+
 if __name__ == "__main__":
+    if _should_onboard():
+        try:
+            import onboarding_app
+            onboarding_app.run()
+            sys.exit(0)
+        except Exception as e:
+            # pywebview missing (dev) or assets absent — don't strand the user;
+            # fall through to the menu-bar app (which has its own setup wizards).
+            print(f"onboarding unavailable ({e}); starting the app instead",
+                  file=sys.stderr)
     _lock = acquire_single_instance_lock()
     DatadogAssistant().run()
