@@ -62,7 +62,7 @@ class Api:
     def get_init(self, *_):
         return engine.detect_env()
 
-    def validate_datadog_keys(self, payload):
+    def validate_datadog_keys(self, payload=None):
         p = payload or {}
         return engine.validate_datadog_keys(
             p.get("site", "datadoghq.com"), p.get("api_key", ""),
@@ -72,7 +72,7 @@ class Api:
     def lastpass_ensure_cli(self, *_):
         return engine.lastpass_ensure_cli(on_log=lambda l: self._emit("ddOnLog", l))
 
-    def lastpass_login(self, payload):
+    def lastpass_login(self, payload=None):
         p = payload or {}
         return engine.lastpass_login(
             p.get("email", ""), p.get("password", ""), p.get("otp", ""),
@@ -82,14 +82,14 @@ class Api:
     def lastpass_list_entries(self, *_):
         return engine.lastpass_list_entries()
 
-    def lastpass_validate_entry(self, payload):
+    def lastpass_validate_entry(self, payload=None):
         p = payload or {}
         return engine.lastpass_validate_entry(
             p.get("entry", ""), p.get("api_key_field", ""),
             p.get("app_key_field", ""))
 
     # -- install --
-    def begin_install(self, config):
+    def begin_install(self, config=None):
         cfg = config or {}
 
         def worker():
@@ -103,7 +103,7 @@ class Api:
         return {"ok": True}
 
     # -- misc --
-    def open_external(self, payload):
+    def open_external(self, payload=None):
         url = (payload or {}).get("url", "")
         if url:
             try:
