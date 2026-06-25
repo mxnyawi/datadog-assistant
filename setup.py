@@ -18,8 +18,15 @@ Why bundle the *running* app?
 LSUIElement keeps it menu-bar-only (no dock icon, no app-switcher entry).
 """
 import os
+import sys
 
 from setuptools import setup
+
+# Make installer/engine.py importable so py2app's dependency graph picks it up
+# (onboarding_app imports it via a runtime sys.path insert that the graph can't
+# follow).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "installer"))
 
 APP = ["datadog_assistant.py"]
 
@@ -41,7 +48,12 @@ OPTIONS = {
     # a background menu-bar app.
     "argv_emulation": False,
     "plist": PLIST,
-    "packages": ["rumps"],
+    "packages": ["rumps", "webview"],
+    # onboarding_app/engine are imported lazily / via a runtime sys.path tweak,
+    # so name them explicitly for the dependency graph.
+    "includes": ["onboarding_app", "engine"],
+    # First-run onboarding web assets → Contents/Resources/web.
+    "resources": ["installer/onboarding/web"],
 }
 
 # Use the icon if it's been generated (build_menubar_app.sh makes it from the

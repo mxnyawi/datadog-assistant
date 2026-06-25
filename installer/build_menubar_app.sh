@@ -1,8 +1,9 @@
 #!/bin/bash
-# Build the *running* menu-bar app into a real "Datadog Assistant.app". RUN ON A MAC.
+# Build "Datadog Assistant.app" — the single self-onboarding bundle. RUN ON A MAC.
 #
-# Unlike build_app.sh / build.sh (which package the one-shot *installer*), this
-# compiles the app itself with py2app so that:
+# Compiles the app with py2app so that:
+#   - first launch (no config) shows the onboarding GUI, then it runs as the
+#     menu-bar app — one bundle, two modes,
 #   - notification clicks open the Datadog monitor (a bundle id is required for
 #     macOS to route the click — a bare script can't),
 #   - it shows its own name + icon instead of "Python",

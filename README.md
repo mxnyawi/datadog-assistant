@@ -77,14 +77,16 @@ alerts, sparklines, incidents, Jira, snooze and more, no config editing needed.
    ```bash
    shasum -a 256 -c Datadog-Assistant-Installer.zip.sha256   # → "OK"
    ```
-3. Open the downloaded zip , it unzips to **Datadog Assistant Installer**.
+3. Open the downloaded zip , it unzips to **Datadog Assistant**.
 4. **Right-click → Open** the first time (it's unsigned; if macOS still blocks
    it, go to **System Settings → Privacy & Security → Open Anyway**).
-5. Follow the steps: pick your site, sign in, done. The 🐶 appears in your menu bar.
+5. A setup window walks you through it: pick your site, sign in (API keys,
+   OAuth, or **LastPass** — log in right there), optional tag filter, done. The
+   🐶 appears in your menu bar.
 
-The installer is a native macOS app, built from [`installer/`](installer/) and
-published to Releases via `installer/release.sh` (run on a Mac). You can also run
-it without building anything: `osascript installer/install.applescript`.
+It's one self-onboarding app: the first launch shows the setup GUI, then it runs
+as the menu-bar app. Built from [`installer/`](installer/) with `py2app` and
+published to Releases via `installer/release.sh` (run on a Mac).
 
 ### Or the script:
 
@@ -116,22 +118,21 @@ pip3 install rumps
 DD_API_KEY=xxx DD_APP_KEY=yyy python3 datadog_assistant.py
 ```
 
-### Build a standalone `.app` (clickable notifications) 📦
+### Build the app yourself 📦
 
-The script and LaunchAgent installs run the app as a plain `python3` process. That
-works, but macOS won't route a **notification click** back to a bare process — so
-clicking the side banner just opens an empty window, and the app shows up as
-"Python". Compiling it into a real bundle fixes both:
+The downloadable app is built from source with `py2app`:
 
 ```bash
 ./installer/build_menubar_app.sh        # RUN ON A MAC → dist/Datadog Assistant.app
-open "dist/Datadog Assistant.app"
+open "dist/Datadog Assistant.app"        # first launch shows the setup GUI
 ```
 
-This uses [`setup.py`](setup.py) (py2app) to produce **Datadog Assistant.app** with
-its own bundle identifier, icon, and `LSUIElement` (menu-bar-only). With a real
-bundle id, alert banners become **clickable and open the monitor in Datadog**. The
-running-as-a-script path still works — it just falls back to non-clickable banners.
+This compiles **Datadog Assistant.app** with its own bundle identifier, icon, and
+`LSUIElement` (menu-bar-only). The real bundle id is what lets alert banners be
+**clickable and open the monitor in Datadog**, and what drops the generic "Python"
+name. First launch (no config yet) runs the onboarding GUI; after setup it runs as
+the menu-bar app. The plain-script path above still works — it just shows the
+menu-bar app directly and falls back to non-clickable banners.
 
 ### Automated / unattended install (agents & CI) 🤖
 

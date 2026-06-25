@@ -4,9 +4,8 @@
 # stdlib — these are the only third-party packages.
 #
 # Pinned so a breaking upstream release can't land on user machines via the
-# installer's `pip install` step unannounced. The installer scripts
-# (install.sh / installer/do_install.sh / installer/install_gui.py) mirror the
-# `rumps` constraint below — keep them in sync when bumping.
+# installer's `pip install` step unannounced. install.sh mirrors the `rumps`
+# constraint below — keep them in sync when bumping.
 
 rumps>=0.4.0,<0.5
 
@@ -15,3 +14,8 @@ rumps>=0.4.0,<0.5
 # is intentionally left open so it can track new macOS/Python releases.
 pyobjc-core>=9.0
 pyobjc-framework-Cocoa>=9.0
+
+# Renders the first-run onboarding GUI in a native WKWebView window
+# (installer/onboarding/). Only needed when building the .app bundle / on first
+# launch — the menu-bar app doesn't import it at runtime.
+pywebview>=5.0

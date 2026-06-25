@@ -24,9 +24,11 @@ import engine  # noqa: E402
 
 def web_dir():
     """Locate the web assets, whether running from the dev tree or a bundle."""
+    exe_dir = os.path.dirname(sys.executable)
     bases = [getattr(sys, "_MEIPASS", None), _HERE,
              os.path.join(_HERE, "..", "Resources"),
-             os.path.dirname(sys.executable)]
+             exe_dir,
+             os.path.join(exe_dir, "..", "Resources")]  # py2app: MacOS/ → Resources/
     for base in filter(None, bases):
         for cand in (os.path.join(base, "web"),
                      os.path.join(base, "installer", "onboarding", "web")):

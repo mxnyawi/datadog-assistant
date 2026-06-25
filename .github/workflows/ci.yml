@@ -30,6 +30,11 @@ jobs:
       - name: Smoke test
         run: python test_smoke.py
 
+      - name: Install engine + onboarding bridge tests
+        run: |
+          DD_DRY_RUN=1 python installer/test_engine.py
+          DD_DRY_RUN=1 python test_onboarding.py
+
   shell:
     name: Shell script checks
     runs-on: ubuntu-latest

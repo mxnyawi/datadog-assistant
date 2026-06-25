@@ -1,11 +1,12 @@
 #!/bin/bash
 # One-command release , RUN ON A MAC.
-# Builds the installer .app, zips it, tags the repo, and publishes a GitHub
-# Release with the app attached. The website Download button then resolves.
+# Builds the Datadog Assistant.app (self-onboarding GUI + menu-bar app), zips
+# it, tags the repo, and publishes a GitHub Release with the app attached. The
+# website Download button then resolves.
 #
 #   ./installer/release.sh v0.3.0
 #
-# Needs: macOS (osacompile) + the GitHub CLI `gh` (authenticated).
+# Needs: macOS (py2app) + the GitHub CLI `gh` (authenticated).
 set -euo pipefail
 cd "$(dirname "$0")/.."   # repo root
 
@@ -15,12 +16,14 @@ if [ -z "$TAG" ]; then
   exit 1
 fi
 
-echo "🐶 Building the installer app for $TAG ..."
-bash installer/build_app.sh
+echo "🐶 Building Datadog Assistant.app for $TAG ..."
+bash installer/build_menubar_app.sh   # → dist/Datadog Assistant.app
 
 echo "📦 Zipping ..."
-( cd installer && ditto -c -k --keepParent \
-    "Datadog Assistant Installer.app" "Datadog-Assistant-Installer.zip" )
+# Keep the historical asset name so the website/README download links resolve;
+# the zip now contains the self-onboarding app itself.
+ditto -c -k --keepParent \
+    "dist/Datadog Assistant.app" "installer/Datadog-Assistant-Installer.zip"
 
 echo "🔐 Generating SHA-256 checksum ..."
 # Lets users verify the download wasn't tampered with (the .app is unsigned).
