@@ -31,8 +31,10 @@ import http.server
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import queue
@@ -55,13 +57,21 @@ CONFIG_DIR = os.path.expanduser("~/.config/datadog-assistant")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 
 DEFAULT_CONFIG = {
-    "auth": "keys",                # "keys" (API + APP key) or "oauth" (browser login)
+    "auth": "keys",                # "keys" | "oauth" | "lastpass"
     "api_key": "",                 # or set DD_API_KEY env var, or use keychain
     "app_key": "",                 # or set DD_APP_KEY env var, or use keychain
     "use_keychain": False,         # read keys from macOS Keychain (see README)
     "api_key_cmd": "",             # pull keys from a password manager instead,
     "app_key_cmd": "",             # e.g. "lpass show --password dd-api-key" or
                                    # "op read op://Engineering/Datadog/api-key"
+    "lastpass": {                  # auth=lastpass: shared vault entry
+        "entry": "",               # e.g. "Shared-SRE/datadog-assistant"
+        "api_key_field": "datadogAPIKey",
+        "app_key_field": "datadogAPPKey",
+        "jira_client_id_field": "jiraClientID",
+        "jira_client_secret_field": "jiraClientSecret",
+        "jira_token_field": ""     # optional — API token (non-OAuth) fallback
+    },
     "oauth_client_id": "",         # OAuth mode: Client ID of your Datadog OAuth client
     "oauth_domain": "",            # OAuth mode: org region (datadoghq.eu...) — set on connect
     "site": "datadoghq.com",       # datadoghq.eu, us3.datadoghq.com, us5..., ap1...
@@ -243,11 +253,42 @@ def deep_merge(base, override):
     return out
 
 
-def load_config():
+def _ensure_config_dir():
+    """Create CONFIG_DIR owner-only (0700). config.json / state.json can hold
+    credentials (api_key/app_key, oauth_blob with client_secret + refresh
+    token) when the Keychain isn't used, so they must not be world-readable."""
     os.makedirs(CONFIG_DIR, exist_ok=True)
+    try:
+        os.chmod(CONFIG_DIR, 0o700)
+    except OSError:
+        pass
+
+
+def _write_private_json(path, obj):
+    """Write JSON atomically with 0600 perms: render to a temp file in the same
+    dir, fsync, then os.replace() so a crash mid-write can't truncate the real
+    file and concurrent writers can't interleave."""
+    _ensure_config_dir()
+    fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".tmp-", suffix=".json")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def load_config():
+    _ensure_config_dir()
     if not os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, "w") as f:
-            json.dump(DEFAULT_CONFIG, f, indent=2)
+        _write_private_json(CONFIG_PATH, DEFAULT_CONFIG)
     try:
         with open(CONFIG_PATH) as f:
             user_cfg = json.load(f)
@@ -256,10 +297,20 @@ def load_config():
     return deep_merge(DEFAULT_CONFIG, user_cfg)
 
 
+def _strip_ephemeral(obj):
+    """Drop in-memory-only keys (convention: leading underscore, e.g. the
+    `_lp_client_secret` / `_lp_api_token` injected from a LastPass note) so
+    runtime secrets never get written to disk."""
+    if isinstance(obj, dict):
+        return {k: _strip_ephemeral(v) for k, v in obj.items()
+                if not (isinstance(k, str) and k.startswith("_"))}
+    if isinstance(obj, list):
+        return [_strip_ephemeral(v) for v in obj]
+    return obj
+
+
 def save_config(cfg):
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
+    _write_private_json(CONFIG_PATH, _strip_ephemeral(cfg))
 
 
 OPEN_BROWSER = ""  # set from cfg at startup; "" = system default browser
@@ -291,6 +342,22 @@ def keychain_set(service, value):
 
 
 _SECRET_CMD_CACHE = {}
+_SECRET_CMD_CACHE_TIME = {}
+_SECRET_CACHE_TTL = 900  # re-fetch from vault every 15 minutes
+
+
+def _cache_get(key):
+    if key in _SECRET_CMD_CACHE:
+        if time.time() - _SECRET_CMD_CACHE_TIME.get(key, 0) < _SECRET_CACHE_TTL:
+            return _SECRET_CMD_CACHE[key]
+        del _SECRET_CMD_CACHE[key]
+        _SECRET_CMD_CACHE_TIME.pop(key, None)
+    return None
+
+
+def _cache_set(key, val):
+    _SECRET_CMD_CACHE[key] = val
+    _SECRET_CMD_CACHE_TIME[key] = time.time()
 
 
 def secret_from_cmd(cmd):
@@ -298,12 +365,13 @@ def secret_from_cmd(cmd):
     1Password op, Bitwarden bw, Vault...) — the command's stdout is the
     secret. Lets companies centralise rotation/revocation/audit instead of
     provisioning API keys onto every machine. Successful lookups are cached
-    in memory so the vault isn't hit on every poll; failures (e.g. vault
-    locked) are not cached and retry next poll."""
+    in memory (with TTL) so the vault isn't hit on every poll; failures
+    (e.g. vault locked) are not cached and retry next poll."""
     if not cmd:
         return ""
-    if cmd in _SECRET_CMD_CACHE:
-        return _SECRET_CMD_CACHE[cmd]
+    cached = _cache_get(cmd)
+    if cached is not None:
+        return cached
     try:
         out = subprocess.run(["/bin/sh", "-c", cmd], capture_output=True,
                              text=True, timeout=30)
@@ -311,7 +379,79 @@ def secret_from_cmd(cmd):
     except Exception:
         val = ""
     if val:
-        _SECRET_CMD_CACHE[cmd] = val
+        _cache_set(cmd, val)
+    return val
+
+
+def _find_lpass():
+    """Locate the lpass binary, checking common Homebrew paths that LaunchAgents miss."""
+    for p in ("/opt/homebrew/bin/lpass", "/usr/local/bin/lpass"):
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return shutil.which("lpass") or "lpass"
+
+
+_LPASS = _find_lpass()
+
+
+_LPASS_LOGIN_CACHE = {"ok": False, "at": 0.0}
+_LPASS_LOGIN_TTL = 60  # seconds — avoid spawning `lpass status` on every poll
+
+
+def lpass_logged_in():
+    """Check if the user is logged into LastPass CLI. A positive result is
+    cached briefly so `configured()` doesn't spawn a subprocess on every poll
+    tick; a logged-out result is never cached, so re-login is picked up at the
+    next check."""
+    now = time.time()
+    if _LPASS_LOGIN_CACHE["ok"] and now - _LPASS_LOGIN_CACHE["at"] < _LPASS_LOGIN_TTL:
+        return True
+    try:
+        out = subprocess.run([_LPASS, "status"], capture_output=True,
+                             text=True, timeout=10)
+        ok = out.returncode == 0 and "Logged in" in out.stdout
+    except Exception:
+        ok = False
+    _LPASS_LOGIN_CACHE["ok"] = ok
+    _LPASS_LOGIN_CACHE["at"] = now
+    return ok
+
+
+def lpass_get(entry, field):
+    """Retrieve a field from a LastPass secure note (key=value format in Notes).
+    Falls back to --field for custom-field entries."""
+    if not entry or not field:
+        return ""
+    cache_key = f"lpass:{entry}:{field}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    # Try --field first (works for custom fields)
+    val = ""
+    try:
+        out = subprocess.run(
+            [_LPASS, "show", "--field", field, entry],
+            capture_output=True, text=True, timeout=30)
+        val = out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:
+        pass
+    # Fallback: parse key=value lines from --notes (secure notes)
+    if not val:
+        try:
+            out = subprocess.run(
+                [_LPASS, "show", "--notes", entry],
+                capture_output=True, text=True, timeout=30)
+            if out.returncode == 0:
+                for line in out.stdout.splitlines():
+                    if "=" in line:
+                        k, _, v = line.partition("=")
+                        if k.strip() == field:
+                            val = v.strip()
+                            break
+        except Exception:
+            pass
+    if val:
+        _cache_set(cache_key, val)
     return val
 
 
@@ -339,9 +479,7 @@ def load_state():
 
 def save_state(state):
     try:
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        with open(STATE_PATH, "w") as f:
-            json.dump(state, f, indent=2)
+        _write_private_json(STATE_PATH, state)
     except Exception:
         pass
 
@@ -724,6 +862,14 @@ class DatadogClient:
         if self.cfg.get("use_keychain"):
             api = keychain_get("datadog-assistant-api-key") or api
             app = keychain_get("datadog-assistant-app-key") or app
+        # lastpass mode: retrieve from secure note
+        if self.auth_mode() == "lastpass":
+            lp = self.cfg.get("lastpass", {})
+            entry = lp.get("entry", "")
+            if entry:
+                api = lpass_get(entry, lp.get("api_key_field", "datadogAPIKey")) or api
+                app = lpass_get(entry, lp.get("app_key_field", "datadogAPPKey")) or app
+            return api, app
         # password-manager commands win when configured
         api = secret_from_cmd(self.cfg.get("api_key_cmd")) or api
         app = secret_from_cmd(self.cfg.get("app_key_cmd")) or app
@@ -753,6 +899,9 @@ class DatadogClient:
         if self.auth_mode() == "oauth":
             return bool(self.cfg.get("oauth_client_id")
                         and self._oauth_blob().get("refresh_token"))
+        if self.auth_mode() == "lastpass":
+            lp = self.cfg.get("lastpass", {})
+            return bool(lp.get("entry")) and lpass_logged_in()
         return self.has_keys()
 
     def _oauth_api(self):
@@ -789,7 +938,8 @@ class DatadogClient:
             self._save_oauth_blob(blob)
         return self._access["token"]
 
-    def _request(self, method, path, params=None, body=None, version="v1"):
+    def _request(self, method, path, params=None, body=None, version="v1",
+                 timeout=30):
         oauth = self.auth_mode() == "oauth"
         api = app = ""
         if oauth:
@@ -811,7 +961,7 @@ class DatadogClient:
             req.add_header("Content-Type", "application/json")
             req.add_header("Accept-Encoding", "gzip")
             try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     raw = resp.read()
                     if resp.headers.get("Content-Encoding") == "gzip":
                         raw = gzip.decompress(raw)
@@ -825,21 +975,40 @@ class DatadogClient:
 
     def get_monitors(self):
         # Paginate so one giant response can't stall mid-read on large orgs.
-        params = {"group_states": "all", "page_size": 200}
         tag_filter = self.cfg.get("tag_filter", "").strip()
-        if tag_filter:
-            params["monitor_tags"] = ",".join(tag_filter.split())
         name_filter = self.cfg.get("name_filter", "").strip()
-        if name_filter:
-            params["name"] = name_filter
+        tags = tag_filter.split() if tag_filter else []
+
+        # Datadog's monitor_tags param is AND logic. For OR, we fetch per tag
+        # and dedupe by monitor ID.
+        if len(tags) > 1:
+            seen = {}
+            for tag in tags:
+                for m in self._fetch_monitors_page(monitor_tags=tag, name=name_filter):
+                    mid = m.get("id")
+                    if mid is not None:
+                        seen.setdefault(mid, m)
+            return list(seen.values())
+        return self._fetch_monitors_page(
+            monitor_tags=tags[0] if tags else "", name=name_filter)
+
+    def _fetch_monitors_page(self, monitor_tags="", name=""):
+        params = {"group_states": "all", "page_size": 200}
+        if monitor_tags:
+            params["monitor_tags"] = monitor_tags
+        if name:
+            params["name"] = name
         monitors, page = [], 0
-        while True:
+        # Hard page cap (200/page => 100k monitors) so a server that keeps
+        # returning full pages can't spin this loop forever and hammer the API.
+        while page < 500:
             batch = self._request("GET", "/monitor",
                                   params={**params, "page": page})
             monitors.extend(batch)
             if len(batch) < params["page_size"]:
-                return monitors
+                break
             page += 1
+        return monitors
 
     def mute_monitor(self, monitor_id, hours=None):
         params = {}
@@ -901,8 +1070,11 @@ class DatadogClient:
 
     def query_metrics(self, query, window_minutes=60):
         now = int(time.time())
+        # Short timeout: these run serially per hot monitor inside one poll, so
+        # a slow metric query must not stall the whole refresh.
         return self._request("GET", "/query", params={
-            "from": now - window_minutes * 60, "to": now, "query": query})
+            "from": now - window_minutes * 60, "to": now, "query": query},
+            timeout=10)
 
     def service_url(self, service):
         return f"{self.app_base}/services/{urllib.parse.quote(service)}"
@@ -915,7 +1087,8 @@ class DatadogClient:
         home of a service's repo/runbook/docs/on-call links inside Datadog.
         schema_version=v2.2 returns the unified `links[]` shape."""
         out, page = [], 0
-        while True:
+        # Page cap as a safety net against a non-terminating pagination loop.
+        while page < 500:
             data = self._request("GET", "/services/definitions",
                                  params={"page[size]": 100, "page[number]": page,
                                          "schema_version": "v2.2"},
@@ -923,8 +1096,9 @@ class DatadogClient:
             batch = data.get("data") or []
             out.extend(batch)
             if len(batch) < 100:
-                return out
+                break
             page += 1
+        return out
 
     def get_events(self, tags, start, end, sources=None):
         params = {"start": int(start), "end": int(end)}
@@ -988,7 +1162,8 @@ class JiraClient:
         return self.cfg.get("auth", "token")
 
     def _token(self):
-        return (secret_from_cmd(self.cfg.get("api_token_cmd"))
+        return (self.cfg.get("_lp_api_token")
+                or secret_from_cmd(self.cfg.get("api_token_cmd"))
                 or self.cfg.get("api_token")
                 or keychain_get("datadog-assistant-jira-token"))
 
@@ -1021,7 +1196,8 @@ class JiraClient:
         blob = self._oauth_blob()
         body = {"grant_type": "refresh_token",
                 "client_id": self.cfg.get("oauth_client_id", ""),
-                "client_secret": blob.get("client_secret", ""),
+                "client_secret": (self.cfg.get("_lp_client_secret")
+                                  or blob.get("client_secret", "")),
                 "refresh_token": blob.get("refresh_token", "")}
         req = urllib.request.Request(JIRA_OAUTH_TOKEN_URL,
                                      data=json.dumps(body).encode(),
@@ -1224,7 +1400,27 @@ class DatadogAssistant(rumps.App):
         global OPEN_BROWSER
         OPEN_BROWSER = self.cfg.get("browser", "")
         self.client = DatadogClient(self.cfg)
-        self.jira = JiraClient(self.cfg.get("jira", {}))
+        # If using LastPass auth, auto-wire Jira OAuth credentials from the note
+        lp = self.cfg.get("lastpass", {})
+        jira_cfg = self.cfg.get("jira", {})
+        if self.cfg.get("auth") == "lastpass" and lp.get("entry"):
+            entry = lp["entry"]
+            # Jira OAuth client ID
+            if lp.get("jira_client_id_field"):
+                cid = lpass_get(entry, lp["jira_client_id_field"])
+                if cid:
+                    jira_cfg["oauth_client_id"] = cid
+            # Jira OAuth client secret — in-memory only, never persisted
+            if lp.get("jira_client_secret_field"):
+                sec = lpass_get(entry, lp["jira_client_secret_field"])
+                if sec:
+                    jira_cfg["_lp_client_secret"] = sec
+            # Jira API token (non-OAuth fallback)
+            if lp.get("jira_token_field"):
+                tok = lpass_get(entry, lp["jira_token_field"])
+                if tok:
+                    jira_cfg["_lp_api_token"] = tok
+        self.jira = JiraClient(jira_cfg)
         icons = self.cfg["icons"]
         super().__init__(APP_NAME, title=icons["ok"], quit_button=None)
 
@@ -1240,6 +1436,7 @@ class DatadogAssistant(rumps.App):
         self.state = load_state()    # persists jira tickets + digest date
         self._dash_ts = 0
         self.prev_states = {}        # id -> overall_state
+        self.prev_muted = {}         # id -> bool (was muted last poll)
         self.last_notified = {}      # id -> unix ts (for renotify)
         self.snooze_until = 0
         self.last_refresh = None
@@ -1281,6 +1478,8 @@ class DatadogAssistant(rumps.App):
         if self._fetching:
             return
         self._fetching = True
+        if self._refresh_item is not None:
+            self._refresh_item.title = "⏳ Refreshing…"
         threading.Thread(target=self._fetch, daemon=True).start()
 
     def _fetch(self):
@@ -1328,7 +1527,11 @@ class DatadogAssistant(rumps.App):
                                   # from tags + the monitor message
                     if scfg.get("show_deploys", True):
                         payload["deploys"] = self._fetch_deploys(payload["monitors"])
-                payload["nodata_probe"] = self._probe_no_data(payload["monitors"])
+                # Snapshot the probe state so the worker never reads the live
+                # self.nodata_probe that the main thread reassigns in
+                # _drain_results.
+                payload["nodata_probe"] = self._probe_no_data(
+                    payload["monitors"], dict(self.nodata_probe))
                 self.results.put(("data", payload))
         except urllib.error.HTTPError as e:
             self.results.put(("error", f"HTTP {e.code} from Datadog API"))
@@ -1549,12 +1752,14 @@ class DatadogAssistant(rumps.App):
         ctx = self.deploys.get(mid)
         return ctx.get("headline") if ctx else None
 
-    def _probe_no_data(self, monitors):
+    def _probe_no_data(self, monitors, already=None):
         """For No Data metric monitors: query the metric's recent history.
         Data in the window then nothing now → 'stopped' (agent/host likely
         died). No datapoints in the whole window → 'silent' (was never
         flowing — retired host, seasonal job). Runs in the fetch thread;
-        capped per refresh, already-probed monitors are skipped."""
+        capped per refresh, already-probed monitors (passed in as a snapshot)
+        are skipped."""
+        already = already or {}
         tcfg = self.cfg.get("no_data_triage", {})
         if not tcfg.get("enabled", True):
             return {}
@@ -1566,7 +1771,7 @@ class DatadogAssistant(rumps.App):
                 break
             if (m.get("overall_state") != "No Data"
                     or m.get("type") not in ("metric alert", "query alert")
-                    or m.get("id") in self.nodata_probe):
+                    or m.get("id") in already):
                 continue
             q = extract_metric_query(m.get("query", ""))
             if not q:
@@ -1719,7 +1924,27 @@ class DatadogAssistant(rumps.App):
                         should = True
                         title, body = "🔴 STILL ALERTING — Datadog", name
 
+            # Unmute edge: a monitor that started (or kept) firing while muted
+            # has its prev_state already at the firing value, so the transition
+            # logic above stays silent. When the mute is lifted, surface the
+            # still-active alert so it isn't silently missed.
+            was_muted = self.prev_muted.get(mid, False)
+            if not should and was_muted and not muted and prev is not None:
+                if state == "Alert":
+                    should = True
+                    title, body = "🔴 ALERT — Datadog", name
+                elif state == "Warn" and ncfg.get("notify_on_warn", True):
+                    should = True
+                    title, body = "🟡 Warning — Datadog", name
+                elif state == "No Data" and ncfg.get("notify_on_no_data", True):
+                    verdict, reason = self._triage_no_data(m)
+                    if verdict == "broken":
+                        should = True
+                        title = "⚪ No Data — Datadog"
+                        body = f"{name} ({reason})" if reason else name
+
             self.prev_states[mid] = state
+            self.prev_muted[mid] = muted
 
             if should and ncfg.get("enabled", True) and not snoozed and not muted:
                 self.last_notified[mid] = now
@@ -1751,6 +1976,14 @@ class DatadogAssistant(rumps.App):
             if state == "Alert" and prev is not None and prev != "Alert" \
                     and not muted:
                 self._maybe_auto_jira(m)
+
+        # Prune tracking dicts to the monitors we still see, so a long-running
+        # session doesn't accumulate state for deleted/filtered-out monitors
+        # (matches how nodata_probe / _deploy_cache are pruned).
+        live_ids = {m.get("id") for m in monitors}
+        for d in (self.prev_states, self.prev_muted, self.last_notified):
+            for stale in [k for k in d if k not in live_ids]:
+                del d[stale]
 
     # -------------------- jira --------------------
 
@@ -2752,15 +2985,22 @@ class DatadogAssistant(rumps.App):
     def _set_tag_filter(self, _):
         win = rumps.Window(
             title="🏷 Tag filter",
-            message="Space-separated tags — only monitors matching ALL tags "
-                    "are shown.\nLeave empty for all monitors.\n"
-                    "Example: team:payments env:prod",
+            message="Space-separated tags — monitors matching ANY tag are "
+                    "shown (OR logic).\nLeave empty for all monitors.\n"
+                    "Example: team:payments team:platform",
             default_text=self.cfg.get("tag_filter", ""),
             ok="Save", cancel="Cancel", dimensions=(320, 24))
         resp = win.run()
         if resp.clicked:
             self.cfg["tag_filter"] = resp.text.strip()
             save_config(self.cfg)
+            # Clear stale data so the menu reflects the change immediately.
+            # Don't force-reset _fetching here: if a fetch is already running,
+            # resetting it would let _poll_tick start a *second* worker that
+            # races the first on the shared caches (_deploy_cache, _dash_ts,
+            # nodata_probe). _poll_tick no-ops while a fetch is in flight; the
+            # new filter is picked up on the next tick.
+            self.monitors = []
             self._poll_tick(None)
 
     # -------------------- Datadog credentials wizard --------------------
@@ -2772,8 +3012,8 @@ class DatadogAssistant(rumps.App):
         threading.Thread(target=self._datadog_connection_test, daemon=True).start()
 
     def _datadog_setup(self):
-        """One wizard for both auth methods: pick API keys vs OAuth, run the
-        matching credential steps, then test the connection."""
+        """One wizard for both auth methods: pick API keys vs OAuth vs
+        LastPass, run the matching credential steps, then test."""
         choice = ask_choice(
             "🔐 Datadog credentials",
             "How should the app authenticate to Datadog?\n\n"
@@ -2783,17 +3023,19 @@ class DatadogAssistant(rumps.App):
             "OAuth — log in once in the browser; the app stores rotating "
             "tokens instead of your keys, and detects your region "
             "automatically. Needs a one-time OAuth client in Datadog "
-            "(see README).",
-            ["Cancel", "OAuth", "API + App keys"])
+            "(see README).\n\n"
+            "LastPass CLI — fetch keys from a shared LastPass vault entry "
+            "at runtime. No keys stored on disk.",
+            ["Cancel", "LastPass CLI", "OAuth", "API + App keys"])
         if choice == "API + App keys":
             mode = "keys"
         elif choice == "OAuth":
             mode = "oauth"
+        elif choice == "LastPass CLI":
+            mode = "lastpass"
         else:
             return
-        # Background thread: the OAuth leg blocks on the browser redirect, and
-        # ask_text/ask_choice are osascript-based so they don't need the main
-        # thread (same pattern as the Jira wizard).
+        # Thread: OAuth blocks on browser redirect; osascript dialogs are safe off main thread.
         threading.Thread(target=self._datadog_setup_flow, args=(mode,),
                          daemon=True).start()
 
@@ -2827,6 +3069,49 @@ class DatadogAssistant(rumps.App):
                     self.cfg["app_key"] = app
             self.cfg["auth"] = "keys"
             self.cfg["use_keychain"] = True
+            save_config(self.cfg)
+        elif mode == "lastpass":
+            # Check lpass is installed
+            try:
+                subprocess.run([_LPASS, "--version"], capture_output=True, timeout=5)
+            except Exception:
+                notify_modal("❌ LastPass CLI not found",
+                             "Install it with: brew install lastpass-cli\n"
+                             "Then re-run this setup.")
+                return
+            if not lpass_logged_in():
+                notify_modal("⚠️ Not logged into LastPass",
+                             "Run in Terminal:\n  lpass login your@email.com\n"
+                             "Then re-run this setup.")
+                return
+            entry = ask_text(
+                "🔐 LastPass — Entry name",
+                "The full path to the shared entry, e.g.:\n"
+                "  Shared-SRE/datadog-assistant\n\n"
+                "This entry should have custom fields for the API keys.",
+                default=self.cfg.get("lastpass", {}).get("entry", ""))
+            if not entry:
+                return
+            api_field = ask_text(
+                "🔐 LastPass — API Key field name",
+                "The key name in the secure note that holds the "
+                "Datadog API key (e.g. datadogAPIKey).",
+                default=self.cfg.get("lastpass", {}).get("api_key_field", "datadogAPIKey"))
+            if not api_field:
+                return
+            app_field = ask_text(
+                "🔐 LastPass — App Key field name",
+                "The key name in the secure note that holds the "
+                "Datadog Application key (e.g. datadogAPPKey).",
+                default=self.cfg.get("lastpass", {}).get("app_key_field", "datadogAPPKey"))
+            if not app_field:
+                return
+            self.cfg["auth"] = "lastpass"
+            self.cfg["lastpass"] = {
+                "entry": entry,
+                "api_key_field": api_field,
+                "app_key_field": app_field,
+            }
             save_config(self.cfg)
         else:
             client_id = ask_text(
@@ -2973,7 +3258,8 @@ class DatadogAssistant(rumps.App):
         """Fetch monitors with the active credentials and report what worked —
         run this first when the menu bar shows 🔌."""
         client = DatadogClient(self.cfg)
-        mode = "OAuth" if client.auth_mode() == "oauth" else "API + App keys"
+        mode = {"oauth": "OAuth", "lastpass": "LastPass CLI"}.get(
+            client.auth_mode(), "API + App keys")
         if not client.configured():
             notify_modal("❌ Datadog not configured",
                          f"Auth mode: {mode}\nNo credentials yet — run "

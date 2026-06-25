@@ -48,9 +48,10 @@ DD_API_KEY="$DD_API_KEY" DD_APP_KEY="$DD_APP_KEY" \
 | `DD_SITE` | `site` | `datadoghq.com` | e.g. `datadoghq.eu`, `us3.datadoghq.com`, `ddog-gov.com`. **Wrong site = 403.** |
 | `DD_APP_SUBDOMAIN` | `app_subdomain` | `app` | Set to your org slug if you browse `yourorg.datadoghq.eu`. |
 | `DD_TAG_FILTER` | `tag_filter` | _(all monitors)_ | Space-separated, e.g. `team:payments env:prod`. |
-| `DD_AUTH` | `auth` | `keys` | `keys` or `oauth`. |
+| `DD_AUTH` | `auth` | `keys` | `keys`, `oauth`, or `lastpass`. Anything else exits 1. |
 | `DD_API_KEY` / `DD_APP_KEY` | _(Keychain)_ | — | Stored in the macOS Keychain, **never** written to `config.json`. |
 | `DD_OAUTH_CLIENT_ID` | `oauth_client_id` | — | For `DD_AUTH=oauth`. OAuth still needs an interactive browser login afterwards, so prefer `keys` for automation. |
+| `DD_LASTPASS_ENTRY` | `lastpass.entry` | — | **Required** for `DD_AUTH=lastpass` in unattended mode (errors without it). Optional field overrides: `DD_LASTPASS_API_FIELD`, `DD_LASTPASS_APP_FIELD`, `DD_LASTPASS_JIRA_CID_FIELD`, `DD_LASTPASS_JIRA_SEC_FIELD`; agent timeout via `DD_LPASS_AGENT_TIMEOUT`. Needs `lpass` installed + logged in. |
 
 The installer copies the app to `~/.datadog-assistant`, creates a venv, installs
 `rumps`, writes `~/.config/datadog-assistant/config.json`, and loads a

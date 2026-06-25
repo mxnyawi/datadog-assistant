@@ -573,6 +573,25 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
                                "options": {}}])
     assert any("Deploy" in m for k, t, m in notifications), notifications
 
+    # ---- muted monitor still firing must alert when unmuted (issue #13) ----
+    app.deploys = {}
+    app.snooze_until = 0
+    notifications.clear()
+    muted_fire = {"id": 950, "name": "pay-api", "overall_state": "Alert",
+                  "options": {"silenced": {"*": None}}}
+    app._handle_new_monitors([muted_fire])         # firing but muted -> silent
+    assert not notifications, ("muted alert should not notify", notifications)
+    unmuted = {"id": 950, "name": "pay-api", "overall_state": "Alert",
+               "options": {}}
+    app._handle_new_monitors([unmuted])            # unmuted, still firing
+    assert any("ALERT" in t for k, t, m in notifications), \
+        ("unmute should surface the still-active alert", notifications)
+    # and it shouldn't re-fire on the next poll while it stays unmuted+firing
+    notifications.clear()
+    app._handle_new_monitors([unmuted])
+    assert not notifications, ("no duplicate alert while steadily firing",
+                               notifications)
+
     # ---- service resolution fallback ladder (non-uniform monitors) ----
     rs = da.resolve_service
     assert rs({"tags": ["service:pay"]}) == ("pay", "tag")

@@ -54,7 +54,7 @@ alerts, sparklines, incidents, Jira, snooze and more, no config editing needed.
 | 🏷 | Tag + name filters so you only see *your* team's monitors |
 | 🔁 | Re-notifies every N minutes while a monitor is **still** alerting |
 | 🟢 | Recovery notifications when things go back to OK |
-| 🔐 | **API keys or OAuth** — pick at setup; keys via macOS Keychain / config / env, or log in once in the browser (OAuth) so only rotating tokens are stored |
+| 🔐 | **API keys, OAuth, or LastPass CLI** — pick at setup; keys via macOS Keychain / config / env, OAuth browser login, or shared LastPass vault entry fetched at runtime |
 | 🌐 | Works with every Datadog site (US1/EU/US3/US5/AP1/Gov) |
 | 🎯 | **Severity engine** — per-priority (P1–P5) notification rules: P1 gets modal + 10-min nag, P3 just a banner |
 | 📈 | **Live context on every alert**: sparkline of the metric, current value vs critical threshold |
@@ -71,14 +71,20 @@ alerts, sparklines, incidents, Jira, snooze and more, no config editing needed.
 
 1. **[Download the latest installer](https://github.com/mxnyawi/datadog-assistant/releases/latest/download/Datadog-Assistant-Installer.zip)**
    (or from the [website](https://datadog-assistant.pages.dev)).
-2. Open the downloaded zip , it unzips to **Datadog Assistant Installer**.
-3. **Right-click → Open** the first time (it's unsigned; if macOS still blocks
+2. *(Optional but recommended)* **Verify the download.** Each release ships a
+   `Datadog-Assistant-Installer.zip.sha256` next to the zip. Since the app is
+   unsigned, this is your integrity check:
+   ```bash
+   shasum -a 256 -c Datadog-Assistant-Installer.zip.sha256   # → "OK"
+   ```
+3. Open the downloaded zip , it unzips to **Datadog Assistant Installer**.
+4. **Right-click → Open** the first time (it's unsigned; if macOS still blocks
    it, go to **System Settings → Privacy & Security → Open Anyway**).
-4. Follow the steps: pick your site, sign in, done. The 🐶 appears in your menu bar.
+5. Follow the steps: pick your site, sign in, done. The 🐶 appears in your menu bar.
 
-The installer is a native macOS app (built by CI on every release , see
-[`installer/`](installer/)). You can also run it without building anything:
-`osascript installer/install.applescript`.
+The installer is a native macOS app, built from [`installer/`](installer/) and
+published to Releases via `installer/release.sh` (run on a Mac). You can also run
+it without building anything: `osascript installer/install.applescript`.
 
 ### Or the script:
 
@@ -96,7 +102,7 @@ chmod +x install.sh
 The installer:
 1. creates a venv at `~/.datadog-assistant` and installs `rumps`
 2. lets you authenticate with **API + App keys** (stored in the macOS
-   Keychain 🔐) **or OAuth** (browser login — see below)
+   Keychain 🔐), **OAuth** (browser login), or **LastPass CLI** (shared vault)
 3. installs a LaunchAgent so the app starts at login and stays alive
 
 Then look for **🐶** in your menu bar. Use **🩺 Test Notification** to verify
@@ -132,9 +138,10 @@ DD_API_KEY=… DD_APP_KEY=… \
 | `DD_SITE` | `site` | `datadoghq.com` |
 | `DD_APP_SUBDOMAIN` | `app_subdomain` | `app` |
 | `DD_TAG_FILTER` | `tag_filter` | _(all monitors)_ |
-| `DD_AUTH` | `auth` (`keys` or `oauth`) | `keys` |
+| `DD_AUTH` | `auth` (`keys`, `oauth`, or `lastpass`) | `keys` |
 | `DD_API_KEY` / `DD_APP_KEY` | stored in the Keychain (keys auth) | — |
 | `DD_OAUTH_CLIENT_ID` | `oauth_client_id` (oauth auth) | — |
+| `DD_LASTPASS_ENTRY` | `lastpass.entry` (lastpass auth) | — |
 
 Keys passed this way go straight into the macOS Keychain — never written to
 `config.json`. Full agent guide, including read-only verification steps:
@@ -176,6 +183,55 @@ stores only the refresh token + secret in Keychain service
 > Notes: the redirect URI must match `http://localhost:8918/callback` exactly.
 > Datadog access tokens last ~1h and are refreshed automatically; if a refresh
 > ever fails the menu bar shows 🔌 with a "reconnect via Preferences" hint.
+
+### Option C — LastPass CLI (shared vault, no keys on disk)
+
+Best for teams: a single set of API keys lives in a **shared LastPass folder**
+as a Secure Note, and the tool fetches them at runtime via the `lpass` CLI. No
+keys stored on any workstation. Access is controlled by LastPass folder membership.
+
+**Secure Note layout** (key=value lines in the Notes body):
+
+```
+jiraClientID=your-jira-oauth-client-id
+jiraClientSecret=your-jira-oauth-client-secret
+datadogAPIKey=your-datadog-api-key
+datadogAPPKey=your-datadog-app-key
+```
+
+**Setup:**
+
+1. Create a shared folder in LastPass (e.g. `Shared-SRE/datadog-assistant`)
+2. Add a Secure Note with the key=value layout above
+3. Run `./install.sh` and choose option **3) LastPass CLI** — it will:
+   - Install `lpass` via Homebrew if missing
+   - Prompt for the entry path and field names
+   - Write the config
+
+Or configure manually in `~/.config/datadog-assistant/config.json`:
+
+```json
+{
+  "auth": "lastpass",
+  "lastpass": {
+    "entry": "Shared-SRE/datadog-assistant",
+    "api_key_field": "datadogAPIKey",
+    "app_key_field": "datadogAPPKey",
+    "jira_client_id_field": "jiraClientID",
+    "jira_client_secret_field": "jiraClientSecret"
+  }
+}
+```
+
+**Requirements:** `lpass` CLI installed (`brew install lastpass-cli`) and an
+active session (`lpass login your@email.com`). The tool checks login status
+on each launch and shows 🔌 if the session has expired.
+
+**Why this is good for SRE teams:**
+- Rotate keys in one place — all users get the new key automatically
+- Revoke access by removing someone from the LastPass shared folder
+- Audit trail (LastPass Enterprise) of who accessed the entry and when
+- No `.env` files to accidentally commit
 
 ## ⚙️ Customization — `~/.config/datadog-assistant/config.json`
 

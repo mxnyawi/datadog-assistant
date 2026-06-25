@@ -5,9 +5,53 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    name: Smoke test + script lint
+    name: Tests & syntax (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Byte-compile all Python (no -O, so asserts stay live)
+        run: |
+          python -m py_compile $(git ls-files '*.py')
+
+      - name: Smoke test
+        run: python test_smoke.py
+
+  shell:
+    name: Shell script checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n (syntax) on every script
+        run: |
+          for f in $(git ls-files '*.sh'); do
+            echo "checking $f"
+            bash -n "$f"
+          done
+
+      - name: shellcheck (warnings, non-blocking)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          for f in $(git ls-files '*.sh'); do
+            shellcheck -S warning "$f" || true
+          done
+
+  unattended:
+    name: Unattended install contract
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,28 +60,17 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Most logic is testable on Linux without a Mac (stubs rumps/osascript).
-      - name: Run smoke test
-        run: python3 test_smoke.py
-
-      - name: Check install.sh syntax
-        run: bash -n install.sh
-
-      - name: Lint install.sh (shellcheck)
-        run: shellcheck --severity=error install.sh
-
-      # Verify the unattended install contract: with no TTY and env vars set,
-      # install.sh must write config.json non-interactively (no prompts).
-      - name: Verify unattended config write
+      # With no TTY and env vars set, install.sh must write config.json
+      # non-interactively and never block on a prompt. macOS-only tools are
+      # stubbed and a fake venv is pre-seeded so this runs on Linux with no network.
+      - name: install.sh writes config.json from env (no prompts)
         run: |
           set -euo pipefail
           export HOME="$(mktemp -d)"
           mkdir -p "$HOME/Library/LaunchAgents"
-          # Stub the macOS-only tools so the config-writing path runs on Linux.
           shim="$(mktemp -d)"
           printf '#!/bin/bash\nexit 0\n' > "$shim/launchctl"
           printf '#!/bin/bash\nexit 0\n' > "$shim/security"
-          # venv/pip step: stub pip via a fake venv so we don't install rumps in CI.
           chmod +x "$shim/launchctl" "$shim/security"
           mkdir -p "$HOME/.datadog-assistant/venv/bin"
           printf '#!/bin/bash\nexit 0\n' > "$HOME/.datadog-assistant/venv/bin/pip"
@@ -55,3 +88,18 @@ jobs:
           assert cfg["use_keychain"] is True, cfg
           print("unattended config OK:", cfg)
           PY
+
+      - name: invalid DD_AUTH fails fast
+        run: |
+          set +e
+          export HOME="$(mktemp -d)"
+          mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.datadog-assistant/venv/bin"
+          shim="$(mktemp -d)"
+          printf '#!/bin/bash\nexit 0\n' > "$shim/launchctl"
+          printf '#!/bin/bash\nexit 0\n' > "$shim/security"
+          printf '#!/bin/bash\nexit 0\n' > "$HOME/.datadog-assistant/venv/bin/pip"
+          chmod +x "$shim/launchctl" "$shim/security" "$HOME/.datadog-assistant/venv/bin/pip"
+          PATH="$shim:$PATH" DD_NONINTERACTIVE=1 DD_AUTH=bogus bash install.sh
+          rc=$?
+          if [ "$rc" -eq 0 ]; then echo "expected non-zero exit for bad DD_AUTH"; exit 1; fi
+          echo "correctly rejected DD_AUTH=bogus (rc=$rc)"

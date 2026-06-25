@@ -122,8 +122,10 @@ class Installer(threading.Thread):
             self.step(0.35, "Creating a Python environment…")
             self._sh([py, "-m", "venv", venv])
         self.step(0.55, "Installing dependencies (rumps)…")
-        self._sh([os.path.join(venv, "bin", "pip"), "install",
-                  "--quiet", "--upgrade", "pip", "rumps"])
+        pip = os.path.join(venv, "bin", "pip")
+        self._sh([pip, "install", "--quiet", "--upgrade", "pip"])
+        # Pinned to match requirements.txt — keep in sync when bumping.
+        self._sh([pip, "install", "--quiet", "rumps>=0.4.0,<0.5"])
 
         self.step(0.70, "Writing your settings…")
         cfg = {}
