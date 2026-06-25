@@ -624,6 +624,28 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
     assert da.repo_urls_from_tags(["git.repository_url:github.com/o/r"]) == \
         ["https://github.com/o/r"]
 
+    # ---- GitHub releases dropdown: repo parsing + release JSON parsing ----
+    assert da.github_repo_parts("https://github.com/acme/payments") == \
+        ("github.com", "acme", "payments")
+    assert da.github_repo_parts("https://github.com/acme/payments.git") == \
+        ("github.com", "acme", "payments")          # .git stripped
+    assert da.github_repo_parts("https://github.acme.com/team/svc") == \
+        ("github.acme.com", "team", "svc")          # Enterprise host
+    assert da.github_repo_parts("https://gitlab.com/a/b") is None   # not GitHub
+    assert da.github_repo_parts("https://github.com/onlyowner") is None  # no repo
+    _rel_json = ('[{"tag_name":"v2.1.0","name":"June","prerelease":false,'
+                 '"published_at":"2026-06-20T14:02:00Z",'
+                 '"html_url":"https://github.com/acme/payments/releases/tag/v2.1.0"},'
+                 '{"tag_name":"v2.2.0-rc1","prerelease":true,'
+                 '"published_at":"2026-06-24T09:00:00Z","html_url":"u2"}]')
+    rels = da.parse_gh_releases(_rel_json, 5)
+    assert len(rels) == 2 and rels[0]["tag"] == "v2.1.0", rels
+    assert rels[0]["when"] and rels[0]["url"].endswith("/v2.1.0"), rels
+    assert rels[1]["prerelease"] is True, rels
+    assert da.parse_gh_releases(_rel_json, 1) == rels[:1]    # honours the limit
+    assert da.parse_gh_releases("not json", 5) == []        # malformed -> empty
+    assert da.parse_gh_releases("", 5) == []
+
     # ---- catalog parser handles every schema version ----
     v2_schema = {
         "schema-version": "v2", "dd-service": "legacy", "team": "core",
