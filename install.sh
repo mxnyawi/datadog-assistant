@@ -21,8 +21,18 @@ SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 # (pipes / CI / agents). In unattended mode we never call `read`; every setting
 # comes from an environment variable or falls back to a safe default.
 NONINTERACTIVE="${DD_NONINTERACTIVE:-}"
-[ -t 0 ] || NONINTERACTIVE=1
-[ -n "$NONINTERACTIVE" ] && echo "🤖 Unattended install — reading settings from the environment (see AGENTS.md)"
+if [ -n "$NONINTERACTIVE" ]; then
+  echo "🤖 Unattended install — reading settings from the environment (see AGENTS.md)"
+elif [ ! -t 0 ]; then
+  # No TTY (e.g. 'curl … | bash'): we can't prompt, so we fall back to env vars
+  # + defaults. Warn loudly so a human doesn't silently get site=datadoghq.com
+  # and no keys when they expected the interactive wizard.
+  NONINTERACTIVE=1
+  echo "⚠️  No terminal detected (piped input, e.g. 'curl … | bash')."
+  echo "   Running UNATTENDED with environment variables + defaults — no prompts,"
+  echo "   no keys entered. For the interactive setup, download install.sh and run"
+  echo "   it directly (./install.sh), or pass settings via env vars (see AGENTS.md)."
+fi
 
 # write_config KEY VALUE — merge one string key into config.json
 write_config() {
@@ -131,6 +141,11 @@ else
   echo "   2) OAuth           (log in via the browser; needs a Datadog OAuth client)"
   read -r -p "   Choice [1-2, default 1]: " authm
   case "${authm:-1}" in 2) AUTH="oauth" ;; *) AUTH="keys" ;; esac
+fi
+
+if [ "$AUTH" != "keys" ] && [ "$AUTH" != "oauth" ]; then
+  echo "❌ DD_AUTH must be 'keys' or 'oauth' (got '$AUTH')" >&2
+  exit 1
 fi
 
 if [ "$AUTH" = "oauth" ]; then

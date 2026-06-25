@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Smoke test + script lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Most logic is testable on Linux without a Mac (stubs rumps/osascript).
+      - name: Run smoke test
+        run: python3 test_smoke.py
+
+      - name: Check install.sh syntax
+        run: bash -n install.sh
+
+      - name: Lint install.sh (shellcheck)
+        run: shellcheck --severity=error install.sh
+
+      # Verify the unattended install contract: with no TTY and env vars set,
+      # install.sh must write config.json non-interactively (no prompts).
+      - name: Verify unattended config write
+        run: |
+          set -euo pipefail
+          export HOME="$(mktemp -d)"
+          mkdir -p "$HOME/Library/LaunchAgents"
+          # Stub the macOS-only tools so the config-writing path runs on Linux.
+          shim="$(mktemp -d)"
+          printf '#!/bin/bash\nexit 0\n' > "$shim/launchctl"
+          printf '#!/bin/bash\nexit 0\n' > "$shim/security"
+          # venv/pip step: stub pip via a fake venv so we don't install rumps in CI.
+          chmod +x "$shim/launchctl" "$shim/security"
+          mkdir -p "$HOME/.datadog-assistant/venv/bin"
+          printf '#!/bin/bash\nexit 0\n' > "$HOME/.datadog-assistant/venv/bin/pip"
+          chmod +x "$HOME/.datadog-assistant/venv/bin/pip"
+          PATH="$shim:$PATH" DD_NONINTERACTIVE=1 DD_SITE=datadoghq.eu \
+            DD_APP_SUBDOMAIN=acme DD_TAG_FILTER="team:ci" DD_AUTH=keys \
+            DD_API_KEY=dummy DD_APP_KEY=dummy bash install.sh
+          python3 - "$HOME/.config/datadog-assistant/config.json" <<'PY'
+          import json, sys
+          cfg = json.load(open(sys.argv[1]))
+          assert cfg["site"] == "datadoghq.eu", cfg
+          assert cfg["app_subdomain"] == "acme", cfg
+          assert cfg["tag_filter"] == "team:ci", cfg
+          assert cfg["auth"] == "keys", cfg
+          assert cfg["use_keychain"] is True, cfg
+          print("unattended config OK:", cfg)
+          PY
