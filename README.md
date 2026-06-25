@@ -116,6 +116,23 @@ pip3 install rumps
 DD_API_KEY=xxx DD_APP_KEY=yyy python3 datadog_assistant.py
 ```
 
+### Build a standalone `.app` (clickable notifications) 📦
+
+The script and LaunchAgent installs run the app as a plain `python3` process. That
+works, but macOS won't route a **notification click** back to a bare process — so
+clicking the side banner just opens an empty window, and the app shows up as
+"Python". Compiling it into a real bundle fixes both:
+
+```bash
+./installer/build_menubar_app.sh        # RUN ON A MAC → dist/Datadog Assistant.app
+open "dist/Datadog Assistant.app"
+```
+
+This uses [`setup.py`](setup.py) (py2app) to produce **Datadog Assistant.app** with
+its own bundle identifier, icon, and `LSUIElement` (menu-bar-only). With a real
+bundle id, alert banners become **clickable and open the monitor in Datadog**. The
+running-as-a-script path still works — it just falls back to non-clickable banners.
+
 ### Automated / unattended install (agents & CI) 🤖
 
 `install.sh` also runs **non-interactively** — handy for coding agents,

@@ -1335,7 +1335,54 @@ def play_sound(name):
             pass
 
 
-def notify_banner(title, subtitle, message, sound_name=None):
+def _bundle_id():
+    """The running app's bundle identifier, or None when we're a bare script.
+
+    macOS only routes a notification *click* back to the app that posted it if
+    that app is a real bundle (has a CFBundleIdentifier). As a plain
+    `python3 datadog_assistant.py` process there's no bundle, so clicks can't
+    be delivered — which is why an osascript banner click just opens an empty
+    window. Built as a .app (see setup.py), this returns our id and the
+    rumps.notification path below becomes clickable."""
+    try:
+        from Foundation import NSBundle
+        return NSBundle.mainBundle().bundleIdentifier()
+    except Exception:
+        return None
+
+
+def _notification_handler(info):
+    """Called by rumps when the user clicks one of our notifications. `info` is
+    the data dict we attached in notify_banner; open the monitor it points at."""
+    try:
+        url = (info or {}).get("url") if isinstance(info, dict) else None
+        if url:
+            open_url(url)
+    except Exception:
+        pass
+
+
+# Register the click handler. Only fires when running from a bundle (rumps
+# wires NSUserNotificationCenter then); a harmless no-op as a bare script or
+# under the test stub that lacks this hook.
+try:
+    rumps.notifications(_notification_handler)
+except Exception:
+    pass
+
+
+def notify_banner(title, subtitle, message, sound_name=None, url=None):
+    """Side-of-screen banner. When `url` is given and we're running as a real
+    .app bundle, post via rumps so a click opens the monitor; otherwise fall
+    back to an osascript banner (no click action possible there)."""
+    if url and _bundle_id():
+        try:
+            rumps.notification(title, subtitle, message,
+                               data={"url": url}, sound=bool(sound_name))
+            return
+        except Exception:
+            pass  # fall back to the osascript banner below
+
     def esc(s):
         return s.replace("\\", "\\\\").replace('"', '\\"')
     script = (
@@ -1997,7 +2044,8 @@ class DatadogAssistant(rumps.App):
                     banner_body = f"{body} — {ctx}" if ctx else body
                     if dep_hint:
                         banner_body += f"\n{dep_hint}"
-                    notify_banner(title, "Datadog Assistant 🐶", banner_body, sound)
+                    notify_banner(title, "Datadog Assistant 🐶", banner_body,
+                                  sound, url=url)
                 if style in ("modal", "both") and state == "Alert":
                     modal_body = body + (f"\n{ctx}" if ctx else "")
                     grps = self._triggered_groups(m)
