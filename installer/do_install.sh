@@ -44,7 +44,15 @@ if [ "$DD_DRY_RUN" != "1" ]; then
     "$PY" -m venv "$APP_DIR/venv"
   fi
   say "Installing rumps"
-  "$APP_DIR/venv/bin/pip" install --quiet --upgrade pip rumps
+  "$APP_DIR/venv/bin/pip" install --quiet --upgrade pip
+  # Pinned to match requirements.txt (this engine runs from a bundle where that
+  # file may not be present, so the constraint is inlined).
+  REQ="$(dirname "$DD_SRC")/requirements.txt"
+  if [ -f "$REQ" ]; then
+    "$APP_DIR/venv/bin/pip" install --quiet -r "$REQ"
+  else
+    "$APP_DIR/venv/bin/pip" install --quiet 'rumps>=0.4.0,<0.5'
+  fi
 fi
 
 say "Writing settings"

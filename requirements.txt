@@ -1,0 +1,17 @@
+# Runtime dependencies for Datadog Assistant.
+#
+# Everything else (Datadog/Jira API clients, OAuth, notifications) is Python
+# stdlib — these are the only third-party packages.
+#
+# Pinned so a breaking upstream release can't land on user machines via the
+# installer's `pip install` step unannounced. The installer scripts
+# (install.sh / installer/do_install.sh / installer/install_gui.py) mirror the
+# `rumps` constraint below — keep them in sync when bumping.
+
+rumps>=0.4.0,<0.5
+
+# rumps' transitive macOS bridge. A floor is pinned (prebuilt wheels, avoids the
+# slow source build of older/yanked versions on Python 3.10+); the upper bound
+# is intentionally left open so it can track new macOS/Python releases.
+pyobjc-core>=9.0
+pyobjc-framework-Cocoa>=9.0
