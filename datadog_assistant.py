@@ -265,10 +265,22 @@ def load_config():
     return deep_merge(DEFAULT_CONFIG, user_cfg)
 
 
+def _strip_ephemeral(obj):
+    """Drop in-memory-only keys (convention: leading underscore, e.g. the
+    `_lp_client_secret` / `_lp_api_token` injected from a LastPass note) so
+    runtime secrets never get written to disk."""
+    if isinstance(obj, dict):
+        return {k: _strip_ephemeral(v) for k, v in obj.items()
+                if not (isinstance(k, str) and k.startswith("_"))}
+    if isinstance(obj, list):
+        return [_strip_ephemeral(v) for v in obj]
+    return obj
+
+
 def save_config(cfg):
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
+        json.dump(_strip_ephemeral(cfg), f, indent=2)
 
 
 OPEN_BROWSER = ""  # set from cfg at startup; "" = system default browser
@@ -352,14 +364,27 @@ def _find_lpass():
 _LPASS = _find_lpass()
 
 
+_LPASS_LOGIN_CACHE = {"ok": False, "at": 0.0}
+_LPASS_LOGIN_TTL = 60  # seconds — avoid spawning `lpass status` on every poll
+
+
 def lpass_logged_in():
-    """Check if the user is logged into LastPass CLI."""
+    """Check if the user is logged into LastPass CLI. A positive result is
+    cached briefly so `configured()` doesn't spawn a subprocess on every poll
+    tick; a logged-out result is never cached, so re-login is picked up at the
+    next check."""
+    now = time.time()
+    if _LPASS_LOGIN_CACHE["ok"] and now - _LPASS_LOGIN_CACHE["at"] < _LPASS_LOGIN_TTL:
+        return True
     try:
         out = subprocess.run([_LPASS, "status"], capture_output=True,
                              text=True, timeout=10)
-        return out.returncode == 0 and "Logged in" in out.stdout
+        ok = out.returncode == 0 and "Logged in" in out.stdout
     except Exception:
-        return False
+        ok = False
+    _LPASS_LOGIN_CACHE["ok"] = ok
+    _LPASS_LOGIN_CACHE["at"] = now
+    return ok
 
 
 def lpass_get(entry, field):

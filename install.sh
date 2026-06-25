@@ -8,6 +8,7 @@ APP_DIR="$HOME/.datadog-assistant"
 CONFIG_DIR="$HOME/.config/datadog-assistant"
 PLIST="$HOME/Library/LaunchAgents/com.nour.datadog-assistant.plist"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLIST_TIMEOUT=""   # set by the LastPass auth path to seed the LaunchAgent env
 
 echo "🐶 Installing Datadog Assistant..."
 
@@ -140,6 +141,11 @@ EOF
   echo "   ⏱  The lpass agent logs you out after a timeout (default: 1 hour)."
   read -r -p "   Session timeout in seconds (leave empty for never): " LP_TIMEOUT
   LP_TIMEOUT="${LP_TIMEOUT:-0}"
+  # The app runs from a LaunchAgent, which does NOT source your shell rc — so
+  # the authoritative place for the timeout is the plist's EnvironmentVariables
+  # (wired in below). We also drop it in the shell rc so manual `lpass` use in a
+  # terminal honours the same timeout.
+  PLIST_TIMEOUT="$LP_TIMEOUT"
   SHELL_RC="$HOME/.zshrc"
   [ -f "$HOME/.bash_profile" ] && ! [ -f "$HOME/.zshrc" ] && SHELL_RC="$HOME/.bash_profile"
   if ! grep -q "LPASS_AGENT_TIMEOUT" "$SHELL_RC" 2>/dev/null; then
@@ -192,6 +198,16 @@ EOF
 fi
 
 # 5. LaunchAgent (start at login, keep alive)
+# LaunchAgents get a minimal environment and never source your shell rc, so any
+# runtime env the app needs (e.g. LPASS_AGENT_TIMEOUT for LastPass auth) must be
+# declared here.
+PLIST_ENV=""
+if [ -n "$PLIST_TIMEOUT" ]; then
+  PLIST_ENV="  <key>EnvironmentVariables</key>
+  <dict>
+    <key>LPASS_AGENT_TIMEOUT</key><string>$PLIST_TIMEOUT</string>
+  </dict>"
+fi
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -204,6 +220,7 @@ cat > "$PLIST" <<EOF
     <string>$APP_DIR/venv/bin/python3</string>
     <string>$APP_DIR/datadog_assistant.py</string>
   </array>
+$PLIST_ENV
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ProcessType</key><string>Interactive</string>
