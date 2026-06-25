@@ -938,7 +938,8 @@ class DatadogClient:
             self._save_oauth_blob(blob)
         return self._access["token"]
 
-    def _request(self, method, path, params=None, body=None, version="v1"):
+    def _request(self, method, path, params=None, body=None, version="v1",
+                 timeout=30):
         oauth = self.auth_mode() == "oauth"
         api = app = ""
         if oauth:
@@ -960,7 +961,7 @@ class DatadogClient:
             req.add_header("Content-Type", "application/json")
             req.add_header("Accept-Encoding", "gzip")
             try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     raw = resp.read()
                     if resp.headers.get("Content-Encoding") == "gzip":
                         raw = gzip.decompress(raw)
@@ -1069,8 +1070,11 @@ class DatadogClient:
 
     def query_metrics(self, query, window_minutes=60):
         now = int(time.time())
+        # Short timeout: these run serially per hot monitor inside one poll, so
+        # a slow metric query must not stall the whole refresh.
         return self._request("GET", "/query", params={
-            "from": now - window_minutes * 60, "to": now, "query": query})
+            "from": now - window_minutes * 60, "to": now, "query": query},
+            timeout=10)
 
     def service_url(self, service):
         return f"{self.app_base}/services/{urllib.parse.quote(service)}"
@@ -1523,7 +1527,11 @@ class DatadogAssistant(rumps.App):
                                   # from tags + the monitor message
                     if scfg.get("show_deploys", True):
                         payload["deploys"] = self._fetch_deploys(payload["monitors"])
-                payload["nodata_probe"] = self._probe_no_data(payload["monitors"])
+                # Snapshot the probe state so the worker never reads the live
+                # self.nodata_probe that the main thread reassigns in
+                # _drain_results.
+                payload["nodata_probe"] = self._probe_no_data(
+                    payload["monitors"], dict(self.nodata_probe))
                 self.results.put(("data", payload))
         except urllib.error.HTTPError as e:
             self.results.put(("error", f"HTTP {e.code} from Datadog API"))
@@ -1744,12 +1752,14 @@ class DatadogAssistant(rumps.App):
         ctx = self.deploys.get(mid)
         return ctx.get("headline") if ctx else None
 
-    def _probe_no_data(self, monitors):
+    def _probe_no_data(self, monitors, already=None):
         """For No Data metric monitors: query the metric's recent history.
         Data in the window then nothing now → 'stopped' (agent/host likely
         died). No datapoints in the whole window → 'silent' (was never
         flowing — retired host, seasonal job). Runs in the fetch thread;
-        capped per refresh, already-probed monitors are skipped."""
+        capped per refresh, already-probed monitors (passed in as a snapshot)
+        are skipped."""
+        already = already or {}
         tcfg = self.cfg.get("no_data_triage", {})
         if not tcfg.get("enabled", True):
             return {}
@@ -1761,7 +1771,7 @@ class DatadogAssistant(rumps.App):
                 break
             if (m.get("overall_state") != "No Data"
                     or m.get("type") not in ("metric alert", "query alert")
-                    or m.get("id") in self.nodata_probe):
+                    or m.get("id") in already):
                 continue
             q = extract_metric_query(m.get("query", ""))
             if not q:
@@ -2984,9 +2994,13 @@ class DatadogAssistant(rumps.App):
         if resp.clicked:
             self.cfg["tag_filter"] = resp.text.strip()
             save_config(self.cfg)
-            # Clear stale data so the menu reflects the change immediately
+            # Clear stale data so the menu reflects the change immediately.
+            # Don't force-reset _fetching here: if a fetch is already running,
+            # resetting it would let _poll_tick start a *second* worker that
+            # races the first on the shared caches (_deploy_cache, _dash_ts,
+            # nodata_probe). _poll_tick no-ops while a fetch is in flight; the
+            # new filter is picked up on the next tick.
             self.monitors = []
-            self._fetching = False
             self._poll_tick(None)
 
     # -------------------- Datadog credentials wizard --------------------
