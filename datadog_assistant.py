@@ -31,6 +31,7 @@ import http.server
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -299,6 +300,22 @@ def keychain_set(service, value):
 
 
 _SECRET_CMD_CACHE = {}
+_SECRET_CMD_CACHE_TIME = {}
+_SECRET_CACHE_TTL = 900  # re-fetch from vault every 15 minutes
+
+
+def _cache_get(key):
+    if key in _SECRET_CMD_CACHE:
+        if time.time() - _SECRET_CMD_CACHE_TIME.get(key, 0) < _SECRET_CACHE_TTL:
+            return _SECRET_CMD_CACHE[key]
+        del _SECRET_CMD_CACHE[key]
+        _SECRET_CMD_CACHE_TIME.pop(key, None)
+    return None
+
+
+def _cache_set(key, val):
+    _SECRET_CMD_CACHE[key] = val
+    _SECRET_CMD_CACHE_TIME[key] = time.time()
 
 
 def secret_from_cmd(cmd):
@@ -306,12 +323,13 @@ def secret_from_cmd(cmd):
     1Password op, Bitwarden bw, Vault...) — the command's stdout is the
     secret. Lets companies centralise rotation/revocation/audit instead of
     provisioning API keys onto every machine. Successful lookups are cached
-    in memory so the vault isn't hit on every poll; failures (e.g. vault
-    locked) are not cached and retry next poll."""
+    in memory (with TTL) so the vault isn't hit on every poll; failures
+    (e.g. vault locked) are not cached and retry next poll."""
     if not cmd:
         return ""
-    if cmd in _SECRET_CMD_CACHE:
-        return _SECRET_CMD_CACHE[cmd]
+    cached = _cache_get(cmd)
+    if cached is not None:
+        return cached
     try:
         out = subprocess.run(["/bin/sh", "-c", cmd], capture_output=True,
                              text=True, timeout=30)
@@ -319,16 +337,15 @@ def secret_from_cmd(cmd):
     except Exception:
         val = ""
     if val:
-        _SECRET_CMD_CACHE[cmd] = val
+        _cache_set(cmd, val)
     return val
 
 
 def _find_lpass():
     """Locate the lpass binary, checking common Homebrew paths that LaunchAgents miss."""
     for p in ("/opt/homebrew/bin/lpass", "/usr/local/bin/lpass"):
-        if os.path.isfile(p):
+        if os.path.isfile(p) and os.access(p, os.X_OK):
             return p
-    import shutil
     return shutil.which("lpass") or "lpass"
 
 
@@ -351,8 +368,9 @@ def lpass_get(entry, field):
     if not entry or not field:
         return ""
     cache_key = f"lpass:{entry}:{field}"
-    if cache_key in _SECRET_CMD_CACHE:
-        return _SECRET_CMD_CACHE[cache_key]
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     # Try --field first (works for custom fields)
     val = ""
     try:
@@ -378,7 +396,7 @@ def lpass_get(entry, field):
         except Exception:
             pass
     if val:
-        _SECRET_CMD_CACHE[cache_key] = val
+        _cache_set(cache_key, val)
     return val
 
 
@@ -798,7 +816,7 @@ class DatadogClient:
             if entry:
                 api = lpass_get(entry, lp.get("api_key_field", "datadogAPIKey")) or api
                 app = lpass_get(entry, lp.get("app_key_field", "datadogAPPKey")) or app
-                return api, app
+            return api, app
         # password-manager commands win when configured
         api = secret_from_cmd(self.cfg.get("api_key_cmd")) or api
         app = secret_from_cmd(self.cfg.get("app_key_cmd")) or app
@@ -1066,7 +1084,8 @@ class JiraClient:
         return self.cfg.get("auth", "token")
 
     def _token(self):
-        return (secret_from_cmd(self.cfg.get("api_token_cmd"))
+        return (self.cfg.get("_lp_api_token")
+                or secret_from_cmd(self.cfg.get("api_token_cmd"))
                 or self.cfg.get("api_token")
                 or keychain_get("datadog-assistant-jira-token"))
 
@@ -1099,7 +1118,8 @@ class JiraClient:
         blob = self._oauth_blob()
         body = {"grant_type": "refresh_token",
                 "client_id": self.cfg.get("oauth_client_id", ""),
-                "client_secret": blob.get("client_secret", ""),
+                "client_secret": (self.cfg.get("_lp_client_secret")
+                                  or blob.get("client_secret", "")),
                 "refresh_token": blob.get("refresh_token", "")}
         req = urllib.request.Request(JIRA_OAUTH_TOKEN_URL,
                                      data=json.dumps(body).encode(),
@@ -1312,21 +1332,16 @@ class DatadogAssistant(rumps.App):
                 cid = lpass_get(entry, lp["jira_client_id_field"])
                 if cid:
                     jira_cfg["oauth_client_id"] = cid
-            # Jira OAuth client secret — inject into oauth blob
+            # Jira OAuth client secret — in-memory only, never persisted
             if lp.get("jira_client_secret_field"):
                 sec = lpass_get(entry, lp["jira_client_secret_field"])
                 if sec:
-                    raw = (keychain_get("datadog-assistant-jira-oauth")
-                           or jira_cfg.get("oauth_blob", ""))
-                    try:
-                        blob = json.loads(raw) if raw else {}
-                    except ValueError:
-                        blob = {}
-                    blob["client_secret"] = sec
-                    jira_cfg["oauth_blob"] = json.dumps(blob)
+                    jira_cfg["_lp_client_secret"] = sec
             # Jira API token (non-OAuth fallback)
-            if lp.get("jira_token_field") and not jira_cfg.get("api_token_cmd"):
-                jira_cfg["api_token_cmd"] = f"lpass show --field='{lp['jira_token_field']}' '{entry}'"
+            if lp.get("jira_token_field"):
+                tok = lpass_get(entry, lp["jira_token_field"])
+                if tok:
+                    jira_cfg["_lp_api_token"] = tok
         self.jira = JiraClient(jira_cfg)
         icons = self.cfg["icons"]
         super().__init__(APP_NAME, title=icons["ok"], quit_button=None)
@@ -2898,6 +2913,7 @@ class DatadogAssistant(rumps.App):
             mode = "lastpass"
         else:
             return
+        # Thread: OAuth blocks on browser redirect; osascript dialogs are safe off main thread.
         threading.Thread(target=self._datadog_setup_flow, args=(mode,),
                          daemon=True).start()
 
@@ -2935,7 +2951,7 @@ class DatadogAssistant(rumps.App):
         elif mode == "lastpass":
             # Check lpass is installed
             try:
-                subprocess.run(["lpass", "--version"], capture_output=True, timeout=5)
+                subprocess.run([_LPASS, "--version"], capture_output=True, timeout=5)
             except Exception:
                 notify_modal("❌ LastPass CLI not found",
                              "Install it with: brew install lastpass-cli\n"
