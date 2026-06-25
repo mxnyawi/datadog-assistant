@@ -71,10 +71,16 @@ alerts, sparklines, incidents, Jira, snooze and more, no config editing needed.
 
 1. **[Download the latest installer](https://github.com/mxnyawi/datadog-assistant/releases/latest/download/Datadog-Assistant-Installer.zip)**
    (or from the [website](https://datadog-assistant.pages.dev)).
-2. Open the downloaded zip , it unzips to **Datadog Assistant Installer**.
-3. **Right-click → Open** the first time (it's unsigned; if macOS still blocks
+2. *(Optional but recommended)* **Verify the download.** Each release ships a
+   `Datadog-Assistant-Installer.zip.sha256` next to the zip. Since the app is
+   unsigned, this is your integrity check:
+   ```bash
+   shasum -a 256 -c Datadog-Assistant-Installer.zip.sha256   # → "OK"
+   ```
+3. Open the downloaded zip , it unzips to **Datadog Assistant Installer**.
+4. **Right-click → Open** the first time (it's unsigned; if macOS still blocks
    it, go to **System Settings → Privacy & Security → Open Anyway**).
-4. Follow the steps: pick your site, sign in, done. The 🐶 appears in your menu bar.
+5. Follow the steps: pick your site, sign in, done. The 🐶 appears in your menu bar.
 
 The installer is a native macOS app, built from [`installer/`](installer/) and
 published to Releases via `installer/release.sh` (run on a Mac). You can also run
