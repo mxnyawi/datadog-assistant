@@ -321,10 +321,22 @@ def secret_from_cmd(cmd):
     return val
 
 
+def _find_lpass():
+    """Locate the lpass binary, checking common Homebrew paths that LaunchAgents miss."""
+    for p in ("/opt/homebrew/bin/lpass", "/usr/local/bin/lpass"):
+        if os.path.isfile(p):
+            return p
+    import shutil
+    return shutil.which("lpass") or "lpass"
+
+
+_LPASS = _find_lpass()
+
+
 def lpass_logged_in():
     """Check if the user is logged into LastPass CLI."""
     try:
-        out = subprocess.run(["lpass", "status"], capture_output=True,
+        out = subprocess.run([_LPASS, "status"], capture_output=True,
                              text=True, timeout=10)
         return out.returncode == 0 and "Logged in" in out.stdout
     except Exception:
@@ -343,7 +355,7 @@ def lpass_get(entry, field):
     val = ""
     try:
         out = subprocess.run(
-            ["lpass", "show", "--field", field, entry],
+            [_LPASS, "show", "--field", field, entry],
             capture_output=True, text=True, timeout=30)
         val = out.stdout.strip() if out.returncode == 0 else ""
     except Exception:
@@ -352,7 +364,7 @@ def lpass_get(entry, field):
     if not val:
         try:
             out = subprocess.run(
-                ["lpass", "show", "--notes", entry],
+                [_LPASS, "show", "--notes", entry],
                 capture_output=True, text=True, timeout=30)
             if out.returncode == 0:
                 for line in out.stdout.splitlines():
