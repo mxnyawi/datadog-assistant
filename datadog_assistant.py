@@ -2831,6 +2831,14 @@ class DatadogAssistant(rumps.App):
         return True
 
     def _jira_oauth_browser_flow(self, client_id, secret):
+        # PKCE (S256): the authorization code alone isn't sufficient to redeem
+        # the token without the verifier, so a local process that snoops the
+        # cleartext-loopback redirect can't exchange the code. Mirrors the
+        # Datadog flow. Atlassian 3LO supports PKCE on the authorize + token
+        # endpoints.
+        verifier = base64.urlsafe_b64encode(os.urandom(40)).decode().rstrip("=")
+        challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
         state = base64.urlsafe_b64encode(os.urandom(16)).decode().rstrip("=")
         redirect = f"http://localhost:{JIRA_OAUTH_PORT}/callback"
         got = {}
@@ -2879,6 +2887,8 @@ class DatadogAssistant(rumps.App):
             "redirect_uri": redirect,
             "state": state,
             "response_type": "code",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
             "prompt": "consent",
         }))
         try:
@@ -2904,6 +2914,7 @@ class DatadogAssistant(rumps.App):
                                  "client_id": client_id,
                                  "client_secret": secret,
                                  "code": got["code"],
+                                 "code_verifier": verifier,
                                  "redirect_uri": redirect}).encode())
             req.add_header("Content-Type", "application/json")
             with urllib.request.urlopen(req, timeout=20) as resp:
