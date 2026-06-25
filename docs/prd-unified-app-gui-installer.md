@@ -161,13 +161,13 @@ feel "never expires" to the user, two levels:
   detects a logged-out agent (`lpass_logged_in()` already does this) and surfaces a
   lightweight **"Unlock LastPass" prompt** from the menu bar (re-enter master
   password once). Smooth, and stores nothing extra.
-- **Level 2 (opt-in, survives reboot):** with explicit consent, store the master
-  password in the **macOS Keychain** and add a tiny **boot helper** (LaunchAgent)
-  that re-runs `lpass login` non-interactively at login. True hands-off
-  persistence, at the cost of a high-value secret living in the Keychain.
-  Clearly labeled, off by default, and gated behind a security explainer.
+- **Level 2 (dropped):** storing the master password in the Keychain + a boot
+  helper to re-login was considered and **rejected** — not worth putting a
+  high-value secret on disk. The Level-1 unlock prompt is fast enough.
 
-This needs a security review sign-off before Level 2 ships.
+**Decision:** ship Level 1 only. The in-app unlock prompt reuses the same
+GUI login flow, so the post-reboot path costs little beyond detecting the
+logged-out agent (`lpass_logged_in()` already does).
 
 ---
 
@@ -177,10 +177,10 @@ This needs a security review sign-off before Level 2 ships.
   explicit Level-2 opt-in. Never in `config.json`, never logged.
 - **No shell injection**: all `lpass` calls use argv arrays (as the codebase
   already does); the password goes via stdin/env, never interpolated into a string.
-- **Bundled `lpass`**: `lastpass-cli` is **GPLv2** — bundling it inside our
-  (MIT) `.app` has licensing implications. Either keep the Homebrew-install path,
-  or ship `lpass` as a clearly-attributed, separately-licensed component. **Open
-  question — needs a decision.**
+- **`lpass` via Homebrew (decided):** `lastpass-cli` is **GPLv2**, so we do **not**
+  bundle it — the GUI installs it with `brew install lastpass-cli`. Keeps the `.app`
+  MIT-clean and the binary current. If Homebrew is absent, the GUI guides the user
+  (the only LastPass-path scenario that may touch Terminal).
 - **Unsigned app**: first-run Gatekeeper friction (right-click → Open). Onboarding
   should explain this up front. Notarization is the real fix (future work).
 - Reuse the existing security posture: `umask 077` on config, Keychain for keys.
@@ -219,14 +219,28 @@ Each phase is independently shippable and reviewable.
 
 ---
 
-## 9. Open questions (need your call)
+## 9. Resolved decisions
 
-1. **Single self-onboarding bundle (§4.1 recommended) vs. separate installer app?**
-2. **GUI tech: pywebview (recommended) vs. invest in SwiftUI for max polish?**
-3. **Bundle `lpass` (GPL) in the app, or require Homebrew** for the install?
-4. **Ship never-expire Level 2** (master password in Keychain + boot re-login), or
-   stop at Level 1 (re-prompt after reboot)?
-5. **Retire the Tkinter + AppleScript installers**, or keep one as a fallback?
+All five settled (2026-06-25):
+
+1. **Architecture — single self-onboarding bundle** (§4.1). One `.app`, two modes.
+   No separate installer app.
+2. **GUI tech — pywebview** (§4.2). HTML/CSS/JS frontend in a native WKWebView,
+   Python bridge runs the install engine.
+3. **`lpass` — install via Homebrew, do NOT bundle.** The GUI runs
+   `brew install lastpass-cli` for the user (no Terminal when Homebrew is present);
+   if Homebrew itself is missing, show clear on-screen guidance. Keeps our bundle
+   MIT-clean and avoids shipping/patching a GPLv2, unmaintained binary.
+4. **Never-expire — Level 1 only.** The installer sets `LPASS_AGENT_TIMEOUT=0` in
+   the **LaunchAgent plist `EnvironmentVariables`** automatically (that's the env
+   the app's `lpass` reads — *not* the user's shell rc). After a reboot wipes the
+   agent, the menu-bar app detects the logged-out state and shows an **in-app
+   "Unlock LastPass" GUI prompt** (re-enter master password once) — no Terminal.
+   We optionally surface the `export LPASS_AGENT_TIMEOUT=0` line for the user's own
+   terminal `lpass` use, but it's not required for the app. **Level 2 (master
+   password in Keychain + boot helper) is dropped.**
+5. **Retire** the Tkinter (`install_gui.py`) and AppleScript (`install.applescript`)
+   installers once the GUI ships. No fallback installer kept.
 
 ---
 
