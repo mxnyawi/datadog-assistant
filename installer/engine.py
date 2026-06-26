@@ -616,11 +616,13 @@ def install(config, on_progress=None, on_log=None, dry_run=None):
 
 
 def launch():
-    """Start the app now (post-install, without waiting for the next login)."""
-    if FROZEN and bundle_executable():
-        subprocess.Popen([bundle_executable(), "--run"])
-    else:
-        subprocess.run(["launchctl", "start", LABEL], capture_output=True)
+    """Nudge the LaunchAgent to start the menu-bar app now (idempotent).
+
+    Deliberately does NOT spawn a raw instance: install() already loaded the
+    agent (RunAtLoad), so a second copy would just race it for the
+    single-instance lock and leave the loser exiting "already running" in a
+    KeepAlive loop. `launchctl start` is a no-op if it's already running."""
+    subprocess.run(["launchctl", "start", LABEL], capture_output=True)
 
 
 # --------------------------------------------------------------------------
