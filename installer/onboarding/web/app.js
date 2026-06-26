@@ -74,6 +74,7 @@
       loggedIn: false,
       loginError: "",
       entries: null,
+      entriesError: "",
       loadingEntries: false,
       entry: "",
       apiField: "datadogAPIKey",
@@ -302,6 +303,11 @@
         (lp.loadingEntries
           ? '<p class="hint">' + SPINNER + ' Loading entries…</p>'
           : '<select class="select" id="lpEntrySel">' + entryOpts + '</select>') +
+        (!lp.loadingEntries && entries.length === 0
+          ? '<p class="hint">Couldn\'t list entries automatically' +
+              (lp.entriesError ? ' — ' + esc(lp.entriesError) : '') +
+              '. Type the full entry path below.</p>'
+          : '') +
         '<input class="input" id="lpEntryText" type="text" autocomplete="off" spellcheck="false" ' +
           'style="margin-top:9px" placeholder="…or type the entry name" value="' + esc(lp.entry) + '" />' +
       '</div>' +
@@ -658,9 +664,12 @@
       call("lastpass_list_entries").then(function (r) {
         lp.loadingEntries = false;
         lp.entries = (r && r.entries) || [];
+        lp.entriesError = (r && r.error) || "";
         refreshAuthPanel();
-      }).catch(function () {
-        lp.loadingEntries = false; lp.entries = []; refreshAuthPanel();
+      }).catch(function (e) {
+        lp.loadingEntries = false; lp.entries = [];
+        lp.entriesError = (e && e.message) || "request failed";
+        refreshAuthPanel();
       });
     }
   }
