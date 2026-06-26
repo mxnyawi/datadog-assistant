@@ -418,32 +418,27 @@ def lpass_logged_in():
 
 
 def lpass_login(email, password, otp=""):
-    """Non-interactive `lpass login` for the in-app 'Unlock LastPass' prompt
-    (after a reboot wipes the agent). Returns (ok, mfa_required, error). The
-    master password / OTP go via stdin, never argv or disk."""
-    if not _LPASS or not email or not password:
+    """`lpass login` for the in-app 'Unlock LastPass' prompt (after a reboot
+    wipes the agent). Returns (ok, mfa_required, error). Delegates to the shared
+    install engine's pty-based driver, which handles authenticator prompts and
+    reads the password the way lpass expects."""
+    if not email or not password:
         return (False, False, "Email and master password are required.")
-    env = dict(os.environ)
-    env["LPASS_DISABLE_PINENTRY"] = "1"
-    # No trailing newline on the password (it'd be read as part of it and login
-    # fails); when an OTP is given, terminate the password line so lpass can
-    # read the code next.
-    stdin = (password + "\n" + otp + "\n") if otp else password
     try:
-        p = subprocess.run([_LPASS, "login", "--trust", email], input=stdin,
-                           capture_output=True, text=True, timeout=120, env=env)
+        inst = os.path.join(os.path.dirname(os.path.abspath(__file__)), "installer")
+        if inst not in sys.path:
+            sys.path.insert(0, inst)
+        import engine
+        res = engine.lastpass_login(email, password, otp,
+                                    never_expire=True, on_log=lambda l: None)
     except Exception as e:
-        return (False, False, str(e)[:120])
-    if p.returncode == 0:
+        return (False, False, str(e)[:140])
+    if res.get("ok"):
         _LPASS_LOGIN_CACHE["ok"] = False  # force a fresh status check next poll
         return (True, False, "")
-    low = (p.stderr or p.stdout or "").lower()
-    if not otp and ("multifactor" in low or "out-of-band" in low
-                    or "code" in low or "otp" in low):
+    if res.get("mfa_required"):
         return (False, True, "")
-    if "invalid" in low and "password" in low:
-        return (False, False, "Incorrect email or master password.")
-    return (False, False, (p.stderr or p.stdout or "lpass login failed").strip()[:160])
+    return (False, False, res.get("error") or "lpass login failed.")
 
 
 def lpass_get(entry, field):

@@ -168,46 +168,172 @@ def lastpass_ensure_cli(on_log=None):
     return {"installed": bool(find_lpass())}
 
 
-def lastpass_login(email, password, otp="", never_expire=True, on_log=None):
-    """Non-interactive `lpass login`. If MFA is needed, returns
-    {ok: False, mfa_required: True} so the GUI can collect an OTP and retry.
+def _redact(text, *secrets):
+    for s in secrets:
+        if s:
+            text = text.replace(s, "•••")
+    return text
 
-    The master password and OTP are passed via stdin/env, never argv or disk."""
+
+# Prompt fragments lpass prints; used to know which input it's waiting for.
+_PW_PROMPTS = ("master password", "password")
+_OTP_PROMPTS = ("code", "factor", "passcode", "otp", "authenticat", "google",
+                "yubikey", "out-of-band")
+
+
+def lastpass_login(email, password, otp="", never_expire=True, on_log=None):
+    """Log in to LastPass by driving `lpass login` through a pseudo-terminal,
+    answering the master-password prompt and (if the account has an
+    authenticator) the code prompt. Returns:
+      {ok: True}                              on success
+      {ok: False, mfa_required: True}         password ok but a code is needed
+      {ok: False, error, detail}              otherwise (detail = lpass output)
+
+    A pty is used because lpass reads the password from the controlling
+    terminal, not plain stdin — piping alone fails on MFA accounts. lpass's
+    actual prompts/errors are logged (with secrets redacted) so failures are
+    diagnosable."""
     log = on_log or (lambda *_: None)
     lpass = find_lpass()
     if not lpass:
         return {"ok": False, "error": "LastPass CLI not found."}
     if not email or not password:
         return {"ok": False, "error": "Email and master password are required."}
+
     env = dict(os.environ)
     env["LPASS_DISABLE_PINENTRY"] = "1"
-    # Start the agent with no timeout when the user wants to stay signed in, so
-    # the menu-bar app inherits a session that won't lapse mid-day.
+    # 0 = never time out (within a session) so the menu-bar app's session holds.
     env["LPASS_AGENT_TIMEOUT"] = "0" if never_expire else env.get(
         "LPASS_AGENT_TIMEOUT", "")
-    # With LPASS_DISABLE_PINENTRY=1, lpass reads the master password from stdin.
-    # It must arrive WITHOUT a trailing newline (the documented `printf '%s' …`
-    # recipe) — a trailing "\n" gets read as part of the password and login
-    # fails with "Failed to enter correct password". When an OTP is supplied,
-    # the password line is newline-terminated so lpass can then read the code.
-    stdin = (password + "\n" + otp + "\n") if otp else password
+
     log(f"$ lpass login --trust {email}")
-    try:
-        p = subprocess.run([lpass, "login", "--trust", email],
-                           input=stdin, capture_output=True, text=True, timeout=120)
-    except Exception as e:
-        return {"ok": False, "error": str(e)[:200]}
-    if p.returncode == 0:
+    transcript, saw_otp_prompt = _drive_lpass_login(
+        lpass, email, password, otp, env)
+
+    # Surface what lpass actually said (redacted), to the GUI log and stderr.
+    for line in _redact(transcript, password, otp).splitlines():
+        line = line.strip()
+        if line:
+            log("lpass: " + line)
+            print("lpass: " + line, file=sys.stderr)
+
+    # `lpass status` is the source of truth for whether we're in.
+    if lpass_logged_in(lpass):
         return {"ok": True}
-    err = (p.stderr or p.stdout or "").strip()
-    low = err.lower()
-    # Heuristics: lpass asks for a code when MFA is on.
-    if not otp and ("multifactor" in low or "out-of-band" in low or
-                    "code" in low or "otp" in low or "google authenticator" in low):
-        return {"ok": False, "mfa_required": True}
-    if "invalid" in low and "password" in low:
-        return {"ok": False, "error": "Incorrect email or master password."}
-    return {"ok": False, "error": err[:240] or "lpass login failed."}
+
+    detail = _redact(transcript, password, otp).strip()
+    low = detail.lower()
+    if saw_otp_prompt and not otp:
+        return {"ok": False, "mfa_required": True, "detail": detail[-400:]}
+    if saw_otp_prompt and otp:
+        return {"ok": False,
+                "error": "LastPass rejected the authenticator code (or it "
+                         "expired — try the current one).",
+                "detail": detail[-400:]}
+    if "password" in low and any(w in low for w in
+                                 ("incorrect", "could not", "failed", "invalid")):
+        return {"ok": False, "error": "LastPass rejected the master password.",
+                "detail": detail[-400:]}
+    return {"ok": False,
+            "error": (detail[-200:] or "lpass login failed."),
+            "detail": detail[-400:]}
+
+
+def _drive_lpass_login(lpass, email, password, otp, env):
+    """Run `lpass login` under a pty, feeding the password and (if asked) the
+    code. Returns (transcript, saw_otp_prompt). Falls back to a plain pipe if
+    a pty can't be allocated."""
+    try:
+        import pty
+        import select
+        import signal
+        import time
+    except Exception:
+        return _drive_lpass_login_pipe(lpass, email, password, otp, env)
+
+    try:
+        pid, fd = pty.fork()
+    except Exception:
+        return _drive_lpass_login_pipe(lpass, email, password, otp, env)
+
+    if pid == 0:  # child → become lpass
+        try:
+            os.execvpe(lpass, [lpass, "login", "--trust", email], env)
+        except Exception:
+            os._exit(127)
+        os._exit(127)
+
+    transcript = ""
+    buf = ""
+    sent_pw = sent_otp = saw_otp = False
+    deadline = time.time() + 90
+    try:
+        while time.time() < deadline:
+            try:
+                rlist, _, _ = select.select([fd], [], [], 0.5)
+            except (OSError, ValueError):
+                break
+            if not rlist:
+                try:
+                    done, _ = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                if done:
+                    pid = 0
+                    break
+                continue
+            try:
+                data = os.read(fd, 4096)
+            except OSError:
+                break
+            if not data:
+                break
+            chunk = data.decode("utf-8", "replace")
+            transcript += chunk
+            buf += chunk
+            low = buf.lower()
+            if not sent_pw and any(p in low for p in _PW_PROMPTS):
+                os.write(fd, (password + "\n").encode())
+                sent_pw = True
+                buf = ""
+                continue
+            if sent_pw and not sent_otp and any(p in low for p in _OTP_PROMPTS):
+                saw_otp = True
+                if otp:
+                    os.write(fd, (otp + "\n").encode())
+                    sent_otp = True
+                    buf = ""
+                    continue
+                break  # need a code we don't have → stop and report mfa_required
+    finally:
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except Exception:
+                pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    return transcript, saw_otp
+
+
+def _drive_lpass_login_pipe(lpass, email, password, otp, env):
+    """Fallback when no pty is available: feed password (+otp) via stdin."""
+    stdin = (password + "\n" + otp + "\n") if otp else password + "\n"
+    try:
+        p = subprocess.run([lpass, "login", "--trust", email], input=stdin,
+                           capture_output=True, text=True, timeout=120, env=env)
+        out = (p.stdout or "") + (p.stderr or "")
+    except Exception as e:
+        return (str(e), False)
+    low = out.lower()
+    saw_otp = any(k in low for k in _OTP_PROMPTS)
+    return (out, saw_otp)
 
 
 def lastpass_list_entries(on_log=None):
