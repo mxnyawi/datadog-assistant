@@ -82,7 +82,7 @@ def lpass_logged_in(lpass=None):
         return False
     try:
         out = subprocess.run([lpass, "status"], capture_output=True,
-                             text=True, timeout=10)
+                             text=True, timeout=10, env=_lpass_env())
         return out.returncode == 0 and "Logged in" in out.stdout
     except Exception:
         return False
@@ -370,19 +370,37 @@ def _drive_lpass_login_pipe(lpass, email, password, otp, env):
     return (out, saw_otp, "pipe")
 
 
+def _lpass_env():
+    """Env for non-interactive lpass calls: never pop a pinentry prompt (it
+    would block with no terminal), and reach the existing agent."""
+    env = dict(os.environ)
+    env["LPASS_DISABLE_PINENTRY"] = "1"
+    return env
+
+
 def lastpass_list_entries(on_log=None):
-    """`lpass ls` → {entries: [...]}. Best-effort; empty list on failure.
+    """`lpass ls` → {entries: [...]} (with an `error` when the list is empty).
     The raw result is logged to lastpass.log so an empty list is diagnosable."""
     lpass = find_lpass()
     if not lpass:
         return {"entries": [], "error": "LastPass CLI not found."}
+    env = _lpass_env()
+
+    # A fresh login may not have downloaded the vault yet — sync first (the
+    # likely reason `ls` came back empty). Tolerate failure.
     try:
-        # Plain `lpass ls`. Lines look like "Group/Name [id: 1234]" on most
-        # builds, but some print just "Group/Name" with no id — so DON'T filter
-        # on "[id:" (that silently dropped every entry). Just strip the id tail
-        # if present and keep every non-empty line.
-        p = subprocess.run([lpass, "ls"],
-                           capture_output=True, text=True, timeout=45)
+        s = subprocess.run([lpass, "sync"], capture_output=True, text=True,
+                           timeout=45, env=env)
+        _lp_log(f"sync: rc={s.returncode}; stderr={(s.stderr or '').strip()[:160]}")
+    except Exception as e:
+        _lp_log(f"sync error: {e}")
+
+    try:
+        # Lines look like "Group/Name [id: 1234]" on most builds, but some print
+        # just "Group/Name" — so DON'T filter on "[id:" (that silently dropped
+        # every entry). Strip the id tail if present; keep every non-empty line.
+        p = subprocess.run([lpass, "ls"], capture_output=True, text=True,
+                           timeout=45, env=env)
         out_text, err_text, rc = p.stdout or "", p.stderr or "", p.returncode
     except Exception as e:
         _lp_log(f"ls error: {e}")
@@ -399,21 +417,27 @@ def lastpass_list_entries(on_log=None):
             entries.append(name)
     _lp_log(f"ls: rc={rc}, {len(entries)} entries, {len(out_text.splitlines())} "
             f"raw lines; stderr={err_text.strip()[:160]}")
-    return {"entries": entries}
+    result = {"entries": entries}
+    if not entries:
+        result["error"] = (err_text.strip()[:200]
+                           or f"`lpass ls` returned no entries (exit {rc}). "
+                              "See ~/.datadog-assistant/lastpass.log.")
+    return result
 
 
 def _lpass_field(lpass, entry, field):
     """Read one field from a secure note (key=value notes or a custom field)."""
+    env = _lpass_env()
     try:
         p = subprocess.run([lpass, "show", "--field", field, entry],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30, env=env)
         if p.returncode == 0 and p.stdout.strip():
             return p.stdout.strip()
     except Exception:
         pass
     try:
         p = subprocess.run([lpass, "show", "--notes", entry],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=30, env=env)
         if p.returncode == 0:
             for line in p.stdout.splitlines():
                 if "=" in line:
