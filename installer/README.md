@@ -37,13 +37,20 @@ the app attached as `Datadog-Assistant-Installer.zip` (name kept for backwards
 compatibility). The website Download button
 (`releases/latest/download/Datadog-Assistant-Installer.zip`) then resolves.
 
-### Optional: build on GitHub instead of your Mac
+### Build on GitHub instead of your Mac
 
-There's no release workflow yet — releases are built and published **locally**
-with `installer/release.sh` on a Mac. A `.github/workflows/release.yml` that
-builds the `.app` on a macOS runner and publishes on a `v*` tag would remove the
-need for a local Mac; contributions welcome. (Committing a workflow file needs a
-token with the `workflow` scope, or adding it via the GitHub web UI.)
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) builds the
+`.app` on a macOS runner and publishes the Release automatically — no local Mac
+needed. Trigger it by pushing a tag:
+
+```bash
+git tag v0.3.0 && git push origin v0.3.0
+```
+
+(or run it manually from the Actions tab via `workflow_dispatch`). It attaches
+`Datadog-Assistant-Installer.zip` + its `.sha256`, which is exactly what the
+website's **Download for macOS** button points at. `installer/release.sh`
+remains for cutting a release by hand from a Mac.
 
 ## Headless / CI install (no GUI)
 
