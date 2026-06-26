@@ -504,11 +504,13 @@ def build_config(c):
 
 def _plist_dict(c):
     """The LaunchAgent definition (frozen → run the .app; script → venv python)."""
+    # --run forces the menu-bar app (never re-enter onboarding from the
+    # LaunchAgent, even if config is briefly missing).
     if FROZEN and bundle_executable():
-        program = [bundle_executable()]
+        program = [bundle_executable(), "--run"]
     else:
         program = [os.path.join(APP_DIR, "venv", "bin", "python3"),
-                   os.path.join(APP_DIR, "datadog_assistant.py")]
+                   os.path.join(APP_DIR, "datadog_assistant.py"), "--run"]
     env = {}
     if c.get("auth") == "lastpass":
         lp = c.get("lastpass", {}) or {}
@@ -616,7 +618,7 @@ def install(config, on_progress=None, on_log=None, dry_run=None):
 def launch():
     """Start the app now (post-install, without waiting for the next login)."""
     if FROZEN and bundle_executable():
-        subprocess.Popen([bundle_executable()])
+        subprocess.Popen([bundle_executable(), "--run"])
     else:
         subprocess.run(["launchctl", "start", LABEL], capture_output=True)
 
