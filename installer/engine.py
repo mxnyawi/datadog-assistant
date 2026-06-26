@@ -604,9 +604,7 @@ def install(config, on_progress=None, on_log=None, dry_run=None):
         if not dry:
             with open(PLIST_PATH, "wb") as f:
                 f.write(plistlib.dumps(_plist_dict(config)))
-            subprocess.run(["launchctl", "unload", PLIST_PATH],
-                           capture_output=True)
-            sh(["launchctl", "load", PLIST_PATH])
+            _bootstrap_launchagent(log)
 
         prog(1.0, "Done")
         return {"ok": True}
@@ -615,14 +613,45 @@ def install(config, on_progress=None, on_log=None, dry_run=None):
         return {"ok": False, "error": str(e)}
 
 
-def launch():
-    """Nudge the LaunchAgent to start the menu-bar app now (idempotent).
+def _gui_domain():
+    return f"gui/{os.getuid()}"
 
-    Deliberately does NOT spawn a raw instance: install() already loaded the
-    agent (RunAtLoad), so a second copy would just race it for the
-    single-instance lock and leave the loser exiting "already running" in a
-    KeepAlive loop. `launchctl start` is a no-op if it's already running."""
-    subprocess.run(["launchctl", "start", LABEL], capture_output=True)
+
+def _bootstrap_launchagent(log=None):
+    """(Re)load the LaunchAgent into the GUI session domain and start it.
+
+    The legacy `launchctl load` works from a terminal but NOT when invoked from
+    inside a GUI app (as onboarding is) — the agent loads into the wrong domain
+    and its menu-bar status item never appears. `bootstrap gui/$UID` targets the
+    GUI session explicitly. Falls back to load/start on older macOS."""
+    log = log or (lambda *_: None)
+    domain = _gui_domain()
+    # Clear any prior registration (ignore errors — it may not be loaded).
+    subprocess.run(["launchctl", "bootout", domain, PLIST_PATH],
+                   capture_output=True)
+    r = subprocess.run(["launchctl", "bootstrap", domain, PLIST_PATH],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        log(f"bootstrap failed ({r.stderr.strip()[:120]}); using legacy load")
+        subprocess.run(["launchctl", "unload", PLIST_PATH], capture_output=True)
+        subprocess.run(["launchctl", "load", "-w", PLIST_PATH],
+                       capture_output=True)
+    _kickstart()
+
+
+def _kickstart():
+    """Ensure the agent is running now (idempotent — no-op if already up)."""
+    r = subprocess.run(["launchctl", "kickstart", f"{_gui_domain()}/{LABEL}"],
+                       capture_output=True)
+    if r.returncode != 0:
+        subprocess.run(["launchctl", "start", LABEL], capture_output=True)
+
+
+def launch():
+    """Ensure the menu-bar app is running now (post-install). install() already
+    bootstrapped + started the agent; this is an idempotent nudge, not a second
+    raw instance (which would race the single-instance lock)."""
+    _kickstart()
 
 
 # --------------------------------------------------------------------------
