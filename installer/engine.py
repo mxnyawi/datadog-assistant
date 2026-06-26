@@ -175,6 +175,18 @@ def _redact(text, *secrets):
     return text
 
 
+def _lp_log(msg):
+    """Append a line to ~/.datadog-assistant/lastpass.log so LastPass login is
+    diagnosable even from the bundle (where stderr isn't a terminal)."""
+    try:
+        d = os.path.expanduser("~/.datadog-assistant")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "lastpass.log"), "a") as f:
+            f.write(msg.rstrip("\n") + "\n")
+    except Exception:
+        pass
+
+
 # Prompt fragments lpass prints; used to know which input it's waiting for.
 _PW_PROMPTS = ("master password", "password")
 _OTP_PROMPTS = ("code", "factor", "passcode", "otp", "authenticat", "google",
@@ -207,11 +219,15 @@ def lastpass_login(email, password, otp="", never_expire=True, on_log=None):
         "LPASS_AGENT_TIMEOUT", "")
 
     log(f"$ lpass login --trust {email}")
-    transcript, saw_otp_prompt = _drive_lpass_login(
+    _lp_log(f"=== login attempt: lpass={lpass}, email={email}, "
+            f"otp={'yes' if otp else 'no'} ===")
+    transcript, saw_otp_prompt, how = _drive_lpass_login(
         lpass, email, password, otp, env)
+    detail = _redact(transcript, password, otp).strip()
 
-    # Surface what lpass actually said (redacted), to the GUI log and stderr.
-    for line in _redact(transcript, password, otp).splitlines():
+    # Surface what lpass actually said (redacted) — file, GUI log, and stderr.
+    _lp_log(f"[{how}] saw_otp_prompt={saw_otp_prompt}\ntranscript:\n{detail}")
+    for line in detail.splitlines():
         line = line.strip()
         if line:
             log("lpass: " + line)
@@ -219,30 +235,39 @@ def lastpass_login(email, password, otp="", never_expire=True, on_log=None):
 
     # `lpass status` is the source of truth for whether we're in.
     if lpass_logged_in(lpass):
-        return {"ok": True}
-
-    detail = _redact(transcript, password, otp).strip()
-    low = detail.lower()
-    if saw_otp_prompt and not otp:
-        return {"ok": False, "mfa_required": True, "detail": detail[-400:]}
-    if saw_otp_prompt and otp:
-        return {"ok": False,
-                "error": "LastPass rejected the authenticator code (or it "
-                         "expired — try the current one).",
-                "detail": detail[-400:]}
-    if "password" in low and any(w in low for w in
-                                 ("incorrect", "could not", "failed", "invalid")):
-        return {"ok": False, "error": "LastPass rejected the master password.",
-                "detail": detail[-400:]}
-    return {"ok": False,
-            "error": (detail[-200:] or "lpass login failed."),
-            "detail": detail[-400:]}
+        result = {"ok": True}
+    else:
+        low = detail.lower()
+        if saw_otp_prompt and not otp:
+            result = {"ok": False, "mfa_required": True, "detail": detail[-400:]}
+        elif saw_otp_prompt and otp:
+            result = {"ok": False,
+                      "error": "LastPass rejected the authenticator code (or it "
+                               "expired — try the current one).",
+                      "detail": detail[-400:]}
+        elif "password" in low and any(w in low for w in
+                                       ("incorrect", "could not", "failed",
+                                        "invalid")):
+            result = {"ok": False,
+                      "error": "LastPass rejected the master password.",
+                      "detail": detail[-400:]}
+        elif not detail:
+            result = {"ok": False,
+                      "error": "LastPass didn't respond (no prompt seen). See "
+                               "~/.datadog-assistant/lastpass.log.",
+                      "detail": ""}
+        else:
+            result = {"ok": False, "error": detail[-200:],
+                      "detail": detail[-400:]}
+    _lp_log(f"result: {result}")
+    return result
 
 
 def _drive_lpass_login(lpass, email, password, otp, env):
     """Run `lpass login` under a pty, feeding the password and (if asked) the
-    code. Returns (transcript, saw_otp_prompt). Falls back to a plain pipe if
-    a pty can't be allocated."""
+    code. Returns (transcript, saw_otp_prompt, how). Falls back to a plain pipe
+    if a pty can't be allocated. Bounded by an overall deadline and an idle
+    timeout so it can never hang the GUI."""
     try:
         import pty
         import select
@@ -266,7 +291,9 @@ def _drive_lpass_login(lpass, email, password, otp, env):
     transcript = ""
     buf = ""
     sent_pw = sent_otp = saw_otp = False
-    deadline = time.time() + 90
+    start = time.time()
+    deadline = start + 45          # hard cap
+    last_activity = start
     try:
         while time.time() < deadline:
             try:
@@ -281,6 +308,12 @@ def _drive_lpass_login(lpass, email, password, otp, env):
                 if done:
                     pid = 0
                     break
+                # No output and the child's still alive: if it's been idle a
+                # while it's wedged (or waiting on a prompt we didn't match) —
+                # bail rather than spin to the hard deadline.
+                if time.time() - last_activity > 20:
+                    transcript += "\n[timed out waiting for lpass]"
+                    break
                 continue
             try:
                 data = os.read(fd, 4096)
@@ -288,6 +321,7 @@ def _drive_lpass_login(lpass, email, password, otp, env):
                 break
             if not data:
                 break
+            last_activity = time.time()
             chunk = data.decode("utf-8", "replace")
             transcript += chunk
             buf += chunk
@@ -319,7 +353,7 @@ def _drive_lpass_login(lpass, email, password, otp, env):
             os.close(fd)
         except OSError:
             pass
-    return transcript, saw_otp
+    return transcript, saw_otp, "pty"
 
 
 def _drive_lpass_login_pipe(lpass, email, password, otp, env):
@@ -327,45 +361,43 @@ def _drive_lpass_login_pipe(lpass, email, password, otp, env):
     stdin = (password + "\n" + otp + "\n") if otp else password + "\n"
     try:
         p = subprocess.run([lpass, "login", "--trust", email], input=stdin,
-                           capture_output=True, text=True, timeout=120, env=env)
+                           capture_output=True, text=True, timeout=45, env=env)
         out = (p.stdout or "") + (p.stderr or "")
     except Exception as e:
-        return (str(e), False)
+        return (str(e), False, "pipe")
     low = out.lower()
     saw_otp = any(k in low for k in _OTP_PROMPTS)
-    return (out, saw_otp)
+    return (out, saw_otp, "pipe")
 
 
 def lastpass_list_entries(on_log=None):
-    """`lpass ls` → {entries: [...]}. Best-effort; empty list on failure."""
+    """`lpass ls` → {entries: [...]}. Best-effort; empty list on failure.
+    The raw result is logged to lastpass.log so an empty list is diagnosable."""
     lpass = find_lpass()
     if not lpass:
         return {"entries": [], "error": "LastPass CLI not found."}
     try:
-        p = subprocess.run([lpass, "ls", "--format", "%/as%/ag%an"],
-                           capture_output=True, text=True, timeout=30)
-        if p.returncode != 0:
-            # Fall back to the default ls format.
-            p = subprocess.run([lpass, "ls"], capture_output=True,
-                               text=True, timeout=30)
-        names = []
-        for line in (p.stdout or "").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            # Default `lpass ls` is "Folder/Name [id: ...]"; strip the id tail.
-            name = line.split(" [id:")[0].strip()
-            if name:
-                names.append(name)
-        # De-dup, keep order.
-        seen, out = set(), []
-        for n in names:
-            if n not in seen:
-                seen.add(n)
-                out.append(n)
-        return {"entries": out}
+        # --sync=now makes sure the vault is fetched (it may not be right after
+        # login). Default `lpass ls` lines look like "Group/Name [id: 1234]".
+        p = subprocess.run([lpass, "ls", "--sync=now"],
+                           capture_output=True, text=True, timeout=45)
+        out_text, err_text, rc = p.stdout or "", p.stderr or "", p.returncode
     except Exception as e:
+        _lp_log(f"ls error: {e}")
         return {"entries": [], "error": str(e)[:150]}
+
+    seen, entries = set(), []
+    for line in out_text.splitlines():
+        line = line.strip()
+        if "[id:" not in line:        # skip folder headers / blank lines
+            continue
+        name = line.split(" [id:")[0].strip()
+        if name and name not in seen:
+            seen.add(name)
+            entries.append(name)
+    _lp_log(f"ls: rc={rc}, {len(entries)} entries, {len(out_text.splitlines())} "
+            f"raw lines; stderr={err_text.strip()[:160]}")
+    return {"entries": entries}
 
 
 def _lpass_field(lpass, entry, field):
