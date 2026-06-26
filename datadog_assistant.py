@@ -425,7 +425,10 @@ def lpass_login(email, password, otp=""):
         return (False, False, "Email and master password are required.")
     env = dict(os.environ)
     env["LPASS_DISABLE_PINENTRY"] = "1"
-    stdin = password + "\n" + (otp + "\n" if otp else "")
+    # No trailing newline on the password (it'd be read as part of it and login
+    # fails); when an OTP is given, terminate the password line so lpass can
+    # read the code next.
+    stdin = (password + "\n" + otp + "\n") if otp else password
     try:
         p = subprocess.run([_LPASS, "login", "--trust", email], input=stdin,
                            capture_output=True, text=True, timeout=120, env=env)

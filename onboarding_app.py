@@ -137,7 +137,9 @@ def run():
         "Datadog Assistant",
         url=os.path.join(wd, "index.html"),
         js_api=api,
-        width=760, height=600, resizable=False,
+        # Resizable + a min size so the taller steps (LastPass) are reachable
+        # even before in-pane scrolling.
+        width=760, height=640, min_size=(680, 560), resizable=True,
         background_color="#0f1117")
     api._window = window
     webview.start()

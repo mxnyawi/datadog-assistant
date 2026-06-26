@@ -185,9 +185,12 @@ def lastpass_login(email, password, otp="", never_expire=True, on_log=None):
     # the menu-bar app inherits a session that won't lapse mid-day.
     env["LPASS_AGENT_TIMEOUT"] = "0" if never_expire else env.get(
         "LPASS_AGENT_TIMEOUT", "")
-    # lpass reads the master password from stdin; an OTP (if supplied) on the
-    # next line. With --trust the device is remembered so MFA isn't re-prompted.
-    stdin = password + "\n" + (otp + "\n" if otp else "")
+    # With LPASS_DISABLE_PINENTRY=1, lpass reads the master password from stdin.
+    # It must arrive WITHOUT a trailing newline (the documented `printf '%s' …`
+    # recipe) — a trailing "\n" gets read as part of the password and login
+    # fails with "Failed to enter correct password". When an OTP is supplied,
+    # the password line is newline-terminated so lpass can then read the code.
+    stdin = (password + "\n" + otp + "\n") if otp else password
     log(f"$ lpass login --trust {email}")
     try:
         p = subprocess.run([lpass, "login", "--trust", email],
