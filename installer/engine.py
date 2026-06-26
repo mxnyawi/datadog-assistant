@@ -504,14 +504,14 @@ def build_config(c):
 
 def _plist_dict(c):
     """The LaunchAgent definition (frozen → run the .app; script → venv python)."""
-    # --run forces the menu-bar app (never re-enter onboarding from the
-    # LaunchAgent, even if config is briefly missing).
     if FROZEN and bundle_executable():
-        program = [bundle_executable(), "--run"]
+        program = [bundle_executable()]
     else:
         program = [os.path.join(APP_DIR, "venv", "bin", "python3"),
-                   os.path.join(APP_DIR, "datadog_assistant.py"), "--run"]
-    env = {}
+                   os.path.join(APP_DIR, "datadog_assistant.py")]
+    # Force run mode via env, NOT a CLI flag: the py2app app stub exits 2 when
+    # launchd hands it an unrecognized argument like --run.
+    env = {"DD_NO_ONBOARD": "1"}
     if c.get("auth") == "lastpass":
         lp = c.get("lastpass", {}) or {}
         # 0 = never time out (within a session). LaunchAgents don't source the

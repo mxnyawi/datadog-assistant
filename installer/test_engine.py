@@ -46,6 +46,12 @@ assert engine.LABEL in xml, xml
 # keys mode has no LPASS env
 assert "LPASS_AGENT_TIMEOUT" not in engine.plist_xml({"auth": "keys"})
 
+# ---- plist forces run mode via env (NOT a --run arg the app stub rejects) ----
+for mode in ("keys", "oauth", "lastpass"):
+    px = engine.plist_xml({"auth": mode})
+    assert "DD_NO_ONBOARD" in px, px
+    assert "--run" not in px, px
+
 # ---- plist program target: script mode runs the venv python + the script ----
 # (FROZEN is False under the test interpreter)
 assert engine.FROZEN is False
