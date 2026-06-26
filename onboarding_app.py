@@ -124,6 +124,21 @@ class Api:
         return {"ok": True}
 
 
+def _promote_to_regular_app():
+    """The bundle is LSUIElement (menu-bar only), so a plain window can open
+    behind everything with no dock icon to click. For onboarding, promote the
+    process to a regular foreground app and bring it forward. Harmless off-Mac
+    or if AppKit isn't available."""
+    try:
+        from AppKit import (NSApplication,
+                            NSApplicationActivationPolicyRegular)
+        app = NSApplication.sharedApplication()
+        app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+        app.activateIgnoringOtherApps_(True)
+    except Exception:
+        pass
+
+
 def run():
     """Open the onboarding window. Raises if pywebview/web assets are missing,
     so the caller can fall back to launching the app directly."""
@@ -132,6 +147,7 @@ def run():
     wd = web_dir()
     if not wd:
         raise RuntimeError("onboarding web assets not found")
+    _promote_to_regular_app()
     api = Api()
     window = webview.create_window(
         "Datadog Assistant",
