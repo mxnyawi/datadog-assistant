@@ -1,0 +1,55 @@
+name: Release
+
+# Build "Datadog Assistant.app" on a macOS runner and publish it to a GitHub
+# Release, so users can download + double-click without a local Mac build.
+# Triggers on a v* tag (or manually). The asset name matches the website's
+# download button: releases/latest/download/Datadog-Assistant-Installer.zip
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.3.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & publish macOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.12: the native stack (pyobjc/rumps/py2app/pywebview) is unreliable on
+      # 3.13+, so pin a stable interpreter for the bundle.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Datadog Assistant.app
+        run: ./installer/build_menubar_app.sh
+
+      - name: Zip the app
+        run: |
+          ditto -c -k --keepParent "dist/Datadog Assistant.app" \
+            "Datadog-Assistant-Installer.zip"
+
+      - name: SHA-256 checksum
+        run: |
+          shasum -a 256 "Datadog-Assistant-Installer.zip" \
+            > "Datadog-Assistant-Installer.zip.sha256"
+          cat "Datadog-Assistant-Installer.zip.sha256"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: Datadog Assistant ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            Datadog-Assistant-Installer.zip
+            Datadog-Assistant-Installer.zip.sha256

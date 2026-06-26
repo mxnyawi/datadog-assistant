@@ -417,6 +417,30 @@ def lpass_logged_in():
     return ok
 
 
+def lpass_login(email, password, otp=""):
+    """`lpass login` for the in-app 'Unlock LastPass' prompt (after a reboot
+    wipes the agent). Returns (ok, mfa_required, error). Delegates to the shared
+    install engine's pty-based driver, which handles authenticator prompts and
+    reads the password the way lpass expects."""
+    if not email or not password:
+        return (False, False, "Email and master password are required.")
+    try:
+        inst = os.path.join(os.path.dirname(os.path.abspath(__file__)), "installer")
+        if inst not in sys.path:
+            sys.path.insert(0, inst)
+        import engine
+        res = engine.lastpass_login(email, password, otp,
+                                    never_expire=True, on_log=lambda l: None)
+    except Exception as e:
+        return (False, False, str(e)[:140])
+    if res.get("ok"):
+        _LPASS_LOGIN_CACHE["ok"] = False  # force a fresh status check next poll
+        return (True, False, "")
+    if res.get("mfa_required"):
+        return (False, True, "")
+    return (False, False, res.get("error") or "lpass login failed.")
+
+
 def lpass_get(entry, field):
     """Retrieve a field from a LastPass secure note (key=value format in Notes).
     Falls back to --field for custom-field entries."""
@@ -1335,7 +1359,54 @@ def play_sound(name):
             pass
 
 
-def notify_banner(title, subtitle, message, sound_name=None):
+def _bundle_id():
+    """The running app's bundle identifier, or None when we're a bare script.
+
+    macOS only routes a notification *click* back to the app that posted it if
+    that app is a real bundle (has a CFBundleIdentifier). As a plain
+    `python3 datadog_assistant.py` process there's no bundle, so clicks can't
+    be delivered — which is why an osascript banner click just opens an empty
+    window. Built as a .app (see setup.py), this returns our id and the
+    rumps.notification path below becomes clickable."""
+    try:
+        from Foundation import NSBundle
+        return NSBundle.mainBundle().bundleIdentifier()
+    except Exception:
+        return None
+
+
+def _notification_handler(info):
+    """Called by rumps when the user clicks one of our notifications. `info` is
+    the data dict we attached in notify_banner; open the monitor it points at."""
+    try:
+        url = (info or {}).get("url") if isinstance(info, dict) else None
+        if url:
+            open_url(url)
+    except Exception:
+        pass
+
+
+# Register the click handler. Only fires when running from a bundle (rumps
+# wires NSUserNotificationCenter then); a harmless no-op as a bare script or
+# under the test stub that lacks this hook.
+try:
+    rumps.notifications(_notification_handler)
+except Exception:
+    pass
+
+
+def notify_banner(title, subtitle, message, sound_name=None, url=None):
+    """Side-of-screen banner. When `url` is given and we're running as a real
+    .app bundle, post via rumps so a click opens the monitor; otherwise fall
+    back to an osascript banner (no click action possible there)."""
+    if url and _bundle_id():
+        try:
+            rumps.notification(title, subtitle, message,
+                               data={"url": url}, sound=bool(sound_name))
+            return
+        except Exception:
+            pass  # fall back to the osascript banner below
+
     def esc(s):
         return s.replace("\\", "\\\\").replace('"', '\\"')
     script = (
@@ -1514,6 +1585,10 @@ class DatadogAssistant(rumps.App):
                     self.results.put(("error",
                                       "Datadog OAuth not connected — "
                                       "Preferences → 🔐 Datadog credentials"))
+                elif self.client.auth_mode() == "lastpass" and not lpass_logged_in():
+                    self.results.put(("error",
+                                      "LastPass is locked — click 🔓 Unlock "
+                                      "LastPass in the menu"))
                 elif self.cfg.get("api_key_cmd") or self.cfg.get("app_key_cmd"):
                     self.results.put(("error",
                                       "Secret command returned nothing — "
@@ -1997,7 +2072,8 @@ class DatadogAssistant(rumps.App):
                     banner_body = f"{body} — {ctx}" if ctx else body
                     if dep_hint:
                         banner_body += f"\n{dep_hint}"
-                    notify_banner(title, "Datadog Assistant 🐶", banner_body, sound)
+                    notify_banner(title, "Datadog Assistant 🐶", banner_body,
+                                  sound, url=url)
                 if style in ("modal", "both") and state == "Alert":
                     modal_body = body + (f"\n{ctx}" if ctx else "")
                     grps = self._triggered_groups(m)
@@ -2532,6 +2608,13 @@ class DatadogAssistant(rumps.App):
             snooze.add(rumps.MenuItem(label, callback=self._make_snoozer(mins)))
         prefs.add(snooze)
 
+        # LastPass unlock (only relevant in lastpass auth mode)
+        if self.cfg.get("auth") == "lastpass":
+            locked = not lpass_logged_in()
+            prefs.add(rumps.MenuItem(
+                "🔓 Unlock LastPass" + ("  ⚠️" if locked else ""),
+                callback=self._unlock_lastpass))
+
         # filters
         prefs.add(rumps.MenuItem("🏷 Set tag filter…", callback=self._set_tag_filter))
         prefs.add(None)
@@ -3019,6 +3102,37 @@ class DatadogAssistant(rumps.App):
         self._rebuild_menu()
         self._update_title()
 
+    def _unlock_lastpass(self, _):
+        """Re-login to LastPass from the menu (e.g. after a reboot dropped the
+        agent). Reuses the osascript dialogs so no GUI dependency is needed."""
+        lp = self.cfg.get("lastpass", {})
+        email = ask_text("🔓 Unlock LastPass", "Your LastPass email:",
+                         default=lp.get("email", ""))
+        if not email:
+            return
+        pw = ask_text("🔓 Unlock LastPass",
+                      f"Master password for {email}:", secure=True)
+        if pw is None:
+            return
+        ok, mfa, err = lpass_login(email, pw)
+        if mfa:
+            otp = ask_text("🔓 LastPass — verification code",
+                           "Enter your 2-factor code:")
+            if otp is None:
+                return
+            ok, _, err = lpass_login(email, pw, otp)
+        if ok:
+            # Remember the email (non-secret) so next time it's pre-filled.
+            self.cfg.setdefault("lastpass", {})["email"] = email
+            save_config(self.cfg)
+            notify_banner("🔓 LastPass unlocked", "Datadog Assistant 🐶",
+                          "Fetching your monitors…")
+            self.monitors = []
+            self._poll_tick(None)
+        else:
+            notify_modal("❌ LastPass unlock failed",
+                         err or "Could not log in to LastPass.")
+
     def _set_tag_filter(self, _):
         win = rumps.Window(
             title="🏷 Tag filter",
@@ -3376,6 +3490,73 @@ class DatadogAssistant(rumps.App):
                          self.client.app_base + "/monitors/manage")
 
 
+def _should_onboard():
+    """First run (no config yet) → show the onboarding GUI instead of the menu
+    bar app. `--onboard` / DD_ONBOARD=1 force it; `--run` / DD_NO_ONBOARD=1
+    skip it (e.g. when the LaunchAgent relaunches the bundle in run mode)."""
+    if "--onboard" in sys.argv or os.environ.get("DD_ONBOARD") == "1":
+        return True
+    if "--run" in sys.argv or os.environ.get("DD_NO_ONBOARD") == "1":
+        return False
+    return not os.path.exists(CONFIG_PATH)
+
+
+def _startup_log(msg):
+    """Trace startup to ~/.datadog-assistant/startup.log. As an LSUIElement
+    bundle there's no console, so this file is the only way to see what the
+    launchd-started process actually did."""
+    try:
+        d = os.path.expanduser("~/.datadog-assistant")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "startup.log"), "a") as f:
+            f.write(msg.rstrip("\n") + "\n")
+    except Exception:
+        pass
+
+
+def _log_startup_error(exc):
+    try:
+        import traceback
+        d = os.path.expanduser("~/.datadog-assistant")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "startup.log"), "a") as f:
+            f.write("=== startup error ===\n")
+            traceback.print_exc(file=f)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
-    _lock = acquire_single_instance_lock()
-    DatadogAssistant().run()
+    _startup_log(
+        f"--- launch pid={os.getpid()} argv={sys.argv} "
+        f"DD_ONBOARD={os.environ.get('DD_ONBOARD')} "
+        f"DD_NO_ONBOARD={os.environ.get('DD_NO_ONBOARD')} "
+        f"cfg_exists={os.path.exists(CONFIG_PATH)} "
+        f"tty={sys.stdin.isatty() if sys.stdin else '?'} ---")
+    try:
+        if _should_onboard():
+            _startup_log("mode=onboarding")
+            try:
+                import onboarding_app
+                onboarding_app.run()
+                sys.exit(0)
+            except SystemExit:
+                raise
+            except Exception as e:
+                # pywebview missing (dev) or assets absent — don't strand the
+                # user; fall through to the menu-bar app (own setup wizards).
+                print(f"onboarding unavailable ({e}); starting the app instead",
+                      file=sys.stderr)
+                _log_startup_error(e)
+        _startup_log("mode=run — acquiring single-instance lock")
+        _lock = acquire_single_instance_lock()
+        _startup_log("lock acquired — starting rumps menu-bar app")
+        DatadogAssistant().run()
+        _startup_log("rumps run() RETURNED — app exited (unexpected for a "
+                     "menu-bar app)")
+    except SystemExit as e:
+        _startup_log(f"SystemExit({e.code})")
+        raise
+    except Exception as e:
+        _log_startup_error(e)
+        raise

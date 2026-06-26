@@ -1,68 +1,68 @@
-# 🐶 Datadog Assistant , graphical installer
+# 🐶 Datadog Assistant — building & releasing the app
 
-Install the menu bar app without touching Terminal. There are two builds; both
-do exactly what `../install.sh` does (venv + `rumps`, Keychain, config,
-LaunchAgent), just with a GUI.
+The product is a single self-onboarding **`Datadog Assistant.app`**: the user
+downloads it, double-clicks, and a modern GUI walks through the whole setup
+(region → sign in → options → install) before it runs as the menu-bar app.
+There's no separate installer anymore — the app onboards itself on first launch.
 
-## ✅ Native installer (recommended , zero dependencies)
+- **GUI host:** [`../onboarding_app.py`](../onboarding_app.py) (pywebview window)
+- **Frontend:** [`onboarding/web/`](onboarding/web/) (HTML/CSS/JS; open
+  `index.html` in a browser to preview — it falls back to a mock bridge)
+- **Install engine:** [`engine.py`](engine.py) — the one place that knows how to
+  set things up (venv/deps when run as a script, config, Keychain, LastPass,
+  LaunchAgent). The GUI and the headless/CLI path both call it, so they can't
+  drift. `DD_DRY_RUN=1 python3 engine.py` runs it headless.
 
-`install.applescript` + `do_install.sh`. Uses only built-in macOS dialogs and
-compiles with `osacompile`, so it needs **no Python, no Tk, no pip** , nothing to
-install first.
-
-**Test it right now (no build):**
-
-```bash
-osascript installer/install.applescript
-```
-
-**Build the double-clickable .app:**
+## Build the app (RUN ON A MAC)
 
 ```bash
-./installer/build_app.sh        # produces "Datadog Assistant Installer.app"
+./installer/build_menubar_app.sh        # → dist/Datadog Assistant.app
+open "dist/Datadog Assistant.app"
 ```
 
-The flow: welcome → choose Datadog site → sign in (API + App keys to the
-Keychain, or an OAuth Client ID) → optional tag filter → it sets everything up
-and the 🐶 appears in your menu bar.
-
-## Single-window installer (optional , needs Tk to build)
-
-`install_gui.py` is a Tkinter version with one continuous window. It looks nicer
-but PyInstaller needs a **Tk-capable Python** to build it (the resulting .app
-bundles Tk, so end users don't need anything):
-
-```bash
-brew install python-tk     # or install Python from python.org
-./installer/build.sh       # builds in an isolated venv (no PEP 668 error)
-```
-
-`build.sh` checks for Tk first and tells you if it's missing. (Apple's system
-`python3` and a plain Homebrew `python3` usually have **no** Tk , that's why the
-native installer above is the default.)
+Uses [`../setup.py`](../setup.py) (py2app) to compile a real bundle with its own
+identity + icon and `LSUIElement` (menu-bar only). The bundle id is what lets
+notification clicks open the monitor and drops the generic "Python" name.
 
 ## Release (one command)
 
-On a Mac with the GitHub CLI (`gh`) authenticated, cut a release with:
+On a Mac with the GitHub CLI (`gh`) authenticated:
 
 ```bash
 ./installer/release.sh v0.3.0
 ```
 
-It builds the `.app`, zips it, tags the repo, and publishes a GitHub Release
-with the app attached as `Datadog-Assistant-Installer.zip`. The website Download
-button (`releases/latest/download/Datadog-Assistant-Installer.zip`) then resolves.
+It builds the `.app`, zips it, tags the repo, and publishes a GitHub Release with
+the app attached as `Datadog-Assistant-Installer.zip` (name kept for backwards
+compatibility). The website Download button
+(`releases/latest/download/Datadog-Assistant-Installer.zip`) then resolves.
 
-### Optional: build on GitHub instead of your Mac
+### Build on GitHub instead of your Mac
 
-There is no release workflow yet — releases are currently built and published
-**locally** with `installer/release.sh` on a Mac. A `.github/workflows/release.yml`
-that builds the `.app` on a macOS runner and publishes on a `v*` tag would remove
-the need for a local Mac; contributions welcome. (Committing a workflow file
-requires a token with the `workflow` scope, or adding it via the GitHub web UI.)
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) builds the
+`.app` on a macOS runner and publishes the Release automatically — no local Mac
+needed. Trigger it by pushing a tag:
+
+```bash
+git tag v0.3.0 && git push origin v0.3.0
+```
+
+(or run it manually from the Actions tab via `workflow_dispatch`). It attaches
+`Datadog-Assistant-Installer.zip` + its `.sha256`, which is exactly what the
+website's **Download for macOS** button points at. `installer/release.sh`
+remains for cutting a release by hand from a Mac.
+
+## Headless / CI install (no GUI)
+
+`engine.py` mirrors `../install.sh`'s env-var contract for agents and CI:
+
+```bash
+DD_SITE=datadoghq.eu DD_AUTH=keys DD_API_KEY=… DD_APP_KEY=… \
+  python3 installer/engine.py
+```
 
 ## Gatekeeper note
 
-Neither build is code-signed/notarized (that needs a paid Apple Developer
+The build isn't code-signed/notarized (that needs a paid Apple Developer
 account), so the first launch shows an "unidentified developer" warning. Users
 right-click the app and choose **Open** once.

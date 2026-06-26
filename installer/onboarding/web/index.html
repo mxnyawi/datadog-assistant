@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Datadog Assistant — Setup</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="window" role="application" aria-label="Datadog Assistant setup">
+    <!-- Left rail / stepper -->
+    <aside class="rail" aria-hidden="false">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">🐶</span>
+        <div class="brand-text">
+          <div class="brand-name">Datadog</div>
+          <div class="brand-sub">Assistant</div>
+        </div>
+      </div>
+      <nav class="stepper" id="stepper" aria-label="Setup progress"></nav>
+      <div class="rail-foot">
+        <span id="appVersion" class="version"></span>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="content">
+      <div class="stage" id="stage" aria-live="polite">
+        <!-- Steps injected here -->
+      </div>
+
+      <footer class="footbar" id="footbar">
+        <button type="button" class="btn btn-ghost" id="backBtn">Back</button>
+        <div class="foot-spacer"></div>
+        <button type="button" class="btn btn-primary" id="nextBtn">Continue</button>
+      </footer>
+    </main>
+  </div>
+
+  <!-- mock bridge first, then app -->
+  <script src="mock.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

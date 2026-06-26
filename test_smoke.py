@@ -33,6 +33,7 @@ class Window:
 rumps.MenuItem, rumps.Timer, rumps.App, rumps.Window = MenuItem, Timer, App, Window
 rumps.quit_application = lambda *a: None
 rumps.notification = lambda *a, **k: None
+rumps.notifications = lambda fn: fn  # decorator that registers a click handler
 sys.modules["rumps"] = rumps
 
 import unittest.mock as mock
@@ -47,7 +48,9 @@ da.CONFIG_PATH = os.path.join(da.CONFIG_DIR, "config.json")
 da.STATE_PATH = os.path.join(da.CONFIG_DIR, "state.json")
 
 notifications = []
-da.notify_banner = lambda t, s, m, sound=None: notifications.append(("banner", t, m))
+banner_urls = []  # records the url= passed to each banner (clickable-banner wiring)
+da.notify_banner = lambda t, s, m, sound=None, url=None: (
+    notifications.append(("banner", t, m)), banner_urls.append(url))
 da.notify_modal = lambda t, m, url=None: notifications.append(("modal", t, m))
 da.play_sound = lambda n: None
 
@@ -296,6 +299,8 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
     assert ("banner", "🔴 ALERT — Datadog") in kinds, notifications
     assert ("modal", "🔴 ALERT — Datadog") in kinds, notifications
     assert ("banner", "🟢 Recovered — Datadog") in kinds, notifications
+    # alert banners carry the monitor url so a bundled-app click can open it
+    assert any(u for u in banner_urls), banner_urls
 
     # triage gates No Data notifications: broken notifies (with the reason),
     # quiet stays silent
@@ -680,5 +685,33 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
     assert any("No service/repo found" in (getattr(c, "title", "") or "")
                for c in bitem.children if c), \
         [c.title for c in bitem.children if c]
+
+# ---- clickable-notification helpers --------------------------------------
+# A notification click should open the monitor url it was tagged with.
+opened = []
+_real_open_url = da.open_url
+da.open_url = lambda u: opened.append(u)
+try:
+    da._notification_handler({"url": "https://app.datadoghq.com/monitors/42"})
+    assert opened == ["https://app.datadoghq.com/monitors/42"], opened
+    # malformed / empty payloads must not raise or open anything
+    opened.clear()
+    da._notification_handler(None)
+    da._notification_handler({})
+    da._notification_handler("not-a-dict")
+    assert opened == [], opened
+finally:
+    da.open_url = _real_open_url
+
+# Off a bundle (bare script / Linux CI) there's no bundle id, so notify_banner
+# falls back to the osascript path instead of the clickable rumps one.
+assert da._bundle_id() is None, da._bundle_id()
+
+# ---- LastPass in-app unlock helper degrades gracefully ----
+# Missing email/password fails fast; a non-existent lpass binary doesn't raise.
+ok, mfa, err = da.lpass_login("", "")
+assert ok is False and "required" in err.lower(), (ok, err)
+ok, mfa, err = da.lpass_login("a@b.com", "pw")   # lpass almost certainly absent
+assert ok is False, (ok, mfa, err)
 
 print("SMOKE TEST PASSED ✅")
