@@ -3501,23 +3501,41 @@ def _should_onboard():
     return not os.path.exists(CONFIG_PATH)
 
 
+def _startup_log(msg):
+    """Trace startup to ~/.datadog-assistant/startup.log. As an LSUIElement
+    bundle there's no console, so this file is the only way to see what the
+    launchd-started process actually did."""
+    try:
+        d = os.path.expanduser("~/.datadog-assistant")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "startup.log"), "a") as f:
+            f.write(msg.rstrip("\n") + "\n")
+    except Exception:
+        pass
+
+
 def _log_startup_error(exc):
-    """Persist a startup crash. As an LSUIElement bundle there's no console and
-    py2app's crash alert can open invisibly, so a log file is the only trail."""
     try:
         import traceback
         d = os.path.expanduser("~/.datadog-assistant")
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "startup.log"), "a") as f:
-            f.write("\n=== startup error ===\n")
+            f.write("=== startup error ===\n")
             traceback.print_exc(file=f)
     except Exception:
         pass
 
 
 if __name__ == "__main__":
+    _startup_log(
+        f"--- launch pid={os.getpid()} argv={sys.argv} "
+        f"DD_ONBOARD={os.environ.get('DD_ONBOARD')} "
+        f"DD_NO_ONBOARD={os.environ.get('DD_NO_ONBOARD')} "
+        f"cfg_exists={os.path.exists(CONFIG_PATH)} "
+        f"tty={sys.stdin.isatty() if sys.stdin else '?'} ---")
     try:
         if _should_onboard():
+            _startup_log("mode=onboarding")
             try:
                 import onboarding_app
                 onboarding_app.run()
@@ -3530,9 +3548,14 @@ if __name__ == "__main__":
                 print(f"onboarding unavailable ({e}); starting the app instead",
                       file=sys.stderr)
                 _log_startup_error(e)
+        _startup_log("mode=run — acquiring single-instance lock")
         _lock = acquire_single_instance_lock()
+        _startup_log("lock acquired — starting rumps menu-bar app")
         DatadogAssistant().run()
-    except SystemExit:
+        _startup_log("rumps run() RETURNED — app exited (unexpected for a "
+                     "menu-bar app)")
+    except SystemExit as e:
+        _startup_log(f"SystemExit({e.code})")
         raise
     except Exception as e:
         _log_startup_error(e)
