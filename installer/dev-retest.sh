@@ -2,7 +2,7 @@
 # Dev helper: full clean reinstall + rebuild + fresh onboarding, in one shot.
 # Run from the repo root after pulling:   git pull && ./installer/dev-retest.sh
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 PLIST="$HOME/Library/LaunchAgents/com.nour.datadog-assistant.plist"
 
