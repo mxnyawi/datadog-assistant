@@ -3501,16 +3501,39 @@ def _should_onboard():
     return not os.path.exists(CONFIG_PATH)
 
 
+def _log_startup_error(exc):
+    """Persist a startup crash. As an LSUIElement bundle there's no console and
+    py2app's crash alert can open invisibly, so a log file is the only trail."""
+    try:
+        import traceback
+        d = os.path.expanduser("~/.datadog-assistant")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "startup.log"), "a") as f:
+            f.write("\n=== startup error ===\n")
+            traceback.print_exc(file=f)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
-    if _should_onboard():
-        try:
-            import onboarding_app
-            onboarding_app.run()
-            sys.exit(0)
-        except Exception as e:
-            # pywebview missing (dev) or assets absent — don't strand the user;
-            # fall through to the menu-bar app (which has its own setup wizards).
-            print(f"onboarding unavailable ({e}); starting the app instead",
-                  file=sys.stderr)
-    _lock = acquire_single_instance_lock()
-    DatadogAssistant().run()
+    try:
+        if _should_onboard():
+            try:
+                import onboarding_app
+                onboarding_app.run()
+                sys.exit(0)
+            except SystemExit:
+                raise
+            except Exception as e:
+                # pywebview missing (dev) or assets absent — don't strand the
+                # user; fall through to the menu-bar app (own setup wizards).
+                print(f"onboarding unavailable ({e}); starting the app instead",
+                      file=sys.stderr)
+                _log_startup_error(e)
+        _lock = acquire_single_instance_lock()
+        DatadogAssistant().run()
+    except SystemExit:
+        raise
+    except Exception as e:
+        _log_startup_error(e)
+        raise

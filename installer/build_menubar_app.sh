@@ -26,9 +26,37 @@ if [ -f "$PNG" ] && [ ! -f "$ICON" ] && command -v iconutil >/dev/null 2>&1; the
     || echo "  (icon build failed — continuing without an icon)"
 fi
 
+# Pick a Python the native stack is happy with. py2app + pyobjc + rumps +
+# pywebview lag the newest CPython by a release or two; building on 3.13/3.14
+# yields a bundle that crashes at startup ("dlsym cannot find symbol NSMakeRect
+# … principal class is nil"). Prefer 3.12 → 3.11 → 3.10.
+pick_python() {
+  for p in python3.12 python3.11 python3.10; do
+    command -v "$p" >/dev/null 2>&1 && { echo "$p"; return; }
+  done
+  echo "python3"  # last resort; warned about below
+}
+PY="$(pick_python)"
+PYVER="$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+case "$PYVER" in
+  3.10|3.11|3.12) ;;
+  *)
+    echo "⚠️  Building with Python $PYVER. The native deps (pyobjc/rumps/py2app/"
+    echo "    pywebview) are unreliable on 3.13+ and the bundle may crash at"
+    echo "    launch. Install a stabler one and re-run, e.g.:"
+    echo "        brew install python@3.12"
+    echo "" ;;
+esac
+echo "🐍 Using $PY (Python $PYVER)"
+
 # Build inside an isolated venv so we never hit PEP 668 'externally-managed'.
+# Recreate it if it was made with a different Python.
 BV=".build-venv"
-[ -d "$BV" ] || python3 -m venv "$BV"
+if [ -d "$BV" ] && ! "$BV/bin/python" -c "import sys; assert '%d.%d'%sys.version_info[:2]=='$PYVER'" 2>/dev/null; then
+  echo "   (rebuilding $BV for Python $PYVER)"
+  rm -rf "$BV"
+fi
+[ -d "$BV" ] || "$PY" -m venv "$BV"
 "$BV/bin/pip" install --quiet --upgrade pip py2app -r requirements.txt
 
 echo "🐶 Building 'Datadog Assistant.app' with py2app ..."
