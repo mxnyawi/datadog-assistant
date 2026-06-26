@@ -386,8 +386,8 @@
         '<div class="done-mark" aria-hidden="true">🎉</div>' +
         '<p class="eyebrow">All set</p>' +
         '<h1 class="title">You\'re all set</h1>' +
-        '<p class="lede">Look for 🐶 in your menu bar — it flips to ‼️ the moment a monitor fires. Click it any time to see what\'s alerting.</p>' +
-        '<button type="button" class="btn btn-primary" id="finishBtn">Open Datadog Assistant</button>' +
+        '<p class="lede">🐶 is now in your menu bar — it flips to ‼️ the moment a monitor fires. Click it any time to see what\'s alerting. You can close this window.</p>' +
+        '<button type="button" class="btn btn-primary" id="finishBtn">Done</button>' +
       '</div>';
   }
 

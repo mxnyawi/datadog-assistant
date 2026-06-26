@@ -113,19 +113,18 @@ class Api:
         return {"ok": True}
 
     def finish(self, *_):
-        # The installer already loaded the LaunchAgent (RunAtLoad), so the
-        # menu-bar app is starting; engine.launch() is a harmless fallback.
+        # The installer already bootstrapped + started the menu-bar app during
+        # install, so there's nothing to launch here — just close onboarding.
+        # Exit WITHOUT blocking this JS call (destroying the window from the API
+        # worker thread can deadlock); a short beat lets the call return first.
         try:
-            engine.launch()
+            engine.launch()  # idempotent nudge, harmless if already running
         except Exception:
             pass
-        # Close onboarding WITHOUT blocking this JS call — destroying the
-        # window from the API worker thread can deadlock (the "Open …" spinner
-        # hanging forever). Return immediately, then exit the process, which
-        # tears down the window cleanly.
+
         def _bye():
             import time
-            time.sleep(0.4)
+            time.sleep(0.15)
             os._exit(0)
         threading.Thread(target=_bye, daemon=True).start()
         return {"ok": True}

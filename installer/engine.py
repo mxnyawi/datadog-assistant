@@ -377,9 +377,11 @@ def lastpass_list_entries(on_log=None):
     if not lpass:
         return {"entries": [], "error": "LastPass CLI not found."}
     try:
-        # --sync=now makes sure the vault is fetched (it may not be right after
-        # login). Default `lpass ls` lines look like "Group/Name [id: 1234]".
-        p = subprocess.run([lpass, "ls", "--sync=now"],
+        # Plain `lpass ls`. Lines look like "Group/Name [id: 1234]" on most
+        # builds, but some print just "Group/Name" with no id — so DON'T filter
+        # on "[id:" (that silently dropped every entry). Just strip the id tail
+        # if present and keep every non-empty line.
+        p = subprocess.run([lpass, "ls"],
                            capture_output=True, text=True, timeout=45)
         out_text, err_text, rc = p.stdout or "", p.stderr or "", p.returncode
     except Exception as e:
@@ -389,7 +391,7 @@ def lastpass_list_entries(on_log=None):
     seen, entries = set(), []
     for line in out_text.splitlines():
         line = line.strip()
-        if "[id:" not in line:        # skip folder headers / blank lines
+        if not line:
             continue
         name = line.split(" [id:")[0].strip()
         if name and name not in seen:
