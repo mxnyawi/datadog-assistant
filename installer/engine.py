@@ -458,12 +458,28 @@ def app_source():
 
 
 def bundle_executable():
-    """The .app executable to relaunch at login when we're a frozen bundle.
+    """The .app's launcher (Contents/MacOS/<CFBundleExecutable>) to run at login.
 
-    py2app sets sys.executable to .../Contents/MacOS/<exe>, which boots the app
-    again — straight into run mode (config exists), so notifications get the
-    bundle identity."""
-    return sys.executable if FROZEN else None
+    NOT sys.executable: under py2app that's a bare Python interpreter inside the
+    bundle, so launchd would run it as an empty REPL that reads EOF and exits 0
+    (no app, no icon). NSBundle gives the real launcher that boots the app."""
+    if not FROZEN:
+        return None
+    try:
+        from Foundation import NSBundle
+        p = NSBundle.mainBundle().executablePath()
+        if p:
+            return str(p)
+    except Exception:
+        pass
+    # Fallback: derive Contents/MacOS/<AppName> from the bundle layout.
+    macos = os.path.dirname(sys.executable)              # …/Contents/MacOS
+    appdir = os.path.dirname(os.path.dirname(macos))     # …/<Name>.app
+    name = os.path.basename(appdir)
+    if name.endswith(".app"):
+        name = name[:-4]
+    cand = os.path.join(macos, name)
+    return cand if os.path.exists(cand) else sys.executable
 
 
 def build_config(c):
