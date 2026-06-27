@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>Datadog Assistant — showcase</title>
+    <script src="./vendor/gsap.min.js"></script>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+      html, body { width: 1920px; height: 1080px; overflow: hidden; background: #000; }
+      body { font-family: "Inter", "Helvetica Neue", system-ui, sans-serif; }
+
+      #root { position: relative; width: 1920px; height: 1080px; overflow: hidden; }
+
+      /* ---------- desktop / wallpaper ---------- */
+      #desktop {
+        position: absolute; inset: 0;
+        background:
+          radial-gradient(1500px 900px at 80% 110%, #2d1b69 0%, transparent 60%),
+          radial-gradient(1350px 1050px at 15% 95%, #0f3460 0%, transparent 55%),
+          radial-gradient(1050px 750px at 60% 40%, #4a1d96 0%, transparent 50%),
+          linear-gradient(160deg, #0b0b1e 0%, #16213e 50%, #1a1a2e 100%);
+      }
+      .blob { position: absolute; border-radius: 50%; filter: blur(90px); opacity: 0.5; }
+      #blob1 { width: 640px; height: 640px; left: -120px; bottom: -160px;
+               background: radial-gradient(circle, #7a3ce8 0%, transparent 70%); }
+      #blob2 { width: 720px; height: 720px; right: -160px; top: -200px;
+               background: radial-gradient(circle, #2569d8 0%, transparent 70%); }
+
+      /* ---------- menu bar ---------- */
+      #menubar {
+        position: absolute; top: 0; left: 0; right: 0; height: 46px;
+        display: flex; align-items: center; padding: 0 22px;
+        font-size: 21px; font-weight: 500; color: #fff;
+        background: rgba(30, 30, 34, 0.6); backdrop-filter: blur(30px);
+        z-index: 50;
+      }
+      #menubar .apple { font-size: 23px; margin-right: 26px; }
+      #menubar .apple svg { width: 19px; height: 24px; vertical-align: -4px; }
+      #menubar .appname { font-weight: 700; margin-right: 26px; }
+      #menubar .m { margin-right: 26px; opacity: 0.92; }
+      #menubar .spacer { flex: 1; }
+      #menubar .status { display: flex; align-items: center; gap: 20px; font-weight: 400; }
+      #menubar .clock { font-weight: 400; letter-spacing: 0.2px; }
+      .ddwrap { position: relative; width: 66px; height: 34px; }
+      .ddicon {
+        position: absolute; top: 0; left: 0; height: 34px;
+        padding: 0 11px; border-radius: 8px; font-weight: 700; letter-spacing: 0.3px;
+        display: flex; align-items: center; gap: 5px; font-size: 22px; white-space: nowrap;
+      }
+      #icon-alert { background: rgba(255, 90, 90, 0.28); opacity: 0; }
+      .sym { fill: #fff; }
+
+      /* ---------- title lockup ---------- */
+      #intro {
+        position: absolute; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; text-align: center; color: #fff;
+      }
+      #intro .mark {
+        width: 150px; height: 150px; border-radius: 34px; margin-bottom: 34px;
+        background: linear-gradient(145deg, #7a3ce8, #632ca6);
+        display: flex; align-items: center; justify-content: center; font-size: 88px;
+        box-shadow: 0 18px 50px rgba(122, 60, 232, 0.55), inset 0 2px 0 rgba(255,255,255,0.25);
+      }
+      #intro h1 { font-size: 92px; font-weight: 800; letter-spacing: -1.5px; }
+      #intro p { font-size: 34px; font-weight: 500; opacity: 0.78; margin-top: 14px; }
+
+      /* ---------- dropdown menu ---------- */
+      #dropdown {
+        position: absolute; top: 60px; right: 150px; width: 540px;
+        background: rgba(44, 44, 48, 0.88); backdrop-filter: blur(40px) saturate(1.6);
+        border-radius: 17px; padding: 9px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 22px 70px rgba(0, 0, 0, 0.6);
+        font-size: 22px; color: #f5f5f7; transform-origin: 85% 0%;
+      }
+      .mi {
+        display: flex; align-items: center; gap: 11px;
+        padding: 7px 15px; border-radius: 9px; line-height: 1.4;
+        white-space: nowrap; overflow: hidden;
+      }
+      .mi .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+      .mi.header { font-weight: 700; font-size: 18px; letter-spacing: 0.5px;
+                   color: rgba(255, 255, 255, 0.55); padding-top: 9px; }
+      .mi.hi { background: #2569d8; color: #fff; }
+      .mi.dim { color: rgba(255, 255, 255, 0.55); }
+      .sep { height: 1px; background: rgba(255, 255, 255, 0.16); margin: 7px 15px; }
+
+      /* ---------- notification banners ---------- */
+      .banner {
+        position: absolute; right: 48px; width: 560px;
+        background: rgba(48, 48, 52, 0.82); backdrop-filter: blur(40px) saturate(1.6);
+        border-radius: 26px; padding: 18px 22px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        box-shadow: 0 12px 50px rgba(0, 0, 0, 0.5);
+        display: flex; gap: 17px; align-items: center; color: #fff;
+      }
+      #banner-alert { top: 70px; }
+      #banner-recover { top: 200px; }
+      .banner .appicon {
+        width: 60px; height: 60px; border-radius: 14px; flex-shrink: 0;
+        background: linear-gradient(145deg, #7a3ce8, #632ca6);
+        display: flex; align-items: center; justify-content: center; font-size: 34px;
+        box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.25);
+      }
+      .banner .t { font-size: 22px; font-weight: 700; }
+      .banner .s { font-size: 20px; opacity: 0.78; margin-top: 2px; }
+      .banner .b { font-size: 20px; opacity: 0.92; margin-top: 2px; }
+      .banner .when { position: absolute; top: 16px; right: 22px; font-size: 17px; opacity: 0.55; }
+
+      /* ---------- critical modal ---------- */
+      #modal {
+        position: absolute; left: 50%; top: 50%; transform: translate(-50%, -52%);
+        width: 470px; border-radius: 22px; padding: 34px 32px 28px;
+        background: rgba(52, 52, 56, 0.94); backdrop-filter: blur(50px);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7), 0 40px 110px rgba(0, 0, 0, 0.7);
+        text-align: center; color: #fff; transform-origin: 50% 50%;
+      }
+      #modal .bigicon {
+        position: relative; width: 112px; height: 112px; margin: 0 auto 20px;
+        background: linear-gradient(145deg, #7a3ce8, #632ca6); border-radius: 26px;
+        display: flex; align-items: center; justify-content: center; font-size: 66px;
+        box-shadow: 0 8px 26px rgba(0, 0, 0, 0.45);
+      }
+      #modal .badge { position: absolute; top: 116px; left: 278px; width: 50px; height: 50px;
+                      display: flex; align-items: center; justify-content: center; font-size: 46px;
+                      filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.5)); }
+      #modal h1 { font-size: 24px; font-weight: 800; margin-bottom: 12px; }
+      #modal p { font-size: 21px; line-height: 1.5; opacity: 0.85; margin-bottom: 24px; }
+      #modal .btn { display: block; width: 100%; padding: 12px 0; border-radius: 13px;
+                    font-size: 22px; font-weight: 600; margin-top: 12px;
+                    background: rgba(255, 255, 255, 0.14); }
+      #modal .btn.primary { background: #2569d8;
+                            box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.2); }
+      #modal .giveup { margin-top: 18px; font-size: 16px; opacity: 0.4; }
+
+      /* ---------- caption strip ---------- */
+      .cap {
+        position: absolute; left: 0; right: 0; bottom: 96px; text-align: center;
+        color: #fff; font-size: 40px; font-weight: 700; letter-spacing: -0.5px;
+        text-shadow: 0 4px 24px rgba(0, 0, 0, 0.55);
+      }
+      .cap .pill {
+        display: inline-block; padding: 14px 34px; border-radius: 999px;
+        background: rgba(20, 20, 30, 0.55); backdrop-filter: blur(16px);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+      }
+
+      /* ---------- outro ---------- */
+      #outro {
+        position: absolute; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; text-align: center; color: #fff;
+      }
+      #outro .mark {
+        width: 168px; height: 168px; border-radius: 38px; margin-bottom: 36px;
+        background: linear-gradient(145deg, #7a3ce8, #632ca6);
+        display: flex; align-items: center; justify-content: center; font-size: 98px;
+        box-shadow: 0 20px 56px rgba(122, 60, 232, 0.55), inset 0 2px 0 rgba(255,255,255,0.25);
+      }
+      #outro h1 { font-size: 86px; font-weight: 800; letter-spacing: -1.5px; }
+      #outro p { font-size: 36px; font-weight: 500; opacity: 0.82; margin-top: 16px; }
+      #outro .url { font-size: 28px; font-weight: 600; opacity: 0.55; margin-top: 34px;
+                    letter-spacing: 0.3px; }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="10"
+      data-width="1920"
+      data-height="1080"
+    >
+      <!-- ===== persistent stage (always visible) ===== -->
+      <div id="desktop">
+        <div id="blob1" class="blob"></div>
+        <div id="blob2" class="blob"></div>
+      </div>
+
+      <div id="menubar">
+        <span class="apple"><svg viewBox="0 0 814 1000"><path fill="#fff" d="M788 341c-6 4-109 62-109 190 0 148 130 200 134 201-1 3-21 71-69 141-43 61-88 122-156 122s-86-40-165-40c-77 0-104 41-167 41s-107-57-157-126C41 783 0 668 0 559c0-175 114-268 226-268 60 0 110 41 147 41 36 0 92-43 160-43 26 0 119 2 180 90zM554 159c32-38 54-90 54-143 0-7-1-15-2-21-51 2-112 34-149 77-29 33-56 85-56 138 0 8 1 16 2 19 3 1 8 1 13 1 46 0 104-31 138-71z"/></svg></span>
+        <span class="appname">Finder</span>
+        <span class="m">File</span><span class="m">Edit</span><span class="m">View</span><span class="m">Go</span>
+        <span class="spacer"></span>
+        <div class="status" id="status">
+          <div class="ddwrap">
+            <span class="ddicon" id="icon-calm">🐶</span>
+            <span class="ddicon" id="icon-alert">‼️&nbsp;2</span>
+          </div>
+          <svg width="42" height="21" viewBox="0 0 26 13"><rect class="sym" x="1" y="1.5" width="20" height="10" rx="3" fill="none" stroke="currentColor" stroke-width="1.1"/><rect class="sym" x="2.6" y="3.1" width="14" height="6.8" rx="1.4"/><rect class="sym" x="22.4" y="4.5" width="1.7" height="4" rx=".8"/></svg>
+          <svg width="27" height="21" viewBox="0 0 17 13"><path class="sym" d="M8.5 1.2C5.3 1.2 2.4 2.5 .4 4.6l1.3 1.3C3.4 4.1 5.8 3 8.5 3s5.1 1.1 6.8 2.9l1.3-1.3C14.6 2.5 11.7 1.2 8.5 1.2z" opacity=".9"/><path class="sym" d="M8.5 5.1c-2 0-3.8.8-5.1 2.1l1.3 1.3C5.6 7.6 6.9 7 8.5 7s2.9.6 3.8 1.5l1.3-1.3C12.3 5.9 10.5 5.1 8.5 5.1z" opacity=".9"/><circle class="sym" cx="8.5" cy="10.6" r="1.7"/></svg>
+          <span class="clock">Thu 11 Jun&nbsp;&nbsp;9:41 AM</span>
+        </div>
+      </div>
+
+      <!-- ===== Beat A: intro lockup ===== -->
+      <div id="intro" class="clip" data-start="0" data-duration="2.5" data-track-index="2">
+        <div class="mark">🐶</div>
+        <h1>Datadog Assistant</h1>
+        <p>Your Datadog alerts — right in the menu bar</p>
+      </div>
+
+      <!-- ===== Beat B: dropdown menu ===== -->
+      <div id="dropdown" class="clip" data-start="2.5" data-duration="2.6" data-track-index="3">
+        <div class="mi"><span class="grow">📊 2 alerting · 1 warn · 47 ok · 1 muted</span></div>
+        <div class="sep"></div>
+        <div class="mi header"><span class="grow">🔥 INCIDENTS (1)</span></div>
+        <div class="mi"><span class="grow">🔥 SEV-1 · Checkout flow down</span></div>
+        <div class="sep"></div>
+        <div class="mi header"><span class="grow">🔴 ALERTING (2)</span></div>
+        <div class="mi hi"><span class="grow">🔴 High CPU on prod-web</span><span>▸</span></div>
+        <div class="mi"><span class="grow">🔴 P95 latency — checkout-api</span><span>▸</span></div>
+        <div class="sep"></div>
+        <div class="mi header"><span class="grow">🟡 WARNING (1)</span></div>
+        <div class="mi"><span class="grow">🟡 Disk space — db-primary</span><span>▸</span></div>
+        <div class="sep"></div>
+        <div class="mi dim"><span class="grow">🟢 OK (47)</span><span>▸</span></div>
+        <div class="mi dim"><span class="grow">🔇 MUTED (1)</span><span>▸</span></div>
+      </div>
+
+      <!-- ===== Beat C: notification banners ===== -->
+      <div id="banner-alert" class="banner clip" data-start="5.1" data-duration="2.0" data-track-index="4">
+        <div class="appicon">🐶</div>
+        <div>
+          <div class="t">🔴 ALERT — Datadog</div>
+          <div class="s">Datadog Assistant 🐶</div>
+          <div class="b">High CPU on prod-web</div>
+        </div>
+        <div class="when">now</div>
+      </div>
+      <div id="banner-recover" class="banner clip" data-start="5.7" data-duration="1.4" data-track-index="8">
+        <div class="appicon">🐶</div>
+        <div>
+          <div class="t">🟢 Recovered — Datadog</div>
+          <div class="s">Datadog Assistant 🐶</div>
+          <div class="b">P95 latency — checkout-api</div>
+        </div>
+        <div class="when">2m ago</div>
+      </div>
+
+      <!-- ===== Beat D: critical modal ===== -->
+      <div id="modal" class="clip" data-start="7.1" data-duration="1.6" data-track-index="5">
+        <div class="bigicon">🐶</div>
+        <span class="badge">⚠️</span>
+        <h1>🔴 ALERT — Datadog</h1>
+        <p>High CPU on prod-web</p>
+        <div class="btn primary">Open in Datadog 🔗</div>
+        <div class="btn">Dismiss</div>
+        <div class="giveup">stays on screen until you act</div>
+      </div>
+
+      <!-- ===== Beat E: outro ===== -->
+      <div id="outro" class="clip" data-start="8.7" data-duration="1.3" data-track-index="6">
+        <div class="mark">🐶</div>
+        <h1>Datadog Assistant</h1>
+        <p>Alerts impossible to ignore</p>
+        <div class="url">github.com/mxnyawi/datadog-assistant</div>
+      </div>
+
+      <!-- ===== caption strip (per beat) ===== -->
+      <div class="cap clip" id="cap-b" data-start="2.6" data-duration="2.4" data-track-index="7">
+        <span class="pill">Every monitor, grouped by state</span>
+      </div>
+      <div class="cap clip" id="cap-c" data-start="5.1" data-duration="1.9" data-track-index="7">
+        <span class="pill">Native alerts you can't miss</span>
+      </div>
+      <div class="cap clip" id="cap-d" data-start="7.1" data-duration="1.5" data-track-index="7">
+        <span class="pill">Critical popups that demand action</span>
+      </div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      /* --- ambient background drift (deterministic, finite) --- */
+      tl.to("#blob1", { x: 120, y: -60, duration: 5, repeat: 1, yoyo: true, ease: "sine.inOut" }, 0);
+      tl.to("#blob2", { x: -110, y: 70, duration: 5, repeat: 1, yoyo: true, ease: "sine.inOut" }, 0);
+
+      /* --- Beat A: intro --- */
+      tl.from("#intro .mark", { scale: 0.6, opacity: 0, duration: 0.7, ease: "back.out(1.7)" }, 0.15);
+      tl.from("#intro h1", { y: 50, opacity: 0, duration: 0.6, ease: "power3.out" }, 0.4);
+      tl.from("#intro p", { y: 30, opacity: 0, duration: 0.6, ease: "power3.out" }, 0.65);
+      tl.to("#intro", { opacity: 0, scale: 1.05, duration: 0.35, ease: "power2.in" }, 2.15);
+      tl.set("#intro", { opacity: 0 }, 2.5);
+
+      /* --- icon flip: 🐶 -> ‼️ 2 with a shake --- */
+      tl.to("#icon-calm", { opacity: 0, duration: 0.2 }, 2.35);
+      tl.set("#icon-calm", { opacity: 0 }, 2.6);
+      tl.fromTo("#icon-alert", { opacity: 0, scale: 0.5 },
+        { opacity: 1, scale: 1, duration: 0.4, ease: "back.out(2.2)" }, 2.35);
+      tl.to("#status", { x: -7, duration: 0.05, repeat: 7, yoyo: true, ease: "none" }, 2.4);
+      tl.set("#status", { x: 0 }, 2.85);
+
+      /* --- Beat B: dropdown --- */
+      tl.from("#dropdown", { y: -36, opacity: 0, scale: 0.92, duration: 0.5, ease: "back.out(1.4)" }, 2.5);
+      tl.from("#dropdown .mi, #dropdown .sep",
+        { opacity: 0, x: 18, duration: 0.4, stagger: 0.045, ease: "power2.out" }, 2.7);
+      tl.to("#dropdown", { opacity: 0, scale: 0.96, duration: 0.3, ease: "power2.in" }, 4.85);
+      tl.set("#dropdown", { opacity: 0 }, 5.1);
+      tl.from("#cap-b .pill", { y: 30, opacity: 0, duration: 0.45, ease: "power3.out" }, 2.65);
+      tl.to("#cap-b .pill", { y: -20, opacity: 0, duration: 0.3, ease: "power2.in" }, 4.7);
+
+      /* --- Beat C: banners --- */
+      tl.from("#banner-alert", { x: 620, opacity: 0, duration: 0.55, ease: "back.out(1.3)" }, 5.1);
+      tl.from("#banner-recover", { x: 620, opacity: 0, duration: 0.55, ease: "back.out(1.3)" }, 5.7);
+      tl.to("#banner-alert", { x: 620, opacity: 0, duration: 0.35, ease: "power2.in" }, 6.85);
+      tl.to("#banner-recover", { x: 620, opacity: 0, duration: 0.35, ease: "power2.in" }, 6.95);
+      tl.from("#cap-c .pill", { y: 30, opacity: 0, duration: 0.45, ease: "power3.out" }, 5.15);
+      tl.to("#cap-c .pill", { y: -20, opacity: 0, duration: 0.3, ease: "power2.in" }, 6.75);
+      tl.set("#cap-c .pill", { opacity: 0 }, 7.1);
+
+      /* --- Beat D: modal --- */
+      tl.from("#modal", { scale: 0.7, opacity: 0, duration: 0.5, ease: "back.out(1.7)" }, 7.1);
+      tl.from("#modal .badge", { scale: 0, rotation: -40, duration: 0.4, ease: "back.out(2.5)" }, 7.45);
+      tl.to("#modal", { opacity: 0, scale: 0.95, duration: 0.3, ease: "power2.in" }, 8.45);
+      tl.from("#cap-d .pill", { y: 30, opacity: 0, duration: 0.45, ease: "power3.out" }, 7.15);
+      tl.to("#cap-d .pill", { y: -20, opacity: 0, duration: 0.3, ease: "power2.in" }, 8.35);
+      tl.set("#cap-d .pill", { opacity: 0 }, 8.7);
+
+      /* --- icon settles back to calm 🐶 for the outro --- */
+      tl.to("#icon-alert", { opacity: 0, duration: 0.3 }, 8.5);
+      tl.to("#icon-calm", { opacity: 1, duration: 0.3 }, 8.5);
+
+      /* --- Beat E: outro --- */
+      tl.from("#outro .mark", { scale: 0.6, opacity: 0, duration: 0.6, ease: "back.out(1.7)" }, 8.75);
+      tl.from("#outro h1", { y: 44, opacity: 0, duration: 0.55, ease: "power3.out" }, 8.95);
+      tl.from("#outro p", { y: 28, opacity: 0, duration: 0.55, ease: "power3.out" }, 9.15);
+      tl.from("#outro .url", { opacity: 0, duration: 0.6, ease: "power2.out" }, 9.4);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>
