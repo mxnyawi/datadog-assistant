@@ -1,0 +1,458 @@
+// Generates 10 HyperFrames marketing compositions for the Datadog Assistant:
+// 5 features x 2 orientations (landscape 1920x1080, tiktok 1080x1920).
+// One component design-system + one shared timeline per feature; orientation
+// is handled entirely in CSS so the GSAP timeline is identical across formats.
+import { mkdirSync, writeFileSync, readFileSync, copyFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(__dirname, "..");            // Marketing/
+const GSAP_SRC = resolve(__dirname, "../../../scratchpad/gsap.min.js")
+  .replace("/Marketing/../../", "/");             // resolved below safely
+const GSAP_REAL = "/tmp/claude-0/-home-user-datadog-assistant/3a70fa75-88b1-5235-8106-37af85353fc8/scratchpad/gsap.min.js";
+
+const ORIENTATIONS = [
+  { key: "landscape", cls: "landscape", w: 1920, h: 1080 },
+  { key: "tiktok", cls: "vertical", w: 1080, h: 1920 },
+];
+
+const DUR = 9;
+
+/* ----------------------------- shared markup ----------------------------- */
+const appleSvg = `<svg viewBox="0 0 814 1000"><path fill="#fff" d="M788 341c-6 4-109 62-109 190 0 148 130 200 134 201-1 3-21 71-69 141-43 61-88 122-156 122s-86-40-165-40c-77 0-104 41-167 41s-107-57-157-126C41 783 0 668 0 559c0-175 114-268 226-268 60 0 110 41 147 41 36 0 92-43 160-43 26 0 119 2 180 90zM554 159c32-38 54-90 54-143 0-7-1-15-2-21-51 2-112 34-149 77-29 33-56 85-56 138 0 8 1 16 2 19 3 1 8 1 13 1 46 0 104-31 138-71z"/></svg>`;
+
+function menubar() {
+  return `
+      <div id="menubar">
+        <span class="apple">${appleSvg}</span>
+        <span class="appname">Finder</span>
+        <span class="m">File</span><span class="m">Edit</span><span class="m">View</span><span class="m">Go</span>
+        <span class="spacer"></span>
+        <div class="status" id="status">
+          <div class="ddwrap">
+            <span class="ddicon" id="icon-calm">🐶</span>
+            <span class="ddicon alert" id="icon-alert">‼️&nbsp;2</span>
+          </div>
+          <span class="clock">Thu 11 Jun&nbsp;&nbsp;9:41 AM</span>
+        </div>
+      </div>`;
+}
+
+function sparkBars() {
+  const heights = [22, 26, 24, 30, 28, 34, 40, 38, 46, 52, 60, 66, 74, 82, 90, 96];
+  return heights
+    .map((hpx) => `<span class="bar" style="height:${hpx}px"></span>`)
+    .join("");
+}
+
+/* ------------------------------- features -------------------------------- */
+const FEATURES = [
+  {
+    slug: "01-menu-overview",
+    name: "Menu",
+    title: "Everything, at a glance",
+    headline: "Every monitor, grouped by state",
+    hero: `
+      <div id="dropdown" class="panel clip" data-start="1.6" data-duration="7.4" data-track-index="3">
+        <div class="mi sumline"><span class="grow">📊 2 alerting · 1 warn · 47 ok · 1 muted</span></div>
+        <div class="sep"></div>
+        <div class="mi header"><span class="grow">🔥 INCIDENTS (1)</span></div>
+        <div class="mi"><span class="grow">🔥 SEV-1 · Checkout flow down</span></div>
+        <div class="sep"></div>
+        <div class="mi header"><span class="grow">🔴 ALERTING (2)</span></div>
+        <div class="mi hi"><span class="grow">🔴 High CPU on prod-web</span><span>▸</span></div>
+        <div class="mi"><span class="grow">🔴 P95 latency — checkout-api</span><span>▸</span></div>
+        <div class="sep"></div>
+        <div class="mi header"><span class="grow">🟡 WARNING (1)</span></div>
+        <div class="mi"><span class="grow">🟡 Disk space — db-primary</span><span>▸</span></div>
+        <div class="sep"></div>
+        <div class="mi dim"><span class="grow">🟢 OK (47)</span><span>▸</span></div>
+        <div class="mi dim"><span class="grow">🔇 MUTED (1)</span><span>▸</span></div>
+      </div>`,
+    tl: `
+      tl.from("#dropdown", { y: -30, opacity: 0, scale: 0.92, duration: 0.5, ease: "back.out(1.4)" }, 1.6);
+      tl.from("#dropdown .mi, #dropdown .sep", { opacity: 0, x: 16, duration: 0.4, stagger: 0.04, ease: "power2.out" }, 1.85);`,
+  },
+  {
+    slug: "02-cant-miss-alerts",
+    name: "Alerts",
+    title: "Alerts you can't miss",
+    headline: "A banner, a sound — and a modal you must dismiss",
+    hero: `
+      <div id="banner-alert" class="banner clip" data-start="1.6" data-duration="3.0" data-track-index="3">
+        <div class="appicon">🐶</div>
+        <div class="bw">
+          <div class="t">🔴 ALERT — Datadog</div>
+          <div class="s">Datadog Assistant 🐶</div>
+          <div class="b">High CPU on prod-web</div>
+        </div>
+        <div class="when">now</div>
+      </div>
+      <div id="modal" class="modal clip" data-start="4.6" data-duration="4.4" data-track-index="4">
+        <div class="bigicon">🐶</div>
+        <span class="badge">⚠️</span>
+        <h1>🔴 ALERT — Datadog</h1>
+        <p>High CPU on prod-web</p>
+        <div class="btn primary">Open in Datadog 🔗</div>
+        <div class="btn">Dismiss</div>
+        <div class="giveup">stays on screen until you act</div>
+      </div>`,
+    tl: `
+      tl.from("#banner-alert", { y: -40, opacity: 0, scale: 0.9, duration: 0.5, ease: "back.out(1.4)" }, 1.6);
+      tl.to("#banner-alert", { opacity: 0, y: -22, duration: 0.3, ease: "power2.in" }, 4.3);
+      tl.set("#banner-alert", { opacity: 0 }, 4.6);
+      tl.from("#modal", { scale: 0.7, opacity: 0, duration: 0.5, ease: "back.out(1.7)" }, 4.6);
+      tl.from("#modal .badge", { scale: 0, rotation: -40, duration: 0.4, ease: "back.out(2.5)" }, 4.95);`,
+  },
+  {
+    slug: "03-one-click-actions",
+    name: "Actions",
+    title: "Act in one click",
+    headline: "Mute, ticket, or open — straight from the menu",
+    hero: `
+      <div id="flyout" class="panel clip" data-start="1.6" data-duration="7.4" data-track-index="3">
+        <div class="mi sumline"><span class="grow">🔴 High CPU on prod-web</span></div>
+        <div class="sep"></div>
+        <div class="mi"><span class="grow">🔗 Open in Datadog</span></div>
+        <div class="mi"><span class="grow">🎫 Create Jira ticket</span></div>
+        <div class="sep"></div>
+        <div class="mi" id="act-mute"><span class="grow">🔇 Mute 1 hour</span></div>
+        <div class="mi"><span class="grow">🔇 Mute 4 hours</span></div>
+        <div class="mi"><span class="grow">🔇 Mute 24 hours</span></div>
+        <div class="mi"><span class="grow">🔇 Mute forever</span></div>
+        <div class="sep"></div>
+        <div class="mi"><span class="grow">🗑 Delete monitor…</span></div>
+      </div>
+      <div id="toast" class="toast clip" data-start="5.0" data-duration="4.0" data-track-index="5">
+        🔇 Muted for 1 hour · prod-web
+      </div>`,
+    tl: `
+      tl.from("#flyout", { y: -30, opacity: 0, scale: 0.92, duration: 0.5, ease: "back.out(1.4)" }, 1.6);
+      tl.from("#flyout .mi, #flyout .sep", { opacity: 0, x: 16, duration: 0.35, stagger: 0.035, ease: "power2.out" }, 1.85);
+      tl.to("#act-mute", { backgroundColor: "#2569d8", color: "#ffffff", duration: 0.2, ease: "power2.out" }, 4.6);
+      tl.to("#act-mute", { scale: 0.97, duration: 0.09, yoyo: true, repeat: 1, ease: "power2.inOut" }, 4.7);
+      tl.from("#toast", { y: 44, opacity: 0, duration: 0.45, ease: "back.out(1.5)" }, 5.0);`,
+  },
+  {
+    slug: "04-live-context",
+    name: "Context",
+    title: "Context on every alert",
+    headline: "Priority, sparkline, threshold — and the hosts that fired",
+    hero: `
+      <div id="ctxflyout" class="panel clip" data-start="1.6" data-duration="7.4" data-track-index="3">
+        <div class="mi sumline"><span class="grow">🔴 High CPU on prod-web</span></div>
+        <div class="sep"></div>
+        <div class="ctx"><span class="grow">🎯 Priority P1 — critical</span></div>
+        <div class="ctx"><span class="grow">⏱ Triggered 23m ago</span></div>
+        <div class="ctx"><span class="grow">📈 now 97.2&nbsp;&nbsp;(crit 90)</span></div>
+        <div class="spark" id="spark">${sparkBars()}</div>
+        <div class="ctx"><span class="grow">📟 Triggered on 2 hosts:</span></div>
+        <div class="ctx mono"><span class="grow">host:prod-web-1</span></div>
+        <div class="ctx mono"><span class="grow">host:prod-web-2</span></div>
+      </div>`,
+    tl: `
+      tl.from("#ctxflyout", { y: -30, opacity: 0, scale: 0.92, duration: 0.5, ease: "back.out(1.4)" }, 1.6);
+      tl.from("#ctxflyout .ctx", { opacity: 0, x: 16, duration: 0.35, stagger: 0.06, ease: "power2.out" }, 1.9);
+      tl.from("#spark .bar", { scaleY: 0, duration: 0.5, stagger: 0.022, ease: "power2.out" }, 2.5);`,
+  },
+  {
+    slug: "05-deploy-correlation",
+    name: "Deploys",
+    title: "Find the cause fast",
+    headline: "See the deploy that fired the alert",
+    hero: `
+      <div id="svcpanel" class="panel clip" data-start="1.6" data-duration="7.4" data-track-index="3">
+        <div class="mi header"><span class="grow">🧭 SERVICE CONTEXT — checkout-api</span></div>
+        <div class="chips">
+          <span class="chip">🔗 Repo</span><span class="chip">📖 Runbook</span><span class="chip">📊 Dashboard</span><span class="chip">📟 On-call</span>
+        </div>
+        <div class="sep"></div>
+        <div class="mi header"><span class="grow">🚀 RECENT DEPLOYS</span></div>
+        <div class="mi dim"><span class="grow">checkout v2.3.0 · 2h ago</span></div>
+        <div class="deploy" id="deploy-hot"><span class="grow">🚀 checkout v2.3.1 — 12m before this alert</span></div>
+      </div>`,
+    tl: `
+      tl.from("#svcpanel", { y: -30, opacity: 0, scale: 0.92, duration: 0.5, ease: "back.out(1.4)" }, 1.6);
+      tl.from("#svcpanel .mi, #svcpanel .sep, #svcpanel .chips", { opacity: 0, x: 16, duration: 0.35, stagger: 0.05, ease: "power2.out" }, 1.85);
+      tl.from("#svcpanel .chip", { scale: 0, opacity: 0, duration: 0.3, stagger: 0.06, ease: "back.out(2)" }, 2.35);
+      tl.from("#deploy-hot", { opacity: 0, y: 14, duration: 0.4, ease: "power3.out" }, 2.95);
+      tl.to("#deploy-hot", { scale: 1.035, duration: 0.5, repeat: 3, yoyo: true, ease: "sine.inOut" }, 3.5);`,
+  },
+];
+
+/* --------------------------------- CSS ----------------------------------- */
+const BASE_CSS = `
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-font-smoothing:antialiased; }
+  html, body { overflow:hidden; background:#000; }
+  body { font-family:"Inter","Helvetica Neue",system-ui,sans-serif; }
+  #root { position:relative; overflow:hidden; }
+
+  #desktop { position:absolute; inset:0;
+    background:
+      radial-gradient(70% 55% at 80% 110%, #2d1b69 0%, transparent 60%),
+      radial-gradient(70% 65% at 15% 95%, #0f3460 0%, transparent 55%),
+      radial-gradient(55% 45% at 60% 35%, #4a1d96 0%, transparent 50%),
+      linear-gradient(160deg, #0b0b1e 0%, #16213e 50%, #1a1a2e 100%); }
+  .blob { position:absolute; border-radius:50%; filter:blur(90px); opacity:0.5; }
+  #blob1 { width:640px; height:640px; left:-120px; bottom:-160px;
+           background:radial-gradient(circle, #7a3ce8 0%, transparent 70%); }
+  #blob2 { width:720px; height:720px; right:-160px; top:-200px;
+           background:radial-gradient(circle, #2569d8 0%, transparent 70%); }
+
+  /* menu bar */
+  #menubar { position:absolute; top:0; left:0; right:0; height:46px; z-index:50;
+    display:flex; align-items:center; padding:0 22px; font-size:21px; font-weight:500;
+    color:#fff; background:rgba(30,30,34,0.6); backdrop-filter:blur(30px); }
+  #menubar .apple { font-size:23px; margin-right:26px; }
+  #menubar .apple svg { width:19px; height:24px; vertical-align:-4px; }
+  #menubar .appname { font-weight:700; margin-right:26px; }
+  #menubar .m { margin-right:26px; opacity:.92; }
+  #menubar .spacer { flex:1; }
+  #menubar .status { display:flex; align-items:center; gap:20px; font-weight:400; }
+  #menubar .clock { font-weight:400; letter-spacing:.2px; }
+  .ddwrap { position:relative; width:66px; height:34px; }
+  .ddicon { position:absolute; top:0; left:0; height:34px; padding:0 11px; border-radius:8px;
+    font-weight:700; letter-spacing:.3px; display:flex; align-items:center; gap:5px;
+    font-size:22px; white-space:nowrap; }
+  #icon-alert { background:rgba(255,90,90,0.28); opacity:0; }
+
+  /* glass panel (menu / flyout / context / service) */
+  .panel { position:absolute; background:rgba(44,44,48,0.9); backdrop-filter:blur(40px) saturate(1.6);
+    border-radius:17px; padding:9px; border:1px solid rgba(255,255,255,0.18);
+    box-shadow:0 0 0 1px rgba(0,0,0,0.6), 0 22px 70px rgba(0,0,0,0.6);
+    font-size:22px; color:#f5f5f7; }
+  .mi { display:flex; align-items:center; gap:11px; padding:7px 15px; border-radius:9px;
+    line-height:1.4; white-space:nowrap; overflow:hidden; }
+  .mi .grow { flex:1; overflow:hidden; text-overflow:ellipsis; }
+  .mi.header { font-weight:700; font-size:.82em; letter-spacing:.5px;
+    color:rgba(255,255,255,0.55); padding-top:9px; }
+  .mi.sumline { font-weight:600; }
+  .mi.hi { background:#2569d8; color:#fff; }
+  .mi.dim { color:rgba(255,255,255,0.5); }
+  .sep { height:1px; background:rgba(255,255,255,0.16); margin:7px 15px; }
+  .ctx { padding:6px 15px; line-height:1.45; }
+  .ctx.mono { font-family:"SF Mono",ui-monospace,monospace; opacity:.7; font-size:.9em; padding:2px 15px; }
+  .spark { display:flex; align-items:flex-end; gap:5px; height:100px; padding:10px 16px 6px; }
+  .spark .bar { display:block; width:14px; border-radius:3px 3px 0 0; transform-origin:50% 100%;
+    background:linear-gradient(180deg,#ff7a7a,#e03c3c); }
+  .chips { display:flex; flex-wrap:wrap; gap:9px; padding:8px 15px 10px; }
+  .chip { display:inline-block; padding:7px 14px; border-radius:999px; font-weight:600;
+    font-size:.82em; background:rgba(120,90,230,0.28); border:1px solid rgba(150,120,255,0.4); }
+  .deploy { display:block; padding:9px 15px; border-radius:9px; font-weight:700;
+    color:#ffe1a8; background:rgba(255,150,40,0.16); border:1px solid rgba(255,170,60,0.45);
+    transform-origin:50% 50%; }
+
+  /* notification banner */
+  .banner { position:absolute; display:flex; gap:17px; align-items:center; color:#fff;
+    background:rgba(48,48,52,0.85); backdrop-filter:blur(40px) saturate(1.6); border-radius:26px;
+    padding:18px 22px; border:1px solid rgba(255,255,255,0.16); box-shadow:0 12px 50px rgba(0,0,0,0.5); }
+  .banner .appicon { width:60px; height:60px; border-radius:14px; flex-shrink:0; font-size:34px;
+    background:linear-gradient(145deg,#7a3ce8,#632ca6); display:flex; align-items:center;
+    justify-content:center; box-shadow:inset 0 2px 0 rgba(255,255,255,0.25); }
+  .banner .t { font-size:22px; font-weight:700; }
+  .banner .s { font-size:20px; opacity:.78; margin-top:2px; }
+  .banner .b { font-size:20px; opacity:.92; margin-top:2px; }
+  .banner .when { position:absolute; top:16px; right:22px; font-size:17px; opacity:.55; }
+
+  /* critical modal */
+  .modal { position:absolute; border-radius:22px; padding:34px 32px 28px; text-align:center; color:#fff;
+    background:rgba(52,52,56,0.95); backdrop-filter:blur(50px); border:1px solid rgba(255,255,255,0.18);
+    box-shadow:0 0 0 1px rgba(0,0,0,0.7), 0 40px 110px rgba(0,0,0,0.7); }
+  .modal .bigicon { width:112px; height:112px; margin:0 auto 20px; font-size:66px;
+    background:linear-gradient(145deg,#7a3ce8,#632ca6); border-radius:26px; display:flex;
+    align-items:center; justify-content:center; box-shadow:0 8px 26px rgba(0,0,0,0.45); }
+  .modal .badge { position:absolute; top:116px; left:50%; margin-left:25px; width:50px; height:50px;
+    display:flex; align-items:center; justify-content:center; font-size:46px; transform-origin:50% 50%;
+    filter:drop-shadow(0 3px 5px rgba(0,0,0,0.5)); }
+  .modal h1 { font-size:24px; font-weight:800; margin-bottom:12px; }
+  .modal p { font-size:21px; line-height:1.5; opacity:.85; margin-bottom:24px; }
+  .modal .btn { display:block; width:100%; padding:12px 0; border-radius:13px; font-size:22px;
+    font-weight:600; margin-top:12px; background:rgba(255,255,255,0.14); }
+  .modal .btn.primary { background:#2569d8; box-shadow:inset 0 2px 0 rgba(255,255,255,0.2); }
+  .modal .giveup { margin-top:18px; font-size:16px; opacity:.4; }
+
+  /* toast */
+  .toast { position:absolute; text-align:center; color:#fff; font-weight:700; font-size:24px;
+    padding:16px 26px; border-radius:16px; background:rgba(38,105,216,0.92);
+    box-shadow:0 14px 44px rgba(0,0,0,0.5); }
+
+  /* title / headline / brand / toplabel */
+  #title { position:absolute; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; color:#fff; }
+  #title .mark { width:150px; height:150px; border-radius:34px; margin-bottom:30px; font-size:88px;
+    background:linear-gradient(145deg,#7a3ce8,#632ca6); display:flex; align-items:center;
+    justify-content:center; box-shadow:0 18px 50px rgba(122,60,232,0.55), inset 0 2px 0 rgba(255,255,255,0.25); }
+  #title h1 { font-size:84px; font-weight:800; letter-spacing:-1.5px; max-width:80%; }
+
+  .cap { position:absolute; text-align:center; color:#fff; font-weight:700; letter-spacing:-0.5px;
+    text-shadow:0 4px 24px rgba(0,0,0,0.55); }
+  .cap .pill { display:inline-block; padding:14px 34px; border-radius:999px;
+    background:rgba(20,20,30,0.55); backdrop-filter:blur(16px); border:1px solid rgba(255,255,255,0.14); }
+  #brandtag { position:absolute; color:#fff; font-weight:700; opacity:0; display:flex;
+    align-items:center; gap:10px; font-size:26px; }
+  #brandtag .dot { width:34px; height:34px; border-radius:9px; font-size:21px;
+    background:linear-gradient(145deg,#7a3ce8,#632ca6); display:flex; align-items:center; justify-content:center; }
+  #toplabel { display:none; opacity:0; }
+`;
+
+const LANDSCAPE_CSS = `
+  #headline { left:0; right:0; bottom:84px; font-size:46px; }
+  #brandtag { left:60px; bottom:42px; }
+  #dropdown { top:70px; right:150px; width:560px; transform-origin:85% 0; }
+  #flyout { top:120px; right:130px; width:440px; transform-origin:85% 0; }
+  #ctxflyout { top:110px; right:130px; width:540px; transform-origin:85% 0; }
+  #svcpanel { top:130px; left:50%; margin-left:-430px; width:860px; transform-origin:50% 0; }
+  #banner-alert { top:92px; right:64px; width:620px; }
+  #modal { top:188px; left:50%; margin-left:-235px; width:470px; transform-origin:50% 50%; }
+  #toast { bottom:170px; left:50%; margin-left:-240px; width:480px; }
+`;
+
+const VERTICAL_CSS = `
+  #title h1 { font-size:78px; }
+  #toplabel { display:flex; align-items:center; justify-content:center; gap:14px;
+    position:absolute; top:150px; left:0; right:0; text-align:center;
+    color:#fff; font-weight:800; font-size:50px; letter-spacing:-1px; padding:0 60px; }
+  #toplabel .dot { width:58px; height:58px; border-radius:15px; font-size:36px; flex-shrink:0;
+    background:linear-gradient(145deg,#7a3ce8,#632ca6); display:flex; align-items:center; justify-content:center; }
+  #headline { left:0; right:0; bottom:360px; font-size:60px; padding:0 50px; }
+  #brandtag { left:0; right:0; bottom:190px; justify-content:center; font-size:40px; }
+  #brandtag .dot { width:50px; height:50px; border-radius:13px; font-size:30px; }
+
+  .panel { font-size:31px; border-radius:24px; padding:13px; }
+  .mi { padding:11px 22px; border-radius:13px; gap:15px; }
+  .sep { margin:9px 22px; }
+  .ctx { padding:9px 22px; }
+  .ctx.mono { padding:4px 22px; }
+  .spark { height:150px; gap:8px; padding:14px 24px 8px; }
+  .spark .bar { width:22px; }
+  .chips { padding:12px 22px 14px; gap:13px; }
+  .chip { padding:10px 20px; }
+  .deploy { padding:13px 22px; border-radius:13px; }
+
+  .banner { border-radius:34px; padding:26px 30px; gap:22px; }
+  .banner .appicon { width:84px; height:84px; border-radius:20px; font-size:48px; }
+  .banner .t { font-size:32px; } .banner .s { font-size:28px; } .banner .b { font-size:28px; }
+  .banner .when { font-size:24px; top:22px; right:30px; }
+
+  .modal { border-radius:30px; padding:46px 40px 36px; }
+  .modal .bigicon { width:150px; height:150px; font-size:88px; border-radius:34px; margin-bottom:26px; }
+  .modal .badge { top:150px; margin-left:38px; width:66px; height:66px; font-size:60px; }
+  .modal h1 { font-size:34px; } .modal p { font-size:30px; }
+  .modal .btn { font-size:30px; padding:16px 0; border-radius:17px; }
+  .modal .giveup { font-size:22px; }
+  .toast { font-size:34px; padding:22px 34px; border-radius:22px; }
+
+  #toplabel { top:150px; }
+  #dropdown { top:560px; left:50%; margin-left:-390px; width:780px; transform-origin:50% 0; }
+  #flyout { top:600px; left:50%; margin-left:-340px; width:680px; transform-origin:50% 0; }
+  #ctxflyout { top:540px; left:50%; margin-left:-410px; width:820px; transform-origin:50% 0; }
+  #svcpanel { top:580px; left:50%; margin-left:-480px; width:960px; transform-origin:50% 0; }
+  #banner-alert { top:440px; left:50%; margin-left:-450px; width:900px; }
+  #modal { top:540px; left:50%; margin-left:-330px; width:660px; transform-origin:50% 50%; }
+  #toast { bottom:560px; left:50%; margin-left:-360px; width:720px; }
+`;
+
+/* ------------------------------- assembler ------------------------------- */
+function sharedTimeline() {
+  return `
+      /* ambient background drift */
+      tl.to("#blob1", { x: 120, y: -60, duration: 5, repeat: 1, yoyo: true, ease: "sine.inOut" }, 0);
+      tl.to("#blob2", { x: -110, y: 70, duration: 5, repeat: 1, yoyo: true, ease: "sine.inOut" }, 0);
+
+      /* intro title */
+      tl.from("#title .mark", { scale: 0.6, opacity: 0, duration: 0.6, ease: "back.out(1.7)" }, 0.1);
+      tl.from("#title h1", { y: 50, opacity: 0, duration: 0.55, ease: "power3.out" }, 0.32);
+      tl.to("#title", { opacity: 0, scale: 1.05, duration: 0.3, ease: "power2.in" }, 1.3);
+      tl.set("#title", { opacity: 0 }, 1.6);
+
+      /* menu-bar icon flips to the alerting state, with a shake */
+      tl.to("#icon-calm", { opacity: 0, duration: 0.2 }, 1.45);
+      tl.set("#icon-calm", { opacity: 0 }, 1.65);
+      tl.fromTo("#icon-alert", { opacity: 0, scale: 0.5 }, { opacity: 1, scale: 1, duration: 0.4, ease: "back.out(2.2)" }, 1.45);
+      tl.to("#status", { x: -7, duration: 0.05, repeat: 7, yoyo: true, ease: "none" }, 1.5);
+      tl.set("#status", { x: 0 }, 1.95);
+
+      /* persistent branding + headline */
+      tl.to("#toplabel", { opacity: 1, duration: 0.4 }, 1.4);
+      tl.from("#headline", { y: 34, opacity: 0, duration: 0.5, ease: "power3.out" }, 1.75);
+      tl.to("#brandtag", { opacity: 1, duration: 0.5, ease: "power2.out" }, 1.85);`;
+}
+
+function buildHTML(orient, feature) {
+  const css = BASE_CSS + (orient.cls === "vertical" ? VERTICAL_CSS : LANDSCAPE_CSS);
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=${orient.w}, height=${orient.h}" />
+    <title>Datadog Assistant — ${feature.title}</title>
+    <script src="./vendor/gsap.min.js"></script>
+    <style>
+      html, body, #root { width:${orient.w}px; height:${orient.h}px; }
+${css}
+    </style>
+  </head>
+  <body>
+    <div id="root" class="${orient.cls}" data-composition-id="main"
+         data-start="0" data-duration="${DUR}" data-width="${orient.w}" data-height="${orient.h}">
+
+      <div id="desktop"><div id="blob1" class="blob"></div><div id="blob2" class="blob"></div></div>
+${menubar()}
+
+      <div id="toplabel"><span class="dot">🐶</span><span>${feature.title}</span></div>
+
+      <div id="title" class="clip" data-start="0" data-duration="1.6" data-track-index="1">
+        <div class="mark">🐶</div>
+        <h1>${feature.title}</h1>
+      </div>
+${feature.hero}
+
+      <div id="headline" class="cap clip" data-start="1.7" data-duration="${(DUR - 1.7).toFixed(2)}" data-track-index="2">
+        <span class="pill">${feature.headline}</span>
+      </div>
+
+      <div id="brandtag"><span class="dot">🐶</span><span>Datadog Assistant</span></div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+${sharedTimeline()}
+${feature.tl}
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>
+`;
+}
+
+/* --------------------------------- emit ---------------------------------- */
+let count = 0;
+for (const orient of ORIENTATIONS) {
+  for (const feature of FEATURES) {
+    const dir = resolve(ROOT, orient.key, feature.slug);
+    mkdirSync(resolve(dir, "vendor"), { recursive: true });
+    mkdirSync(resolve(dir, "renders"), { recursive: true });
+    writeFileSync(resolve(dir, "index.html"), buildHTML(orient, feature));
+    copyFileSync(GSAP_REAL, resolve(dir, "vendor", "gsap.min.js"));
+    writeFileSync(
+      resolve(dir, "meta.json"),
+      JSON.stringify({ id: "main", name: `ddog-${orient.key}-${feature.slug}` }, null, 2)
+    );
+    writeFileSync(
+      resolve(dir, "hyperframes.json"),
+      JSON.stringify(
+        {
+          $schema: "https://hyperframes.heygen.com/schema/hyperframes.json",
+          paths: { blocks: "compositions", components: "compositions/components", assets: "assets" },
+        },
+        null,
+        2
+      )
+    );
+    count++;
+    console.log("wrote", `${orient.key}/${feature.slug}/index.html`);
+  }
+}
+console.log(`\nGenerated ${count} compositions.`);

@@ -15,3 +15,8 @@ installer/dist/
 *.app
 *.dmg
 *.zip
+
+# Marketing video QA / build artifacts
+Marketing/**/snapshots/
+Marketing/build/logs/
+Marketing/**/renders/work-*/
