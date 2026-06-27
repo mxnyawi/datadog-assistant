@@ -20,3 +20,9 @@ installer/dist/
 Marketing/**/snapshots/
 Marketing/build/logs/
 Marketing/**/renders/work-*/
+
+# HyperFrames build tooling (root) + cross-branch artifacts
+node_modules/
+/package.json
+/package-lock.json
+/ddog-demo/
