@@ -73,7 +73,14 @@
     "patterns": ["dlq", "dead letter", "dead-letter", "dead_letter", "deadletter"],
     "match_query": true,
     "match_tags": true,
-    "exclusive": true
+    "exclusive": true,
+    "chart": {
+      "enabled": true,
+      "window_minutes": 180,
+      "width": 24,
+      "height": 3,
+      "max_queries": 6
+    }
   },
   "service_context": {
     "enabled": true,

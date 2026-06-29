@@ -304,6 +304,14 @@ New in v0.2:
   both. Tune `patterns` to match your naming (`"retry-queue"`, `"poison"`, …),
   or set `"enabled": false` to switch the whole thing off. Counts (including
   alerting DLQs) still flow into the menu-bar icon and the 📊 summary line.
+  Each DLQ monitor also gets a 💀📈 **depth chart** in its submenu — a braille
+  "dithered chart" of the queue's message count over time (the same breathing
+  dithered-chart visual from the *gh-most-popular* project), with a
+  `now / peak / crit` line and an `↑ filling` / `↓ draining` / `→ steady`
+  verdict, so you can watch a queue back up *before* it alerts. Tune it under
+  `dlq.chart`: `window_minutes` (history span, default 180), `width`/`height`
+  (chart size), `max_queries` (cap on per-refresh metric queries), or
+  `"enabled": false` (also toggleable via Preferences → 💀📈 DLQ depth charts).
 
 > **Local renames** live in `state.json`, not `config.json` — use the
 > **✏️ Rename (local only)…** item on any monitor (Datadog stays untouched).

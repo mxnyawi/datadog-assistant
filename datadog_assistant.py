@@ -145,7 +145,19 @@ DEFAULT_CONFIG = {
                      "dead_letter", "deadletter"],
         "match_query": True,
         "match_tags": True,
-        "exclusive": True            # also hide them from Alert/Warn/OK/… groups
+        "exclusive": True,           # also hide them from Alert/Warn/OK/… groups
+        "chart": {
+            # 💀📈 In-menu "dithered chart" of each queue's depth over time —
+            # recreates the breathing dithered chart from the gh-most-popular
+            # project as braille text, so you can see a DLQ filling up at a
+            # glance. Each queue's underlying metric is pulled over a window
+            # via the same /query API the alert sparklines use.
+            "enabled": True,
+            "window_minutes": 180,   # history window to plot
+            "width": 24,             # chart width in braille cells (×2 sub-cols)
+            "height": 3,             # chart height in text rows (×4 sub-rows)
+            "max_queries": 6         # cap query_metrics calls per refresh
+        }
     },
     "service_context": {
         # Surface the repo / deploy / runbook links Datadog ALREADY knows
@@ -539,6 +551,92 @@ def sparkline(values, width=14):
     if hi == lo:
         return SPARK_BLOCKS[3] * len(vals)
     return "".join(SPARK_BLOCKS[int((v - lo) / (hi - lo) * 7)] for v in vals)
+
+
+# 4x4 Bayer ordered-dither matrix (normalised to 0..1) — the same one the
+# gh-most-popular DitheredChart uses. The threshold per sub-pixel decides which
+# dots fall away, giving the retro ordered-dithering gradient: dense near the
+# crest, sparse toward the baseline.
+_BAYER4 = [[(v + 0.5) / 16 for v in row] for row in
+           ([0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5])]
+
+# Braille dot bit per (sub-row 0..3 top→bottom, sub-col 0..1 left→right).
+_BRAILLE_DOTS = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
+
+
+def dither_chart(values, width=24, height=3):
+    """Recreate the gh-most-popular "breathing dithered chart" as text: a
+    Bayer-dithered area chart of `values`, drawn with braille so it stays
+    aligned in the proportional menu-bar font (every braille glyph, blank
+    included, has the same advance). Returns `height` row strings, top row
+    first; each char is a 2x4 braille cell, so the effective resolution is
+    (2*width) x (4*height) sub-pixels.
+
+    The series is min/max normalised, resampled to the sub-pixel grid, then
+    each column is filled from the baseline up to its height. Within the fill
+    the ordered-dither threshold thins the dots out toward the bottom, so a
+    column reads dense/solid at its crest and sparse below — taller, denser
+    columns mean a fuller queue, which is exactly the "filling up" signal."""
+    vals = [float(v) for v in values if v is not None]
+    if len(vals) < 2 or width < 1 or height < 1:
+        return []
+    W, H = width * 2, height * 4
+    lo, hi = min(vals), max(vals)
+    span = hi - lo
+    n = len(vals)
+    # resample to W sub-columns and normalise to a 0..1 fill height, with a
+    # small floor so even a flat/low series still shows a baseline ridge.
+    levels = []
+    for x in range(W):
+        t = x / (W - 1) * (n - 1) if W > 1 else 0
+        lo_i = int(t)
+        hi_i = min(n - 1, lo_i + 1)
+        f = t - lo_i
+        v = vals[lo_i] * (1 - f) + vals[hi_i] * f
+        norm = (v - lo) / span if span else 0.5
+        levels.append(0.12 + 0.88 * norm)
+    # sub-pixel on/off grid, indexed [yy from bottom][x]
+    on = [[False] * W for _ in range(H)]
+    for x in range(W):
+        h = levels[x]
+        for yy in range(H):
+            vfrac = (yy + 0.5) / H
+            if vfrac > h:
+                continue
+            intensity = vfrac / h  # 1 at the crest, →0 at the baseline
+            if intensity < _BAYER4[yy & 3][x & 3] * 0.95:
+                continue
+            on[yy][x] = True
+    # pack sub-pixels into braille cells, top text row first
+    rows = []
+    for tr in range(height):
+        chars = []
+        for c in range(width):
+            bits = 0
+            for s in range(4):                      # sub-row, top→bottom
+                yy = (height - 1 - tr) * 4 + (3 - s)
+                for sc in range(2):                 # sub-col, left→right
+                    if on[yy][2 * c + sc]:
+                        bits |= _BRAILLE_DOTS[s][sc]
+            chars.append(chr(0x2800 + bits))
+        rows.append("".join(chars))
+    return rows
+
+
+def _trend_label(values):
+    """A one-glance verdict on where a queue is heading — compares the first
+    and last quarter of the series so a DLQ that's filling up says so."""
+    vals = [v for v in values if v is not None]
+    if len(vals) < 4:
+        return ""
+    k = max(1, len(vals) // 4)
+    first = sum(vals[:k]) / k
+    last = sum(vals[-k:]) / k
+    if last > first * 1.15 and last > first:
+        return "↑ filling"
+    if last < first * 0.85:
+        return "↓ draining"
+    return "→ steady"
 
 
 def fmt_duration(secs):
@@ -1521,6 +1619,7 @@ class DatadogAssistant(rumps.App):
         self.incidents = []
         self.dashboards = []
         self.enrich = {}             # monitor id -> {spark, now, crit}
+        self.dlq_history = {}        # monitor id -> {chart, now, peak, crit, trend}
         self.nodata_probe = {}       # monitor id -> "stopped" | "silent"
         self.services = {}           # service name -> parsed Software Catalog entry
         self.deploys = {}            # monitor id -> {events, headline, suspect_url}
@@ -1612,6 +1711,11 @@ class DatadogAssistant(rumps.App):
                         pass
                 if ctx.get("show_sparkline", True):
                     payload["enrich"] = self._fetch_enrichment(payload["monitors"])
+                dcfg = self.cfg.get("dlq", {})
+                if dcfg.get("enabled", True) and \
+                        dcfg.get("chart", {}).get("enabled", True):
+                    payload["dlq_history"] = \
+                        self._fetch_dlq_history(payload["monitors"])
                 scfg = self.cfg.get("service_context", {})
                 if scfg.get("enabled", True):
                     if scfg.get("use_catalog", True) and \
@@ -1667,6 +1771,7 @@ class DatadogAssistant(rumps.App):
                 if "dashboards" in payload:
                     self.dashboards = payload["dashboards"]
                 self.enrich = payload.get("enrich") or {}
+                self.dlq_history = payload.get("dlq_history") or {}
                 if "services" in payload:
                     self.services = payload["services"]
                 if "deploys" in payload:
@@ -1709,6 +1814,9 @@ class DatadogAssistant(rumps.App):
             for m in self.monitors))
         enr = tuple(sorted(
             (k, v.get("spark"), v.get("now")) for k, v in self.enrich.items()))
+        dlqh = tuple(sorted(
+            (k, tuple(v.get("chart") or ()), v.get("now"), v.get("trend"))
+            for k, v in self.dlq_history.items()))
         dep = tuple(sorted((k, v.get("sig")) for k, v in self.deploys.items()))
         svc = tuple(sorted(self.services.keys()))
         inc = tuple((i.get("public_id"), i.get("title"), i.get("severity"))
@@ -1720,7 +1828,7 @@ class DatadogAssistant(rumps.App):
                   for m in self.monitors)
         bucket = int(time.time() // 300) if hot else 0
         return (self.last_error, time.time() < self.snooze_until,
-                mons, enr, dep, svc, inc, dash, bucket)
+                mons, enr, dlqh, dep, svc, inc, dash, bucket)
 
     def _fetch_enrichment(self, monitors):
         """Live metric values + sparklines for the hottest alerting monitors."""
@@ -1748,6 +1856,50 @@ class DatadogAssistant(rumps.App):
                 out[m["id"]] = {"spark": sparkline(points),
                                 "now": max(lasts) if lasts else None,
                                 "crit": thr}
+            except Exception:
+                continue
+        return out
+
+    def _fetch_dlq_history(self, monitors):
+        """Per-DLQ-monitor queue-depth history, pre-rendered as a braille
+        "dithered chart" (see dither_chart). Pulls each queue's underlying
+        metric over a window via the same /query API the sparklines use, and
+        sums across reported groups at each step so a "by {queue}" monitor
+        charts total backlog. Capped per refresh; most-urgent queues first."""
+        ccfg = self.cfg.get("dlq", {}).get("chart", {})
+        window = int(ccfg.get("window_minutes", 180))
+        width = int(ccfg.get("width", 24))
+        height = int(ccfg.get("height", 3))
+        cap = int(ccfg.get("max_queries", 6))
+        dlqs = [m for m in monitors if self._is_dlq(m)
+                and m.get("type") in ("metric alert", "query alert")]
+        dlqs.sort(key=lambda m: SEV_RANK.get(self._bucket_of(m), 9))
+        out = {}
+        for m in dlqs[:cap]:
+            q = extract_metric_query(m.get("query", ""))
+            if not q:
+                continue
+            try:
+                series = self.client.query_metrics(q, window).get("series", [])
+                if not series:
+                    continue
+                # sum groups per timestamp -> total backlog over time
+                agg = {}
+                for s in series:
+                    for tms, val in s.get("pointlist", []):
+                        if val is not None:
+                            agg[tms] = agg.get(tms, 0.0) + val
+                points = [agg[t] for t in sorted(agg)]
+                if len(points) < 2:
+                    continue
+                chart = dither_chart(points, width, height)
+                if not chart:
+                    continue
+                thr = ((m.get("options") or {}).get("thresholds")
+                       or {}).get("critical")
+                out[m["id"]] = {"chart": chart, "now": points[-1],
+                                "peak": max(points), "crit": thr,
+                                "trend": _trend_label(points)}
             except Exception:
                 continue
         return out
@@ -2438,6 +2590,11 @@ class DatadogAssistant(rumps.App):
             self._add_service_section(item, m, mid)
             item.add(None)
 
+        # 💀📈 dithered chart of queue depth over time — shown for DLQ monitors
+        # in any state, so you can watch a queue fill up before it alerts.
+        if self._is_dlq(m):
+            self._add_dlq_chart(item, mid)
+
         item.add(rumps.MenuItem("🔗 Open in Datadog", callback=self._make_opener(url)))
         if self.jira.enabled():
             key = self.state.get("jira_created", {}).get(str(mid))
@@ -2462,6 +2619,32 @@ class DatadogAssistant(rumps.App):
         item.add(rumps.MenuItem("🗑 Delete monitor…",
                                 callback=self._make_deleter(mid, dd_name)))
         return item
+
+    def _add_dlq_chart(self, item, mid):
+        """Render the queue's depth-over-time as the braille "dithered chart".
+        Each chart row is its own menu item (rumps has no multi-line items);
+        identical rows are kept unique so neither collides and disappears."""
+        h = self.dlq_history.get(mid)
+        if not h or not h.get("chart"):
+            return
+        win = int(self.cfg.get("dlq", {}).get("chart", {}).get(
+            "window_minutes", 180))
+        item.add(rumps.MenuItem(f"📈 Queue depth · last {fmt_duration(win * 60)}"))
+        row_seen = set()
+        for row in h["chart"]:
+            item.add(rumps.MenuItem(unique_title("  " + row, row_seen)))
+        stats = []
+        if h.get("now") is not None:
+            stats.append(f"now {fmt_num(h['now'])}")
+        if h.get("peak") is not None:
+            stats.append(f"peak {fmt_num(h['peak'])}")
+        if h.get("crit") is not None:
+            stats.append(f"crit {fmt_num(h['crit'])}")
+        if h.get("trend"):
+            stats.append(h["trend"])
+        if stats:
+            item.add(rumps.MenuItem("  " + " · ".join(stats)))
+        item.add(None)
 
     def _add_service_section(self, item, m, mid):
         """The 🧭 panel: a prime-suspect deploy headline (if one shipped just
@@ -2577,6 +2760,11 @@ class DatadogAssistant(rumps.App):
                              callback=self._toggle_dlq)
         dlq.state = 1 if self.cfg.get("dlq", {}).get("enabled", True) else 0
         prefs.add(dlq)
+        dlqc = rumps.MenuItem("💀📈 DLQ depth charts",
+                              callback=self._toggle_dlq_chart)
+        dlqc.state = 1 if self.cfg.get("dlq", {}).get(
+            "chart", {}).get("enabled", True) else 0
+        prefs.add(dlqc)
         svc = rumps.MenuItem("🧭 Service & deploy context",
                              callback=self._toggle_service_context)
         svc.state = 1 if self.cfg.get("service_context", {}).get("enabled", True) else 0
@@ -2782,6 +2970,17 @@ class DatadogAssistant(rumps.App):
 
     def _toggle_dlq(self, _):
         self._toggle("dlq", "enabled")
+
+    def _toggle_dlq_chart(self, _):
+        chart = self.cfg.setdefault("dlq", {}).setdefault("chart", {})
+        on = not chart.get("enabled", True)
+        chart["enabled"] = on
+        save_config(self.cfg)
+        if on:
+            self._poll_tick(None)     # fetch queue history right away
+        else:
+            self.dlq_history = {}
+        self._rebuild_menu()
 
     def _toggle_service_context(self, _):
         on = not self.cfg.get("service_context", {}).get("enabled", True)

@@ -69,6 +69,21 @@ assert da.fmt_duration(7300) == "2h 01m"
 assert da.fmt_num(97.234) == "97.23"
 assert da.fmt_num(125000) == "125,000"
 
+# dithered chart: braille grid, sized height rows x width cells, denser toward
+# the crest — a rising series (a queue filling up) packs more dots on the right
+rows = da.dither_chart(list(range(16)), width=8, height=3)
+assert len(rows) == 3 and all(len(r) == 8 for r in rows), rows
+assert all(0x2800 <= ord(c) <= 0x28FF for r in rows for c in r), rows
+_dots = lambda col: sum(bin(ord(r[col]) - 0x2800).count("1") for r in rows)
+assert _dots(7) > _dots(0), [_dots(i) for i in range(8)]  # fills up rightward
+assert da.dither_chart([5], 8, 3) == []          # too few points
+assert da.dither_chart([1, 2], 0, 3) == []        # degenerate size
+# trend verdict from first vs last quarter
+assert da._trend_label([1, 1, 1, 2, 5, 9, 9, 12]) == "↑ filling"
+assert da._trend_label([12, 9, 9, 5, 2, 1, 1, 1]) == "↓ draining"
+assert da._trend_label([5, 5, 5, 5, 5, 5, 5, 5]) == "→ steady"
+assert da._trend_label([1, 2]) == ""              # too short
+
 # Jira error bodies surface the actual field problem
 fake_err = types.SimpleNamespace(
     read=lambda: json.dumps({"errorMessages": ["boom"],
@@ -480,6 +495,43 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
     assert not any("DEAD LETTER" in t for t in titles), titles
     assert any("🔴 ALERTING (2)" == t for t in titles), titles
     app._toggle_dlq(None)  # restore
+
+    # ---- DLQ depth charts: per-queue dithered chart over time ----
+    app.cfg["dlq"]["chart"].update({"enabled": True, "width": 10, "height": 2})
+    DLQC = [
+        {"id": 201, "name": "payments-dlq depth", "overall_state": "Alert",
+         "type": "metric alert",
+         "query": "sum(last_5m):sum:sqs.dlq.messages{*} by {queue} > 100",
+         "options": {"thresholds": {"critical": 100}}},
+        {"id": 202, "name": "orders dead letter", "overall_state": "OK",
+         "type": "query alert",
+         "query": "avg(last_10m):avg:kafka.dlq.lag{*} > 50", "options": {}},
+    ]
+    hist = app._fetch_dlq_history(DLQC)
+    assert set(hist) == {201, 202}, hist          # both queues charted
+    h = hist[201]
+    assert len(h["chart"]) == 2, h                # height rows
+    assert h["now"] == 97.2 and h["peak"] == 97.2 and h["crit"] == 100, h
+    assert all(0x2800 <= ord(c) <= 0x28FF
+               for row in h["chart"] for c in row), h
+    # render into the menu: the DLQ monitor item carries the chart + stats
+    app.monitors = DLQC
+    app.dlq_history = hist
+    app._rebuild_menu()
+    dmon = next(i for i in app.menu
+                if i and getattr(i, "title", "").startswith("🔴 payments-dlq"))
+    dsub = [c.title for c in dmon.children if c]
+    assert any("Queue depth · last" in t for t in dsub), dsub
+    assert any("now 97.2" in t and "crit 100" in t for t in dsub), dsub
+    assert any(any(0x2800 <= ord(ch) <= 0x28FF for ch in t)
+               for t in dsub), dsub                # braille chart rows present
+    # the chart feeds the fingerprint, so a queue's trend change forces a rebuild
+    assert str(201) in str(app._menu_fingerprint())
+    # toggling charts off clears the history
+    app._toggle_dlq_chart(None)
+    assert app.dlq_history == {}, app.dlq_history
+    app.cfg["dlq"]["chart"]["enabled"] = True
+    app.monitors = []
 
     # ---- Datadog-native service context: parsers ----
     assert da.service_from_monitor(
