@@ -97,10 +97,52 @@
     background:var(--panel);border:1px solid var(--stroke);
   }
   .tab{
-    flex:1;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+    flex:1;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;gap:5px;
     color:var(--ink-2);
   }
   .tab.sel{color:var(--info);background:rgba(97,184,255,0.18);box-shadow:inset 0 0 0 1px rgba(97,184,255,0.45)}
+  .tbadge{font-size:10px;font-weight:800;color:var(--alert);font-variant-numeric:tabular-nums}
+
+  /* blast-radius cluster chips */
+  .clusters{display:flex;gap:6px;margin-bottom:2px}
+  .cluster{
+    display:inline-flex;align-items:center;gap:5px;
+    font-size:11px;font-weight:600;padding:4px 9px;border-radius:99px;
+    color:var(--alert);background:rgba(255,89,102,0.14);
+    box-shadow:inset 0 0 0 1px rgba(255,89,102,0.35);
+  }
+  .cluster .n{font-weight:500;opacity:0.8}
+
+  /* delta chip */
+  .delta{
+    font-size:9px;font-weight:700;padding:2px 6px;border-radius:99px;flex:none;
+  }
+  .delta.alert{color:var(--alert);background:rgba(255,89,102,0.14)}
+  .delta.warn{color:var(--warn);background:rgba(255,199,77,0.14)}
+
+  /* suspect change callout (expanded row) */
+  .suspect{
+    display:flex;align-items:center;gap:6px;
+    padding:6px 9px;border-radius:8px;color:var(--alert);
+    background:rgba(255,89,102,0.10);
+    box-shadow:inset 0 0 0 1px rgba(255,89,102,0.35);
+  }
+  .suspect .txt{display:flex;flex-direction:column;gap:1px;min-width:0}
+  .suspect .t1{font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .suspect .t2{font-size:9px;font-weight:500;opacity:0.75}
+  .suspect .go{margin-left:auto;flex:none}
+
+  /* changes feed */
+  .feed{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+  .dep{
+    display:flex;flex-direction:column;gap:5px;padding:8px 10px;border-radius:10px;
+    background:var(--panel);box-shadow:inset 0 0 0 1px var(--stroke);
+  }
+  .dep.suspected{background:rgba(255,89,102,0.10);box-shadow:inset 0 0 0 1px rgba(255,89,102,0.40)}
+  .dep .line{display:flex;align-items:center;gap:8px}
+  .dep .dtitle{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dep .when{margin-left:auto;font-size:11px;font-weight:500;color:var(--ink-3);flex:none}
+  .dep .flag{display:flex;align-items:center;gap:4px;font-size:10px;font-weight:600;color:var(--alert)}
 
   /* sections */
   .sect-label{font-size:11px;font-weight:500;color:var(--ink-2);padding-left:2px;display:flex;align-items:center;gap:4px}
@@ -227,12 +269,14 @@
     </div>
 
     <div class="tabs">
-      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
-      <div class="tab"><svg width="16" height="16" class="i-sliders"></svg></div>
       <div class="tab sel"><svg width="16" height="16" class="i-cpu"></svg></div>
-      <div class="tab"><svg width="16" height="16" class="i-globe"></svg></div>
-      <div class="tab"><svg width="16" height="16" class="i-bolt"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">1</span></div>
+      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
       <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
+    </div>
+
+    <div class="clusters">
+      <span class="cluster"><svg width="10" height="10" class="i-stack"></svg>payments<span class="n">2 firing</span></span>
     </div>
 
     <div>
@@ -253,17 +297,19 @@
           <div class="line">
             <svg width="9" height="9" class="chev i-chev"></svg>
             <span class="prio alert">P1</span><span class="mname">payments-api · p99 latency</span>
+            <span class="delta alert">×3.2 vs last wk</span>
             <span class="mval alert">842</span>
           </div>
-          <svg class="spark" data-series="pay" data-color="alert"></svg>
+          <svg class="spark" data-series="pay" data-color="alert" data-threshold="0.55"></svg>
         </div>
         <div class="mrow">
           <div class="line">
             <svg width="9" height="9" class="chev i-chev"></svg>
             <span class="prio alert">P2</span><span class="mname">checkout · 5xx rate</span>
+            <span class="delta alert">×4.8</span>
             <span class="mval alert">4.1</span>
           </div>
-          <svg class="spark" data-series="chk" data-color="alert"></svg>
+          <svg class="spark" data-series="chk" data-color="alert" data-threshold="0.30"></svg>
         </div>
         <div class="mrow">
           <div class="line">
@@ -271,7 +317,7 @@
             <span class="prio warn">P3</span><span class="mname">kafka · consumer lag</span>
             <span class="mval warn">12.4k</span>
           </div>
-          <svg class="spark" data-series="kfk" data-color="warn"></svg>
+          <svg class="spark" data-series="kfk" data-color="warn" data-threshold="0.85"></svg>
         </div>
         <div class="mrow">
           <div class="line">
@@ -279,7 +325,7 @@
             <span class="prio warn">P3</span><span class="mname">auth-svc · CPU</span>
             <span class="mval warn">78</span>
           </div>
-          <svg class="spark" data-series="auth" data-color="warn"></svg>
+          <svg class="spark" data-series="auth" data-color="warn" data-threshold="0.80"></svg>
         </div>
       </div>
     </div>
@@ -340,11 +386,9 @@
     </div>
 
     <div class="tabs">
-      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
-      <div class="tab"><svg width="16" height="16" class="i-sliders"></svg></div>
       <div class="tab sel"><svg width="16" height="16" class="i-cpu"></svg></div>
-      <div class="tab"><svg width="16" height="16" class="i-globe"></svg></div>
-      <div class="tab"><svg width="16" height="16" class="i-bolt"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">1</span></div>
+      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
       <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
     </div>
 
@@ -355,9 +399,10 @@
           <div class="line">
             <svg width="9" height="9" class="chev open i-chev"></svg>
             <span class="prio alert">P1</span><span class="mname">payments-api · p99 latency</span>
+            <span class="delta alert">×3.2 vs last wk</span>
             <span class="mval alert">842</span>
           </div>
-          <svg class="spark" data-series="pay" data-color="alert"></svg>
+          <svg class="spark" data-series="pay" data-color="alert" data-threshold="0.55"></svg>
           <div class="details">
             <div class="drow">
               <span class="ditem"><svg width="11" height="11" class="i-timer"></svg>firing 12m</span>
@@ -365,6 +410,14 @@
             </div>
             <div class="drow">
               <span class="ditem"><svg width="11" height="11" class="i-server"></svg>prod-pay-7, prod-pay-9</span>
+            </div>
+            <div class="suspect">
+              <svg width="12" height="12" class="i-pr"></svg>
+              <span class="txt">
+                <span class="t1">PR #482 · raise cache TTL for quotes</span>
+                <span class="t2">landed 14m before this alert</span>
+              </span>
+              <svg width="9" height="9" class="go i-arrow"></svg>
             </div>
             <div class="actions">
               <span class="abtn"><svg width="11" height="11" class="i-mute"></svg>Mute 1h</span>
@@ -376,9 +429,10 @@
           <div class="line">
             <svg width="9" height="9" class="chev i-chev"></svg>
             <span class="prio alert">P2</span><span class="mname">checkout · 5xx rate</span>
+            <span class="delta alert">×4.8</span>
             <span class="mval alert">4.1</span>
           </div>
-          <svg class="spark" data-series="chk" data-color="alert"></svg>
+          <svg class="spark" data-series="chk" data-color="alert" data-threshold="0.30"></svg>
         </div>
         <div class="mrow">
           <div class="line">
@@ -386,7 +440,7 @@
             <span class="prio warn">P3</span><span class="mname">kafka · consumer lag</span>
             <span class="mval warn">12.4k</span>
           </div>
-          <svg class="spark" data-series="kfk" data-color="warn"></svg>
+          <svg class="spark" data-series="kfk" data-color="warn" data-threshold="0.85"></svg>
         </div>
       </div>
     </div>
@@ -394,6 +448,78 @@
     <div class="fresh" style="margin-top:2px">
       <svg width="10" height="10" class="i-clock"></svg>
       checked 2s ago · every 15s
+      <span class="right">⌥⌘D</span>
+    </div>
+
+    <div class="footer">
+      <div class="fbtn"><svg width="13" height="13" class="i-gear"></svg>Settings</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-list"></svg>List</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-power"></svg>Quit</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SCENE 2.5: changes tab ============ -->
+<div class="stage" id="scene-changes">
+  <div class="menubar">
+    <span class="item active-app"><svg width="15" height="15" class="paw"></svg><span class="badge-count">2</span></span>
+    <span class="item"><svg width="15" height="12" class="i-wifi"></svg></span>
+    <span class="item"><svg width="20" height="11" class="i-batt"></svg></span>
+    <span class="item">Tue Jul 1&nbsp;&nbsp;2:13 PM</span>
+  </div>
+
+  <div class="panel">
+    <div class="hdr">
+      <div class="appicon"><svg width="26" height="26" class="paw"></svg></div>
+      <div>
+        <h1>Datadog Assistant</h1>
+        <div class="pills"><span class="pill ok"><span class="dot"></span>acme-prod</span></div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab"><svg width="16" height="16" class="i-cpu"></svg></div>
+      <div class="tab sel"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">1</span></div>
+      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
+    </div>
+
+    <div>
+      <div class="sect-label">Recent changes</div>
+      <div class="feed">
+        <div class="dep suspected">
+          <div class="line">
+            <svg width="12" height="12" class="i-pr" style="color:var(--alert)"></svg>
+            <span class="dtitle">PR #482 · raise cache TTL for quotes</span>
+            <span class="when">26m ago</span>
+          </div>
+          <div class="flag">
+            <svg width="10" height="10" class="i-tri" style="color:var(--alert)"></svg>
+            landed before: payments-api · p99 latency
+          </div>
+        </div>
+        <div class="dep">
+          <div class="line">
+            <svg width="12" height="12" class="i-box" style="color:rgba(255,255,255,0.6)"></svg>
+            <span class="dtitle">Deploy checkout v2025.06.30-2</span>
+            <span class="when">3h ago</span>
+          </div>
+        </div>
+        <div class="dep">
+          <div class="line">
+            <svg width="12" height="12" class="i-pr" style="color:rgba(255,255,255,0.6)"></svg>
+            <span class="dtitle">PR #479 · bump base image to bookworm</span>
+            <span class="when">5h ago</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="fresh" style="margin-top:2px">
+      <svg width="10" height="10" class="i-clock"></svg>
+      checked 6s ago · every 15s
       <span class="right">⌥⌘D</span>
     </div>
 
@@ -426,11 +552,9 @@
     </div>
 
     <div class="tabs">
-      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
-      <div class="tab"><svg width="16" height="16" class="i-sliders"></svg></div>
       <div class="tab sel"><svg width="16" height="16" class="i-cpu"></svg></div>
-      <div class="tab"><svg width="16" height="16" class="i-globe"></svg></div>
-      <div class="tab"><svg width="16" height="16" class="i-bolt"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-branch"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
       <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
     </div>
 
@@ -539,6 +663,11 @@ const ICONS = {
   'i-gear': `<g fill="currentColor"><circle cx="6.5" cy="6.5" r="2" fill="none" stroke="currentColor" stroke-width="1.3"/><g stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><line x1="6.5" y1="0.8" x2="6.5" y2="2.4"/><line x1="6.5" y1="10.6" x2="6.5" y2="12.2"/><line x1="0.8" y1="6.5" x2="2.4" y2="6.5"/><line x1="10.6" y1="6.5" x2="12.2" y2="6.5"/><line x1="2.4" y1="2.4" x2="3.6" y2="3.6"/><line x1="9.4" y1="9.4" x2="10.6" y2="10.6"/><line x1="2.4" y1="10.6" x2="3.6" y2="9.4"/><line x1="9.4" y1="3.6" x2="10.6" y2="2.4"/></g></g>`,
   'i-list': `<g stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><line x1="4.4" y1="2.6" x2="12" y2="2.6"/><line x1="4.4" y1="6.5" x2="12" y2="6.5"/><line x1="4.4" y1="10.4" x2="12" y2="10.4"/><circle cx="1.6" cy="2.6" r="0.9" fill="currentColor" stroke="none"/><circle cx="1.6" cy="6.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="1.6" cy="10.4" r="0.9" fill="currentColor" stroke="none"/></g>`,
   'i-power': `<g stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"><path d="M3.3 3.5a5 5 0 1 0 6.4 0"/><line x1="6.5" y1="0.8" x2="6.5" y2="5.6"/></g>`,
+  'i-branch': `<g stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"><line x1="5" y1="3.4" x2="5" y2="12.6"/><path d="M5 8.2c3.2 0 6-1.4 6-4.2"/><circle cx="5" cy="2.6" r="1.7" fill="currentColor" stroke="none"/><circle cx="5" cy="13.4" r="1.7" fill="currentColor" stroke="none"/><circle cx="11" cy="2.6" r="1.7" fill="currentColor" stroke="none"/></g>`,
+  'i-stack': `<g fill="currentColor"><path d="M5 0.8 9.6 3 5 5.2 0.4 3z"/><path d="M0.4 5.4 5 7.6 9.6 5.4 5 9.2z" opacity="0.7"/></g>`,
+  'i-pr': `<g stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"><circle cx="3" cy="3" r="1.6"/><circle cx="3" cy="9" r="1.6"/><circle cx="9.4" cy="9" r="1.6"/><line x1="3" y1="4.6" x2="3" y2="7.4"/><path d="M5.4 2.6h2.2a1.8 1.8 0 0 1 1.8 1.8v3"/></g>`,
+  'i-box': `<g stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"><path d="M1.2 3.6 6 1.2l4.8 2.4v4.8L6 10.8 1.2 8.4z"/><path d="M1.2 3.6 6 6l4.8-2.4M6 6v4.8"/></g>`,
+  'i-arrow': `<path d="M2 7 7 2M3.4 2H7v3.6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`,
 };
 document.querySelectorAll('svg[class]').forEach(el => {
   const key = [...el.classList].find(c => ICONS[c]);
@@ -548,7 +677,9 @@ document.querySelectorAll('svg[class]').forEach(el => {
     'i-oct':'0 0 12 12','i-tri':'0 0 12 12','i-seal':'0 0 12 12','i-flame':'0 0 10 12',
     'i-chev':'0 0 9 9','i-clock':'0 0 10 10','i-timer':'0 0 11 12','i-ruler':'0 0 11 11',
     'i-server':'0 0 11 11','i-mute':'0 0 11 11','i-ext':'0 0 11 11',
-    'i-gear':'0 0 13 13','i-list':'0 0 13 13','i-power':'0 0 13 13' }[key] || '0 0 16 16';
+    'i-gear':'0 0 13 13','i-list':'0 0 13 13','i-power':'0 0 13 13',
+    'i-branch':'0 0 16 16','i-stack':'0 0 10 10','i-pr':'0 0 12 12',
+    'i-box':'0 0 12 12','i-arrow':'0 0 9 9' }[key] || '0 0 16 16';
   el.setAttribute('viewBox', vb);
   el.innerHTML = ICONS[key];
 });
@@ -581,12 +712,19 @@ document.querySelectorAll('.spark, .spark-lg').forEach(el => {
   el.setAttribute('preserveAspectRatio', 'none');
   const gid = 'g' + el.dataset.series + Math.floor(Math.random()*1e6);
   const line = pts.map((v,i)=> `${(i/(pts.length-1)*W).toFixed(2)},${((1-v)*H).toFixed(2)}`).join(' ');
+  const t = parseFloat(el.dataset.threshold);
+  const guide = Number.isFinite(t)
+    ? `<line x1="0" y1="${((1-t)*H).toFixed(2)}" x2="${W}" y2="${((1-t)*H).toFixed(2)}"
+        stroke="rgba(255,255,255,0.35)" stroke-width="1" stroke-dasharray="3 3"
+        vector-effect="non-scaling-stroke"/>`
+    : '';
   el.innerHTML = `
     <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="${color}" stop-opacity="0.30"/>
       <stop offset="1" stop-color="${color}" stop-opacity="0"/>
     </linearGradient></defs>
     <polygon points="0,${H} ${line} ${W},${H}" fill="url(#${gid})"/>
+    ${guide}
     <polyline points="${line}" fill="none" stroke="${color}" stroke-width="2"
       stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
 });
