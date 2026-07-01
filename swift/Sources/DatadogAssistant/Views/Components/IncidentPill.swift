@@ -26,14 +26,14 @@ struct IncidentPill: View {
     }
 
     private var severityNumber: String {
-        String(incident.severity.rawValue.suffix(1))
+        incident.severity == .unknown ? "?" : String(incident.severity.rawValue.suffix(1))
     }
 
     private var tint: Color {
         switch incident.severity {
-        case .sev1, .sev2: return Theme.alert
-        case .sev3:        return Theme.warn
-        case .sev4, .sev5: return Theme.info
+        case .sev1, .sev2:           return Theme.alert
+        case .sev3:                  return Theme.warn
+        case .sev4, .sev5, .unknown: return Theme.info
         }
     }
 

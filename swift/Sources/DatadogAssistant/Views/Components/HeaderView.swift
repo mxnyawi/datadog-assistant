@@ -8,8 +8,9 @@ struct HeaderView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(Color.black.opacity(0.55))
-                Text("🐶")
-                    .font(.system(size: 24))
+                Image(systemName: "pawprint.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
             }
             .frame(width: 48, height: 48)
             .overlay(
@@ -21,20 +22,37 @@ struct HeaderView: View {
                 Text("Datadog Assistant")
                     .font(.system(size: 18, weight: .bold))
                     .foregroundColor(Theme.textPrimary)
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(snapshot.connected ? Theme.ok : Theme.muted)
-                        .frame(width: 7, height: 7)
-                    Text(snapshot.connected ? snapshot.orgName : "Disconnected")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(snapshot.connected ? Theme.ok : Theme.muted)
+                HStack(spacing: 6) {
+                    statusPill
+                    if snapshot.sampleData {
+                        pill(text: "SAMPLE", color: Theme.info)
+                    }
                 }
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(
-                    Capsule().fill((snapshot.connected ? Theme.ok : Theme.muted).opacity(0.15))
-                )
             }
             Spacer()
         }
+    }
+
+    private var statusPill: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(snapshot.connected ? Theme.ok : Theme.muted)
+                .frame(width: 7, height: 7)
+            Text(snapshot.connected ? snapshot.orgName : "Reconnecting…")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(snapshot.connected ? Theme.ok : Theme.muted)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(
+            Capsule().fill((snapshot.connected ? Theme.ok : Theme.muted).opacity(0.15))
+        )
+    }
+
+    private func pill(text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 9, weight: .bold))
+            .foregroundColor(color)
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(Capsule().fill(color.opacity(0.15)))
     }
 }

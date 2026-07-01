@@ -6,12 +6,13 @@ enum IncidentSeverity: String, Codable {
     case sev3 = "SEV-3"
     case sev4 = "SEV-4"
     case sev5 = "SEV-5"
+    case unknown = "UNKNOWN"
 }
 
-struct Incident: Identifiable, Hashable {
+struct Incident: Identifiable, Hashable, Codable {
     let id: String
     let title: String
     let severity: IncidentSeverity
     let openedAt: Date
-    let commander: String?
+    let url: URL?
 }

@@ -25,5 +25,12 @@ mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
 cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${EXECUTABLE_NAME}"
 cp Resources/Info.plist "${APP_DIR}/Contents/Info.plist"
 
+# Ad-hoc sign by default so TCC (notifications) has a stable code identity
+# across rebuilds; ./Scripts/notarize.sh does the real Developer ID signing.
+if [[ -z "${SIGN_IDENTITY:-}" ]]; then
+    echo "==> codesign (ad-hoc; set SIGN_IDENTITY or run notarize.sh for release)"
+    codesign --force --deep --sign - "${APP_DIR}"
+fi
+
 echo "==> done: ${APP_DIR}"
 echo "    open \"${APP_DIR}\"   # to launch"

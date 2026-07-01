@@ -27,7 +27,14 @@ struct FooterView: View {
         .buttonStyle(.plain)
     }
 
-    private func openSettings() { /* hook to preferences popover later */ }
-    private func openList() { /* hook to monitor-list popover later */ }
+    private func openSettings() {
+        NotificationCenter.default.post(name: .openSettingsWindow, object: nil)
+    }
+
+    // Full monitor list stays in Datadog until the in-panel list view lands.
+    private func openList() {
+        NSWorkspace.shared.open(URL(string: "https://app.datadoghq.com/monitors/manage")!)
+    }
+
     private func quit() { NSApp.terminate(nil) }
 }

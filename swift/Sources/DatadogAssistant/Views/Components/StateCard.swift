@@ -19,6 +19,7 @@ struct StateCard: View {
             Text(value)
                 .font(.system(size: 26, weight: .semibold, design: .rounded))
                 .foregroundColor(tint)
+                .contentTransition(.numericText())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 12)
