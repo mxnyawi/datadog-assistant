@@ -6,19 +6,30 @@ struct RootView: View {
 
     var body: some View {
         let snapshot = store.snapshot
+        let suspectCount = snapshot.deploys.filter { !$0.suspectFor.isEmpty }.count
         VStack(spacing: 16) {
             HeaderView(snapshot: snapshot)
-            TabStrip(selected: $tab)
+            TabStrip(selected: $tab, badges: [.changes: suspectCount])
 
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 18) {
-                    StateSection(snapshot: snapshot)
-                    Divider().background(Theme.panelStroke)
-                    ActiveMonitorsSection(snapshot: snapshot)
-                    Divider().background(Theme.panelStroke)
-                    IncidentsSection(snapshot: snapshot)
-                    Divider().background(Theme.panelStroke)
-                    ActivitySection(snapshot: snapshot)
+                    switch tab {
+                    case .monitors:
+                        ClusterChips(clusters: snapshot.clusters)
+                        StateSection(snapshot: snapshot)
+                        Divider().background(Theme.panelStroke)
+                        ActiveMonitorsSection(snapshot: snapshot)
+                        Divider().background(Theme.panelStroke)
+                        IncidentsSection(snapshot: snapshot)
+                        Divider().background(Theme.panelStroke)
+                        ActivitySection(snapshot: snapshot)
+                    case .changes:
+                        ChangesSection(snapshot: snapshot)
+                    case .snooze:
+                        SnoozeSection()
+                    case .tools:
+                        ToolsSection()
+                    }
                 }
                 .padding(.vertical, 4)
             }

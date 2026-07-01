@@ -17,6 +17,12 @@ final class SnapshotStore: ObservableObject {
     @Published private(set) var snapshot: Snapshot = .empty
     @Published private(set) var lastError: String?
     @Published private(set) var refreshing = false
+    @Published private(set) var snoozedUntil: Date?
+
+    var isSnoozed: Bool {
+        guard let until = snoozedUntil else { return false }
+        return until > Date()
+    }
 
     struct Transition {
         enum Kind { case fired, recovered }
@@ -30,12 +36,26 @@ final class SnapshotStore: ObservableObject {
     private static let recoveryHoldoff: TimeInterval = 300
     private static let activityCapacity = 96
 
+    /// How long before an alert a change counts as a suspect.
+    private static let suspectWindow: TimeInterval = 45 * 60
+    private static let deployLookback: TimeInterval = 6 * 3600
+    private static let maxDeploys = 20
+
     private var source: DataSource
+    private var gitHub: GitHubClient?
     private var pollTask: Task<Void, Never>?
     private var lastRecoveryAt: Date = .distantPast
+    private var snoozeHandle: String? {
+        get { UserDefaults.standard.string(forKey: "snoozeHandle") }
+        set { UserDefaults.standard.set(newValue, forKey: "snoozeHandle") }
+    }
 
     init(source: DataSource) {
         self.source = source
+        self.gitHub = GitHubConfig.load().map(GitHubClient.init)
+        if let until = UserDefaults.standard.object(forKey: "snoozedUntil") as? Date, until > Date() {
+            snoozedUntil = until
+        }
         if let cached = Self.readCache() {
             var stale = cached
             stale.connected = false   // until the first live poll lands
@@ -67,6 +87,7 @@ final class SnapshotStore: ObservableObject {
     /// Swap mock ↔ real (e.g. after credentials are saved) and restart.
     func replaceSource(_ newSource: DataSource) {
         source = newSource
+        gitHub = GitHubConfig.load().map(GitHubClient.init)
         snapshot = .empty
         lastError = nil
         start()
@@ -77,6 +98,18 @@ final class SnapshotStore: ObservableObject {
         defer { refreshing = false }
         do {
             var next = try await source.fetchSnapshot(previous: snapshot)
+
+            if let gitHub {
+                let merges = await gitHub.recentMerges(within: Self.deployLookback)
+                next.deploys += merges
+            }
+            next.deploys = Array(
+                next.deploys
+                    .sorted { $0.occurredAt > $1.occurredAt }
+                    .prefix(Self.maxDeploys)
+            )
+            Self.markSuspects(in: &next)
+
             let transitions = Self.diff(old: snapshot, new: next)
             if transitions.contains(where: { $0.kind == .recovered }) {
                 lastRecoveryAt = Date()
@@ -85,11 +118,59 @@ final class SnapshotStore: ObservableObject {
             snapshot = next
             lastError = nil
             Self.writeCache(next)
-            if !transitions.isEmpty { onTransitions?(transitions) }
+            // Snooze silences banners, not the panel — it stays live.
+            if !transitions.isEmpty, !isSnoozed { onTransitions?(transitions) }
         } catch {
             lastError = error.localizedDescription
             snapshot.connected = false
         }
+    }
+
+    // MARK: - Change correlation ("what shipped before this alert?")
+
+    private static func markSuspects(in snapshot: inout Snapshot) {
+        let firing = snapshot.monitors.filter { $0.state == .alert && $0.firingSince != nil }
+        guard !firing.isEmpty else { return }
+        snapshot.deploys = snapshot.deploys.map { deploy in
+            var deploy = deploy
+            deploy.suspectFor = firing.compactMap { monitor in
+                guard let since = monitor.firingSince else { return nil }
+                let lead = since.timeIntervalSince(deploy.occurredAt)
+                let serviceMatches = deploy.service == nil
+                    || monitor.service == nil
+                    || deploy.service == monitor.service
+                return (0...suspectWindow).contains(lead) && serviceMatches ? monitor.id : nil
+            }
+            return deploy
+        }
+    }
+
+    /// The suspect change for one monitor, if any (newest wins).
+    func suspectDeploy(for monitor: Monitor) -> DeployEvent? {
+        snapshot.deploys.first { $0.suspectFor.contains(monitor.id) }
+    }
+
+    // MARK: - Snooze
+
+    func snoozeAll(for duration: TimeInterval) async {
+        let until = Date().addingTimeInterval(duration)
+        do {
+            snoozeHandle = try await source.snoozeAll(until: until)
+            snoozedUntil = until
+            UserDefaults.standard.set(until, forKey: "snoozedUntil")
+        } catch {
+            lastError = "Snooze failed: \(error.localizedDescription)"
+        }
+    }
+
+    func cancelSnooze() async {
+        if let handle = snoozeHandle {
+            do { try await source.cancelSnooze(handle: handle) }
+            catch { lastError = "Unsnooze failed: \(error.localizedDescription)" }
+        }
+        snoozeHandle = nil
+        snoozedUntil = nil
+        UserDefaults.standard.removeObject(forKey: "snoozedUntil")
     }
 
     func mute(_ monitor: Monitor, for duration: TimeInterval?) async {

@@ -5,6 +5,9 @@ struct Sparkline: View {
     let color: Color
     var lineWidth: CGFloat = 1.5
     var fill: Bool = true
+    /// Critical threshold in the same normalized 0…1 y-space; drawn as a
+    /// dashed guide so "how far past the line are we?" is visible at a glance.
+    var threshold: Double? = nil
 
     var body: some View {
         GeometryReader { geo in
@@ -15,6 +18,15 @@ struct Sparkline: View {
                         .fill(LinearGradient(
                             colors: [color.opacity(0.35), color.opacity(0.0)],
                             startPoint: .top, endPoint: .bottom))
+                }
+                if let threshold {
+                    let y = geo.size.height * (1.0 - CGFloat(max(0.0, min(1.0, threshold))))
+                    Path { p in
+                        p.move(to: CGPoint(x: 0, y: y))
+                        p.addLine(to: CGPoint(x: geo.size.width, y: y))
+                    }
+                    .stroke(Color.white.opacity(0.35),
+                            style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
                 }
                 path.stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
             }

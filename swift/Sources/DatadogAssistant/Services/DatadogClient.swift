@@ -28,15 +28,18 @@ final class DatadogClient: DataSource {
     func fetchSnapshot(previous: Snapshot?) async throws -> Snapshot {
         async let monitorsTask = fetchMonitors()
         async let incidentsTask = fetchIncidents()
+        async let deploysTask = fetchDeployEvents()
 
         var monitors = try await monitorsTask
         let incidents = await incidentsTask   // best-effort, never throws
+        let deploys = await deploysTask       // best-effort, never throws
 
         monitors = await attachSparklines(to: monitors, previous: previous)
 
         return Snapshot(
             monitors: monitors,
             incidents: incidents,
+            deploys: deploys,
             activity: previous?.activity ?? [],   // store owns this series
             lastRefresh: Date(),
             orgName: credentials.site,
@@ -77,6 +80,7 @@ final class DatadogClient: DataSource {
         let query: String?
         let overall_state: String?
         let priority: Int?
+        let tags: [String]?
         let options: Options?
         let state: State?
     }
@@ -92,12 +96,9 @@ final class DatadogClient: DataSource {
             QueryParser.parse(dto.query ?? "").map { (dto.id, $0.metricQuery) }
         })
         return dtos.map(Self.monitor(from:)).map { m in
-            Monitor(
-                id: m.id, name: m.name, state: m.state, priority: m.priority,
-                firingSince: m.firingSince, triggeredHosts: m.triggeredHosts,
-                sparkline: m.sparkline, value: m.value, threshold: m.threshold,
-                url: credentials.appBaseURL.appendingPathComponent("/monitors/\(m.id)")
-            )
+            var monitor = m
+            monitor.url = credentials.appBaseURL.appendingPathComponent("/monitors/\(m.id)")
+            return monitor
         }
     }
 
@@ -126,6 +127,9 @@ final class DatadogClient: DataSource {
         hosts.sort()
 
         let parsed = QueryParser.parse(dto.query ?? "")
+        let service = dto.tags?
+            .first { $0.hasPrefix("service:") }
+            .map { String($0.dropFirst("service:".count)) }
         return Monitor(
             id: dto.id,
             name: dto.name ?? "monitor \(dto.id)",
@@ -136,7 +140,8 @@ final class DatadogClient: DataSource {
             sparkline: [],
             value: nil,
             threshold: parsed?.threshold,
-            url: nil
+            url: nil,
+            service: service
         )
     }
 
@@ -147,6 +152,17 @@ final class DatadogClient: DataSource {
         let series: [Series]?
     }
 
+    /// What one metrics round-trip yields for a monitor. The query is the
+    /// clever bit: "m, week_before(m)" fetches the live series AND the same
+    /// series time-shifted a week back in a single API call, so the ×N-vs-
+    /// last-week delta costs nothing extra.
+    private struct SparkData {
+        var series: [Double] = []
+        var lastValue: Double?
+        var delta: Double?
+        var thresholdPosition: Double?
+    }
+
     private func attachSparklines(to monitors: [Monitor], previous: Snapshot?) async -> [Monitor] {
         let active = monitors
             .filter { $0.state == .alert || $0.state == .warn }
@@ -155,20 +171,20 @@ final class DatadogClient: DataSource {
         guard !active.isEmpty else { return monitors }
 
         var byID = Dictionary(uniqueKeysWithValues: monitors.map { ($0.id, $0) })
-        await withTaskGroup(of: (Int, [Double], Double?).self) { group in
+        await withTaskGroup(of: (Int, SparkData).self) { group in
             for monitor in active {
                 group.addTask { [self] in
-                    let (series, last) = await fetchSparkline(forMonitorID: monitor.id)
-                    return (monitor.id, series, last)
+                    (monitor.id, await fetchSparkline(forMonitorID: monitor.id,
+                                                      threshold: monitor.threshold))
                 }
             }
-            for await (id, series, last) in group {
-                guard !series.isEmpty, let m = byID[id] else { continue }
-                byID[id] = Monitor(
-                    id: m.id, name: m.name, state: m.state, priority: m.priority,
-                    firingSince: m.firingSince, triggeredHosts: m.triggeredHosts,
-                    sparkline: series, value: last, threshold: m.threshold, url: m.url
-                )
+            for await (id, spark) in group {
+                guard !spark.series.isEmpty, var m = byID[id] else { continue }
+                m.sparkline = spark.series
+                m.value = spark.lastValue
+                m.delta = spark.delta
+                m.thresholdPosition = spark.thresholdPosition
+                byID[id] = m
             }
         }
         return monitors.map { byID[$0.id] ?? $0 }
@@ -178,26 +194,49 @@ final class DatadogClient: DataSource {
     /// monitor id, so sparkline fetches don't re-hit the monitors endpoint.
     private var queriesByID: [Int: String] = [:]
 
-    private func fetchSparkline(forMonitorID id: Int) async -> ([Double], Double?) {
-        guard let metricQuery = queriesByID[id] else { return ([], nil) }
+    private func fetchSparkline(forMonitorID id: Int, threshold: Double?) async -> SparkData {
+        guard let metricQuery = queriesByID[id] else { return SparkData() }
         let now = Int(Date().timeIntervalSince1970)
         let url = credentials.apiBaseURL
             .appendingPathComponent("/api/v1/query")
             .appending(queryItems: [
                 URLQueryItem(name: "from", value: String(now - Int(Self.sparklineWindow))),
                 URLQueryItem(name: "to", value: String(now)),
-                URLQueryItem(name: "query", value: metricQuery),
+                URLQueryItem(name: "query", value: "\(metricQuery), week_before(\(metricQuery))"),
             ])
         guard let (data, response) = try? await session.data(for: authedRequest(url: url)),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let decoded = try? JSONDecoder().decode(QuerySeriesDTO.self, from: data),
-              let points = decoded.series?.first?.pointlist else { return ([], nil) }
+              let series = decoded.series, !series.isEmpty,
+              let points = series.first?.pointlist else { return SparkData() }
 
         let values = points.compactMap { $0.count > 1 ? $0[1] : nil }
-        guard values.count > 1, let lo = values.min(), let hi = values.max() else { return ([], nil) }
+        guard values.count > 1, let lo = values.min(), let hi = values.max() else { return SparkData() }
         let range = hi - lo
-        let normalized = range > 0 ? values.map { ($0 - lo) / range * 0.8 + 0.1 } : values.map { _ in 0.5 }
-        return (normalized, values.last)
+        let normalize = { (v: Double) in range > 0 ? (v - lo) / range * 0.8 + 0.1 : 0.5 }
+
+        var spark = SparkData()
+        spark.series = values.map(normalize)
+        spark.lastValue = values.last
+
+        // Threshold guide line, mapped into the same normalized space; only
+        // meaningful when it falls near the visible range.
+        if let threshold, range > 0 {
+            let position = normalize(threshold)
+            if (-0.1...1.1).contains(position) {
+                spark.thresholdPosition = min(1.0, max(0.0, position))
+            }
+        }
+
+        // series[1] is week_before(m): compare now vs the same moment last week.
+        if series.count > 1,
+           let shifted = series[1].pointlist?.compactMap({ $0.count > 1 ? $0[1] : nil }),
+           let lastWeek = shifted.last, let current = values.last,
+           abs(lastWeek) > 1e-9 {
+            let ratio = current / lastWeek
+            if ratio.isFinite, ratio > 0 { spark.delta = ratio }
+        }
+        return spark
     }
 
     // MARK: - Incidents
@@ -245,6 +284,85 @@ final class DatadogClient: DataSource {
             )
         }
         .sorted { $0.severity.rawValue < $1.severity.rawValue }
+    }
+
+    // MARK: - Deploy events
+
+    private struct EventsDTO: Decodable {
+        struct Event: Decodable {
+            let id: Int?
+            let title: String?
+            let date_happened: Int?
+            let url: String?
+            let tags: [String]?
+        }
+        let events: [Event]?
+    }
+
+    /// Deployment events from the Datadog events stream. The tag to match is
+    /// configurable (defaults "deployment") because orgs tag deploys
+    /// differently; best-effort — an org without deploy events just gets an
+    /// empty Changes feed.
+    private func fetchDeployEvents() async -> [DeployEvent] {
+        let tag = UserDefaults.standard.string(forKey: "deployTag") ?? "deployment"
+        let now = Int(Date().timeIntervalSince1970)
+        let url = credentials.apiBaseURL
+            .appendingPathComponent("/api/v1/events")
+            .appending(queryItems: [
+                URLQueryItem(name: "start", value: String(now - 6 * 3600)),
+                URLQueryItem(name: "end", value: String(now)),
+                URLQueryItem(name: "tags", value: tag),
+            ])
+        guard let (data, response) = try? await session.data(for: authedRequest(url: url)),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let decoded = try? JSONDecoder().decode(EventsDTO.self, from: data),
+              let events = decoded.events else { return [] }
+
+        return events.compactMap { event in
+            guard let ts = event.date_happened else { return nil }
+            let service = event.tags?
+                .first { $0.hasPrefix("service:") }
+                .map { String($0.dropFirst("service:".count)) }
+            return DeployEvent(
+                id: "dd-\(event.id ?? ts)",
+                title: event.title ?? "Deployment",
+                source: .datadog,
+                occurredAt: Date(timeIntervalSince1970: TimeInterval(ts)),
+                url: event.url.flatMap {
+                    $0.hasPrefix("http") ? URL(string: $0)
+                                         : URL(string: $0, relativeTo: credentials.appBaseURL)
+                },
+                service: service
+            )
+        }
+        .sorted { $0.occurredAt > $1.occurredAt }
+    }
+
+    // MARK: - Snooze (org-wide downtime)
+
+    private struct DowntimeDTO: Decodable { let id: Int? }
+
+    func snoozeAll(until: Date) async throws -> String? {
+        var request = authedRequest(
+            url: credentials.apiBaseURL.appendingPathComponent("/api/v1/downtime"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "scope": ["*"],
+            "end": Int(until.timeIntervalSince1970),
+            "message": "Snoozed from Datadog Assistant",
+        ])
+        let (data, response) = try await session.data(for: request)
+        try Self.checkHTTP(response)
+        return (try? JSONDecoder().decode(DowntimeDTO.self, from: data))?.id.map(String.init)
+    }
+
+    func cancelSnooze(handle: String) async throws {
+        var request = authedRequest(
+            url: credentials.apiBaseURL.appendingPathComponent("/api/v1/downtime/\(handle)"))
+        request.httpMethod = "DELETE"
+        let (_, response) = try await session.data(for: request)
+        try Self.checkHTTP(response)
     }
 
     // MARK: - Plumbing

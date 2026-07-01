@@ -38,6 +38,24 @@ install carries over automatically.
 `swift run` also works for a fast dev loop, but notifications require a real
 `.app` bundle, so they're disabled in that mode.
 
+## Change correlation & clever queries
+
+- **"What shipped?"** — the Changes tab merges Datadog deployment events
+  (events stream, tag configurable via the `deployTag` default) with merged
+  PRs from GitHub repos you watch (Settings → GitHub). Any change that landed
+  ≤45 min before an alerting monitor started firing is flagged as a
+  **suspect** — in the Changes feed, as a badge on the tab, and inline in the
+  expanded monitor row with a one-click "View PR".
+- **Week-over-week deltas** — sparkline fetches use a combined
+  `"m, week_before(m)"` query, so every firing monitor knows how it compares
+  to the same moment last week (×3.2 chip) at no extra API cost.
+- **Threshold guide** — the monitor's critical threshold is drawn as a dashed
+  line on the sparkline, so "how far past the line?" is visible at a glance.
+- **Blast radius** — firing monitors sharing a `service:` tag cluster into
+  chips ("payments · 3 firing") above the monitor list.
+- **Snooze** — org-wide Datadog downtime (scope `*`) for 30m/1h/4h/rest of
+  day from the Snooze tab; notifications pause, the panel stays live.
+
 ## How it stays fast
 
 - **Adaptive polling** (`SnapshotStore`): 15s cadence while anything is firing

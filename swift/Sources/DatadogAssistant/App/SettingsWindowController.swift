@@ -35,8 +35,11 @@ struct SettingsView: View {
     @State private var apiKey = ""
     @State private var appKey = ""
     @State private var site = "datadoghq.com"
+    @State private var gitHubToken = ""
+    @State private var gitHubRepos = ""
     @State private var error: String?
     @State private var hasExistingKeys = Credentials.load() != nil
+    @State private var hasGitHub = GitHubConfig.load() != nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -57,6 +60,22 @@ struct SettingsView: View {
                 }
             }
 
+            Divider()
+
+            Text("GitHub (optional) — change correlation")
+                .font(.headline)
+            Text(hasGitHub
+                 ? "Configured. Enter new values to replace, or clear the repos field to disable."
+                 : "A fine-grained token with repo read access, plus repos to watch for merges. Map a repo to a service with service=owner/repo; bare owner/repo entries apply org-wide. Comma-separated.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Form {
+                SecureField("GitHub token", text: $gitHubToken)
+                TextField("Repos (payments=acme/pay-api, acme/platform)", text: $gitHubRepos)
+            }
+
             if let error {
                 Text(error)
                     .font(.caption)
@@ -75,7 +94,8 @@ struct SettingsView: View {
                 Button("Use sample data") { onSave() }
                 Button("Save") { save() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(apiKey.isEmpty || appKey.isEmpty)
+                    .disabled((apiKey.isEmpty || appKey.isEmpty)
+                              && (gitHubToken.isEmpty || gitHubRepos.isEmpty))
             }
         }
         .padding(20)
@@ -87,7 +107,16 @@ struct SettingsView: View {
 
     private func save() {
         do {
-            try Credentials(apiKey: apiKey, appKey: appKey, site: site).save()
+            if !apiKey.isEmpty && !appKey.isEmpty {
+                try Credentials(apiKey: apiKey, appKey: appKey, site: site).save()
+            }
+            let repoSpecs = gitHubRepos
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            if !gitHubToken.isEmpty && !repoSpecs.isEmpty {
+                try GitHubConfig(token: gitHubToken, repoSpecs: repoSpecs).save()
+            }
             onSave()
         } catch {
             self.error = "Keychain write failed: \(error.localizedDescription)"

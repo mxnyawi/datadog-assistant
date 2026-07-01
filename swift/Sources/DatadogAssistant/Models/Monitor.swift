@@ -34,12 +34,22 @@ struct Monitor: Identifiable, Hashable, Codable {
     let firingSince: Date?
     let triggeredHosts: [String]
     /// Normalized 0…1 series for drawing; empty when no metric data available.
-    let sparkline: [Double]
+    /// Mutable (like the fields below) because they're attached in later fetch
+    /// stages rather than known at decode time.
+    var sparkline: [Double]
     /// Last raw metric value / the monitor's critical threshold, when parseable.
-    let value: Double?
+    var value: Double?
     let threshold: Double?
     /// Deep link into Datadog; nil for sample data.
-    let url: URL?
+    var url: URL? = nil
+    /// From the monitor's service: tag; groups firing monitors into clusters.
+    var service: String? = nil
+    /// Current value ÷ same moment last week (week_before() time-shift query).
+    /// 3.2 = "×3.2 vs last week". nil when the shifted series wasn't available.
+    var delta: Double? = nil
+    /// The critical threshold mapped into the sparkline's normalized 0…1 y-space,
+    /// so views can draw the guide line without knowing the raw scale.
+    var thresholdPosition: Double? = nil
 
     var firingDuration: String? {
         guard let since = firingSince else { return nil }

@@ -23,7 +23,8 @@ struct MonitorRow: View {
             .buttonStyle(.plain)
 
             if !monitor.sparkline.isEmpty {
-                Sparkline(points: monitor.sparkline, color: tint)
+                Sparkline(points: monitor.sparkline, color: tint,
+                          threshold: monitor.thresholdPosition)
                     .frame(height: 26)
             }
 
@@ -55,6 +56,13 @@ struct MonitorRow: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer()
+            if let delta = monitor.delta, delta >= 1.5 {
+                Text("×\(String(format: delta >= 10 ? "%.0f" : "%.1f", delta)) vs last wk")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundColor(tint)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(Capsule().fill(tint.opacity(0.14)))
+            }
             Text(rightLabel)
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .foregroundColor(tint)
@@ -77,6 +85,9 @@ struct MonitorRow: View {
                 detailItem(icon: "server.rack",
                            text: monitor.triggeredHosts.prefix(4).joined(separator: ", "))
             }
+            if let suspect = store.suspectDeploy(for: monitor) {
+                suspectRow(suspect)
+            }
             HStack(spacing: 8) {
                 actionButton("Mute 1h", icon: "speaker.slash.fill") {
                     Task { await store.mute(monitor, for: 3600) }
@@ -89,6 +100,48 @@ struct MonitorRow: View {
             .padding(.top, 2)
         }
         .padding(.leading, 17)
+    }
+
+    /// "What shipped right before this?" — the change-correlation callout,
+    /// clickable straight to the PR/event.
+    private func suspectRow(_ deploy: DeployEvent) -> some View {
+        Button {
+            if let url = deploy.url { NSWorkspace.shared.open(url) }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: deploy.source == .github ? "arrow.triangle.pull" : "shippingbox.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(deploy.title)
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                    Text("landed \(minutesBefore(deploy)) before this alert")
+                        .font(.system(size: 9, weight: .medium))
+                        .opacity(0.75)
+                }
+                Spacer()
+                Image(systemName: "arrow.up.forward")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundColor(Theme.alert)
+            .padding(.horizontal, 9).padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Theme.alert.opacity(0.10))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Theme.alert.opacity(0.35), lineWidth: 1)
+                    )
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func minutesBefore(_ deploy: DeployEvent) -> String {
+        guard let since = monitor.firingSince else { return "just" }
+        let mins = max(1, Int(since.timeIntervalSince(deploy.occurredAt) / 60))
+        return "\(mins)m"
     }
 
     private func detailItem(icon: String, text: String) -> some View {

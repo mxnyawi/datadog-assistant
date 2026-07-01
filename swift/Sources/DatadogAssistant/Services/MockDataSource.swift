@@ -8,6 +8,7 @@ final class MockDataSource: DataSource {
     private var seed: UInt64 = 0x5EED
     private var monitors: [Monitor]
     private var incidents: [Incident]
+    private var deploys: [DeployEvent]
 
     var sourceName: String { "Sample data" }
 
@@ -23,7 +24,8 @@ final class MockDataSource: DataSource {
                     triggeredHosts: ["prod-pay-7", "prod-pay-9"],
                     sparkline: Self.series(starting: 0.62, count: 48, seed: &s, drift: 0.18),
                     value: 842, threshold: 500,
-                    url: URL(string: "https://app.datadoghq.com/monitors/1001")),
+                    url: URL(string: "https://app.datadoghq.com/monitors/1001"),
+                    service: "payments", delta: 3.2, thresholdPosition: 0.55),
             Monitor(id: 1002,
                     name: "checkout · 5xx rate",
                     state: .alert,
@@ -32,7 +34,8 @@ final class MockDataSource: DataSource {
                     triggeredHosts: ["edge-3"],
                     sparkline: Self.series(starting: 0.55, count: 48, seed: &s, drift: 0.20),
                     value: 4.1, threshold: 1.0,
-                    url: URL(string: "https://app.datadoghq.com/monitors/1002")),
+                    url: URL(string: "https://app.datadoghq.com/monitors/1002"),
+                    service: "payments", delta: 4.8, thresholdPosition: 0.30),
             Monitor(id: 1003,
                     name: "kafka · consumer lag",
                     state: .warn,
@@ -41,7 +44,8 @@ final class MockDataSource: DataSource {
                     triggeredHosts: ["kafka-2"],
                     sparkline: Self.series(starting: 0.45, count: 48, seed: &s, drift: 0.10),
                     value: 12_400, threshold: 20_000,
-                    url: URL(string: "https://app.datadoghq.com/monitors/1003")),
+                    url: URL(string: "https://app.datadoghq.com/monitors/1003"),
+                    service: "kafka", delta: 1.4, thresholdPosition: 0.85),
             Monitor(id: 1004,
                     name: "auth-svc · CPU",
                     state: .warn,
@@ -50,7 +54,8 @@ final class MockDataSource: DataSource {
                     triggeredHosts: ["auth-1", "auth-2"],
                     sparkline: Self.series(starting: 0.50, count: 48, seed: &s, drift: 0.08),
                     value: 78, threshold: 85,
-                    url: URL(string: "https://app.datadoghq.com/monitors/1004")),
+                    url: URL(string: "https://app.datadoghq.com/monitors/1004"),
+                    service: "auth", delta: 1.1, thresholdPosition: 0.80),
             Monitor(id: 1005,
                     name: "search · index lag",
                     state: .ok,
@@ -76,21 +81,41 @@ final class MockDataSource: DataSource {
                      severity: .sev3, openedAt: now.addingTimeInterval(-5400),
                      url: URL(string: "https://app.datadoghq.com/incidents/481")),
         ]
+        // PR #482 lands 14 minutes before payments-api starts firing (-720s),
+        // so the suspect correlation has something to find in sample mode.
+        self.deploys = [
+            DeployEvent(id: "gh-acme/payments-api-482",
+                        title: "PR #482 · raise cache TTL for quotes",
+                        source: .github,
+                        occurredAt: now.addingTimeInterval(-720 - 14 * 60),
+                        url: URL(string: "https://github.com/acme/payments-api/pull/482"),
+                        service: "payments"),
+            DeployEvent(id: "dd-90211",
+                        title: "Deploy checkout v2025.06.30-2",
+                        source: .datadog,
+                        occurredAt: now.addingTimeInterval(-3 * 3600),
+                        url: URL(string: "https://app.datadoghq.com/event/explorer"),
+                        service: "checkout"),
+            DeployEvent(id: "gh-acme/platform-479",
+                        title: "PR #479 · bump base image to bookworm",
+                        source: .github,
+                        occurredAt: now.addingTimeInterval(-5 * 3600),
+                        url: URL(string: "https://github.com/acme/platform/pull/479"),
+                        service: nil),
+        ]
     }
 
     func fetchSnapshot(previous: Snapshot?) async throws -> Snapshot {
         monitors = monitors.map { m in
-            Monitor(
-                id: m.id, name: m.name, state: m.state, priority: m.priority,
-                firingSince: m.firingSince, triggeredHosts: m.triggeredHosts,
-                sparkline: Self.roll(m.sparkline, seed: &seed, drift: 0.12),
-                value: m.value.map { $0 + Double(Int(nextRand(&seed) % 5)) - 2 },
-                threshold: m.threshold, url: m.url
-            )
+            var monitor = m
+            monitor.sparkline = Self.roll(m.sparkline, seed: &seed, drift: 0.12)
+            monitor.value = m.value.map { $0 + Double(Int(nextRand(&seed) % 5)) - 2 }
+            return monitor
         }
         return Snapshot(
             monitors: monitors,
             incidents: incidents,
+            deploys: deploys,
             activity: previous?.activity ?? [],
             lastRefresh: Date(),
             orgName: sourceName,
@@ -105,7 +130,9 @@ final class MockDataSource: DataSource {
             return Monitor(
                 id: m.id, name: m.name, state: .muted, priority: m.priority,
                 firingSince: nil, triggeredHosts: m.triggeredHosts,
-                sparkline: m.sparkline, value: m.value, threshold: m.threshold, url: m.url
+                sparkline: m.sparkline, value: m.value, threshold: m.threshold,
+                url: m.url, service: m.service, delta: m.delta,
+                thresholdPosition: m.thresholdPosition
             )
         }
     }
