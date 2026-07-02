@@ -143,6 +143,19 @@
   .dep .dtitle{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .dep .when{margin-left:auto;font-size:11px;font-weight:500;color:var(--ink-3);flex:none}
   .dep .flag{display:flex;align-items:center;gap:4px;font-size:10px;font-weight:600;color:var(--alert)}
+  .txt2{display:flex;flex-direction:column;gap:1px;min-width:0}
+  .txt2 .dsub{font-size:10px;color:var(--ink-3)}
+
+  /* monitor list (search + groups) */
+  .search{
+    display:flex;align-items:center;gap:6px;padding:7px 10px;border-radius:10px;
+    background:var(--panel);box-shadow:inset 0 0 0 1px var(--stroke);
+    font-size:12px;color:var(--ink);
+  }
+  .search .ph{color:var(--ink)}
+  .search .caret{display:inline-block;width:1px;height:13px;background:var(--info);margin-left:1px}
+  .group-h{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--ink-2);padding-left:2px;margin-top:6px}
+  .group-h .dot{width:7px;height:7px;border-radius:50%}
 
   /* sections */
   .sect-label{font-size:11px;font-weight:500;color:var(--ink-2);padding-left:2px;display:flex;align-items:center;gap:4px}
@@ -270,7 +283,7 @@
 
     <div class="tabs">
       <div class="tab sel"><svg width="16" height="16" class="i-cpu"></svg></div>
-      <div class="tab"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">1</span></div>
+      <div class="tab"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">2</span></div>
       <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
       <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
     </div>
@@ -300,7 +313,7 @@
             <span class="delta alert">×3.2 vs last wk</span>
             <span class="mval alert">842</span>
           </div>
-          <svg class="spark" data-series="pay" data-color="alert" data-threshold="0.55"></svg>
+          <svg class="spark" data-series="pay" data-color="alert" data-threshold="0.55" data-markers="0.57"></svg>
         </div>
         <div class="mrow">
           <div class="line">
@@ -309,7 +322,7 @@
             <span class="delta alert">×4.8</span>
             <span class="mval alert">4.1</span>
           </div>
-          <svg class="spark" data-series="chk" data-color="alert" data-threshold="0.30"></svg>
+          <svg class="spark" data-series="chk" data-color="alert" data-threshold="0.30" data-markers="0.57"></svg>
         </div>
         <div class="mrow">
           <div class="line">
@@ -387,7 +400,7 @@
 
     <div class="tabs">
       <div class="tab sel"><svg width="16" height="16" class="i-cpu"></svg></div>
-      <div class="tab"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">1</span></div>
+      <div class="tab"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">2</span></div>
       <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
       <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
     </div>
@@ -402,7 +415,7 @@
             <span class="delta alert">×3.2 vs last wk</span>
             <span class="mval alert">842</span>
           </div>
-          <svg class="spark" data-series="pay" data-color="alert" data-threshold="0.55"></svg>
+          <svg class="spark" data-series="pay" data-color="alert" data-threshold="0.55" data-markers="0.57"></svg>
           <div class="details">
             <div class="drow">
               <span class="ditem"><svg width="11" height="11" class="i-timer"></svg>firing 12m</span>
@@ -432,7 +445,7 @@
             <span class="delta alert">×4.8</span>
             <span class="mval alert">4.1</span>
           </div>
-          <svg class="spark" data-series="chk" data-color="alert" data-threshold="0.30"></svg>
+          <svg class="spark" data-series="chk" data-color="alert" data-threshold="0.30" data-markers="0.57"></svg>
         </div>
         <div class="mrow">
           <div class="line">
@@ -481,10 +494,39 @@
 
     <div class="tabs">
       <div class="tab"><svg width="16" height="16" class="i-cpu"></svg></div>
-      <div class="tab sel"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">1</span></div>
+      <div class="tab sel"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">2</span></div>
       <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
       <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
     </div>
+
+    <div>
+      <div class="sect-label">CI · latest runs</div>
+      <div class="feed">
+        <div class="dep suspected">
+          <div class="line">
+            <svg width="13" height="13" class="i-ci-fail"></svg>
+            <span class="txt2"><span class="dtitle">deploy-prod</span><span class="dsub">acme/payments-api · main</span></span>
+            <span class="when" style="color:var(--alert)">18m ago</span>
+          </div>
+        </div>
+        <div class="dep">
+          <div class="line">
+            <svg width="13" height="13" class="i-ci-ok"></svg>
+            <span class="txt2"><span class="dtitle">tests</span><span class="dsub">acme/payments-api · main</span></span>
+            <span class="when">42m ago</span>
+          </div>
+        </div>
+        <div class="dep">
+          <div class="line">
+            <svg width="13" height="13" class="i-ci-run"></svg>
+            <span class="txt2"><span class="dtitle">ci</span><span class="dsub">acme/platform · main</span></span>
+            <span class="when">4m ago</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
 
     <div>
       <div class="sect-label">Recent changes</div>
@@ -527,6 +569,90 @@
       <div class="fbtn"><svg width="13" height="13" class="i-gear"></svg>Settings</div>
       <div class="fsep"></div>
       <div class="fbtn"><svg width="13" height="13" class="i-list"></svg>List</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-power"></svg>Quit</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SCENE 2.75: searchable list ============ -->
+<div class="stage" id="scene-list">
+  <div class="menubar">
+    <span class="item active-app"><svg width="15" height="15" class="paw"></svg><span class="badge-count">2</span></span>
+    <span class="item"><svg width="15" height="12" class="i-wifi"></svg></span>
+    <span class="item"><svg width="20" height="11" class="i-batt"></svg></span>
+    <span class="item">Tue Jul 1&nbsp;&nbsp;2:13 PM</span>
+  </div>
+
+  <div class="panel">
+    <div class="hdr">
+      <div class="appicon"><svg width="26" height="26" class="paw"></svg></div>
+      <div>
+        <h1>Datadog Assistant</h1>
+        <div class="pills"><span class="pill ok"><span class="dot"></span>acme-prod</span></div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab"><svg width="16" height="16" class="i-cpu"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">2</span></div>
+      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
+    </div>
+
+    <div class="search">
+      <svg width="12" height="12" class="i-mag"></svg>
+      <span class="ph">pay</span><span class="caret"></span>
+    </div>
+
+    <div>
+      <div class="group-h"><span class="dot" style="background:var(--alert)"></span>Alerting · 2</div>
+      <div class="rows" style="margin-top:6px">
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio alert">P1</span><span class="mname">payments-api · p99 latency</span>
+            <span class="delta alert">×3.2 vs last wk</span>
+            <span class="mval alert">842</span>
+          </div>
+          <svg class="spark" data-series="pay" data-color="alert" data-threshold="0.55" data-markers="0.57"></svg>
+        </div>
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio alert">P2</span><span class="mname">checkout · 5xx rate</span>
+            <span class="delta alert">×4.8</span>
+            <span class="mval alert">4.1</span>
+          </div>
+          <svg class="spark" data-series="chk" data-color="alert" data-threshold="0.30" data-markers="0.57"></svg>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="group-h"><span class="dot" style="background:var(--ok)"></span>Healthy · 1</div>
+      <div class="rows" style="margin-top:6px">
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio" style="color:var(--ok);background:rgba(77,230,128,0.15)">P4</span>
+            <span class="mname">payments · settlement job duration</span>
+            <span class="mval" style="color:var(--ok)">Healthy</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="fresh" style="margin-top:2px">
+      <svg width="10" height="10" class="i-clock"></svg>
+      checked 3s ago · every 15s
+      <span class="right">⌥⌘D</span>
+    </div>
+
+    <div class="footer">
+      <div class="fbtn"><svg width="13" height="13" class="i-gear"></svg>Settings</div>
+      <div class="fsep"></div>
+      <div class="fbtn" style="color:var(--info)"><svg width="13" height="13" class="i-list"></svg>Back</div>
       <div class="fsep"></div>
       <div class="fbtn"><svg width="13" height="13" class="i-power"></svg>Quit</div>
     </div>
@@ -668,6 +794,10 @@ const ICONS = {
   'i-pr': `<g stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"><circle cx="3" cy="3" r="1.6"/><circle cx="3" cy="9" r="1.6"/><circle cx="9.4" cy="9" r="1.6"/><line x1="3" y1="4.6" x2="3" y2="7.4"/><path d="M5.4 2.6h2.2a1.8 1.8 0 0 1 1.8 1.8v3"/></g>`,
   'i-box': `<g stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"><path d="M1.2 3.6 6 1.2l4.8 2.4v4.8L6 10.8 1.2 8.4z"/><path d="M1.2 3.6 6 6l4.8-2.4M6 6v4.8"/></g>`,
   'i-arrow': `<path d="M2 7 7 2M3.4 2H7v3.6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`,
+  'i-ci-ok': `<g><circle cx="6.5" cy="6.5" r="5.8" fill="#4de680" opacity="0.92"/><path d="M4 6.7 5.9 8.5 9.2 4.8" stroke="#12161f" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>`,
+  'i-ci-fail': `<g><circle cx="6.5" cy="6.5" r="5.8" fill="#ff5966" opacity="0.92"/><path d="M4.6 4.6 8.4 8.4M8.4 4.6 4.6 8.4" stroke="#12161f" stroke-width="1.6" stroke-linecap="round"/></g>`,
+  'i-ci-run': `<g stroke="#ffc74d" stroke-width="1.6" fill="none" stroke-linecap="round"><circle cx="6.5" cy="6.5" r="5.3" stroke-dasharray="2.4 2.6"/><circle cx="6.5" cy="6.5" r="1.6" fill="#ffc74d" stroke="none"/></g>`,
+  'i-mag': `<g stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"><circle cx="5" cy="5" r="3.6"/><line x1="7.8" y1="7.8" x2="10.8" y2="10.8"/></g>`,
 };
 document.querySelectorAll('svg[class]').forEach(el => {
   const key = [...el.classList].find(c => ICONS[c]);
@@ -679,7 +809,8 @@ document.querySelectorAll('svg[class]').forEach(el => {
     'i-server':'0 0 11 11','i-mute':'0 0 11 11','i-ext':'0 0 11 11',
     'i-gear':'0 0 13 13','i-list':'0 0 13 13','i-power':'0 0 13 13',
     'i-branch':'0 0 16 16','i-stack':'0 0 10 10','i-pr':'0 0 12 12',
-    'i-box':'0 0 12 12','i-arrow':'0 0 9 9' }[key] || '0 0 16 16';
+    'i-box':'0 0 12 12','i-arrow':'0 0 9 9','i-ci-ok':'0 0 13 13',
+    'i-ci-fail':'0 0 13 13','i-ci-run':'0 0 13 13','i-mag':'0 0 12 12' }[key] || '0 0 16 16';
   el.setAttribute('viewBox', vb);
   el.innerHTML = ICONS[key];
 });
@@ -718,13 +849,21 @@ document.querySelectorAll('.spark, .spark-lg').forEach(el => {
         stroke="rgba(255,255,255,0.35)" stroke-width="1" stroke-dasharray="3 3"
         vector-effect="non-scaling-stroke"/>`
     : '';
+  const markers = (el.dataset.markers || '').split(',').map(parseFloat).filter(Number.isFinite)
+    .map(m => {
+      const x = (m*W).toFixed(2);
+      return `<line x1="${x}" y1="0" x2="${x}" y2="${H}" stroke="rgba(97,184,255,0.55)"
+          stroke-width="1" vector-effect="non-scaling-stroke"/>
+        <line x1="${x}" y1="6" x2="${x}" y2="6.01" stroke="#61b8ff" stroke-width="6"
+          stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
+    }).join('');
   el.innerHTML = `
     <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="${color}" stop-opacity="0.30"/>
       <stop offset="1" stop-color="${color}" stop-opacity="0"/>
     </linearGradient></defs>
     <polygon points="0,${H} ${line} ${W},${H}" fill="url(#${gid})"/>
-    ${guide}
+    ${guide}${markers}
     <polyline points="${line}" fill="none" stroke="${color}" stroke-width="2"
       stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
 });
