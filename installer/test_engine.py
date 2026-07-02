@@ -83,4 +83,77 @@ if not engine.find_lpass():
     assert engine.lastpass_list_entries()["entries"] == []
     assert engine.lastpass_validate_entry("x", "a", "b")["ok"] is False
 
+# ---- install(): key values are NEVER echoed into the install log ----
+# (the log renders verbatim in the GUI pane and goes to stdout in headless
+# mode — a key here is a permanent credential leak)
+lines = []
+res = engine.install(
+    {"site": "datadoghq.com", "auth": "keys",
+     "api_key": "SUPERSECRETKEY123", "app_key": "OTHERSECRET456"},
+    on_log=lines.append)
+assert res["ok"] is True, res
+blob = "\n".join(lines)
+assert "SUPERSECRETKEY123" not in blob and "OTHERSECRET456" not in blob, blob
+assert "•••" in blob, blob            # the redacted keychain line is still shown
+
+# ---- install(): failure AFTER config.json was created rolls it back ----
+# config.json is the onboarding gate — leaving it behind on a failed install
+# permanently skips setup with no credentials installed.
+os.remove(engine.CONFIG_PATH)
+
+
+def _boom(*a, **k):
+    raise RuntimeError("keychain locked")
+
+
+_orig_kc = engine._keychain_add
+engine._keychain_add = _boom
+res = engine.install({"auth": "keys", "api_key": "k", "app_key": "p"})
+engine._keychain_add = _orig_kc
+assert res["ok"] is False, res
+assert not os.path.exists(engine.CONFIG_PATH), \
+    "failed install must remove the config.json it created"
+
+# ...but a PRE-EXISTING config survives a failed re-install
+res = engine.install({"auth": "keys", "api_key": "k", "app_key": "p"})
+assert res["ok"] is True and os.path.exists(engine.CONFIG_PATH), res
+engine._keychain_add = _boom
+res = engine.install({"auth": "keys", "api_key": "k", "app_key": "p"})
+engine._keychain_add = _orig_kc
+assert res["ok"] is False, res
+assert os.path.exists(engine.CONFIG_PATH), \
+    "re-install failure must not delete the user's existing config"
+
+# ---- version is single-sourced from datadog_assistant.py ----
+import re  # noqa: E402
+src = open(engine.app_source()).read()
+want = re.search(r'^__version__\s*=\s*"([^"]+)"', src, re.M).group(1)
+assert engine.app_version() == want, engine.app_version()
+assert engine.detect_env()["app_version"] == want
+
+# ---- opting OUT of never-expire must not silently mean "never expire" ----
+env_backup = os.environ.pop("LPASS_AGENT_TIMEOUT", None)
+captured = {}
+
+
+def _capture_drive(lpass, email, password, otp, env):
+    captured["timeout"] = env.get("LPASS_AGENT_TIMEOUT")
+    return ("", False, "stub")
+
+
+_orig_drive = engine._drive_lpass_login
+engine._drive_lpass_login = _capture_drive
+_orig_find, engine.find_lpass = engine.find_lpass, lambda: "/bin/true"
+_orig_status = engine.lpass_logged_in
+engine.lpass_logged_in = lambda *_: False
+engine.lastpass_login("a@b.com", "pw", never_expire=False)
+assert captured["timeout"] == "3600", captured   # "" would parse as 0 = never
+engine.lastpass_login("a@b.com", "pw", never_expire=True)
+assert captured["timeout"] == "0", captured
+engine._drive_lpass_login = _orig_drive
+engine.find_lpass = _orig_find
+engine.lpass_logged_in = _orig_status
+if env_backup is not None:
+    os.environ["LPASS_AGENT_TIMEOUT"] = env_backup
+
 print("ENGINE TESTS PASSED ✅")

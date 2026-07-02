@@ -51,4 +51,32 @@ assert cfg["site"] == "datadoghq.eu" and cfg["auth"] == "keys", cfg
 # web assets resolve from the dev tree
 assert onboarding_app.web_dir() is not None, "onboarding web/ not found"
 
+# begin_install is single-flight: a second click while an install is running
+# must be refused, not start a second worker racing the first on config.json
+# and launchctl
+import threading  # noqa: E402
+
+gate = threading.Event()
+done = threading.Event()
+orig_install = engine.install
+
+
+def slow_install(cfg, on_progress=None, on_log=None, dry_run=None):
+    try:
+        gate.wait(5)
+        return orig_install(cfg, on_progress=on_progress, on_log=on_log,
+                            dry_run=dry_run)
+    finally:
+        done.set()
+
+
+engine.install = slow_install
+api2 = onboarding_app.Api()
+assert api2.begin_install({"auth": "keys"})["ok"] is True
+r = api2.begin_install({"auth": "keys"})
+assert r["ok"] is False and "progress" in r["error"].lower(), r
+gate.set()
+done.wait(5)
+engine.install = orig_install
+
 print("ONBOARDING BRIDGE TESTS PASSED ✅")

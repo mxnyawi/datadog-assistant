@@ -45,6 +45,7 @@ class Api:
 
     def __init__(self):
         self._window = None
+        self._install_lock = threading.Lock()
 
     # -- progress push (Python -> JS) --
     def _emit(self, fn, *args):
@@ -91,13 +92,22 @@ class Api:
     # -- install --
     def begin_install(self, config=None):
         cfg = config or {}
+        # One install at a time: a double-click / retry racing a still-running
+        # install would interleave config writes and launchctl bootout/
+        # bootstrap, potentially unloading the agent the first run just started.
+        if not self._install_lock.acquire(blocking=False):
+            return {"ok": False, "error": "Install already in progress."}
 
         def worker():
-            res = engine.install(
-                cfg,
-                on_progress=lambda f, m: self._emit("ddOnProgress", f, m),
-                on_log=lambda l: self._emit("ddOnLog", l))
-            self._emit("ddOnDone", bool(res.get("ok")), res.get("error", ""))
+            try:
+                res = engine.install(
+                    cfg,
+                    on_progress=lambda f, m: self._emit("ddOnProgress", f, m),
+                    on_log=lambda l: self._emit("ddOnLog", l))
+                self._emit("ddOnDone", bool(res.get("ok")),
+                           res.get("error", ""))
+            finally:
+                self._install_lock.release()
 
         threading.Thread(target=worker, daemon=True).start()
         return {"ok": True}

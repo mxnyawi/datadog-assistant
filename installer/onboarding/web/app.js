@@ -6,21 +6,60 @@
   "use strict";
 
   /* ---------------------------------------------------------------- bridge */
-  function api() {
-    if (window.pywebview && window.pywebview.api) return window.pywebview.api;
-    return window.MockApi;
-  }
-  // Safe call: returns a Promise even if a method is missing.
-  function call(method, arg) {
-    var a = api();
-    try {
-      if (a && typeof a[method] === "function") {
-        return Promise.resolve(a[method](arg));
+  // The native bridge (window.pywebview.api) is injected ASYNCHRONOUSLY after
+  // page load. Resolving it eagerly at call time raced that injection and
+  // could silently fall back to the MockApi design-preview stub — in the real
+  // app that meant a "successful" install that installed nothing. Wait for
+  // the pywebviewready event (bounded, so plain-browser preview still works)
+  // and route every call through the promise.
+  var bridge = null;
+  var bridgeReady = new Promise(function (resolve) {
+    function useNative() {
+      if (window.pywebview && window.pywebview.api) {
+        bridge = window.pywebview.api;
+        resolve(bridge);
+        return true;
       }
-    } catch (e) {
-      return Promise.reject(e);
+      return false;
     }
-    return Promise.reject(new Error("bridge method unavailable: " + method));
+    if (useNative()) return;
+    window.addEventListener("pywebviewready", useNative);
+    var waited = 0;
+    var poll = setInterval(function () {
+      if (bridge) { clearInterval(poll); return; }
+      if (useNative()) { clearInterval(poll); return; }
+      waited += 100;
+      if (waited >= 3000) {          // no native bridge: browser preview
+        clearInterval(poll);
+        bridge = window.MockApi || null;
+        if (bridge) markPreviewMode();
+        resolve(bridge);
+      }
+    }, 100);
+  });
+
+  // Unmissable badge so a mock-backed session can never be mistaken for a
+  // real install.
+  function markPreviewMode() {
+    try {
+      var foot = document.querySelector(".rail-foot") || document.body;
+      var badge = document.createElement("div");
+      badge.textContent = "⚠ Preview mode — mock backend, nothing is installed";
+      badge.style.cssText =
+        "color:#f0b429;font-size:11px;margin-top:6px;line-height:1.3;";
+      foot.appendChild(badge);
+    } catch (e) { /* cosmetic only */ }
+  }
+
+  function api() { return bridge; } // sync accessor (valid once ready)
+  // Safe call: always a Promise; waits for the bridge before dispatching.
+  function call(method, arg) {
+    return bridgeReady.then(function (a) {
+      if (a && typeof a[method] === "function") {
+        return a[method](arg);
+      }
+      throw new Error("bridge method unavailable: " + method);
+    });
   }
 
   /* ----------------------------------------------------------------- icons */
@@ -677,6 +716,9 @@
       lp.loggingIn = false;
       if (r && r.ok) {
         lp.loggedIn = true; lp.loginError = ""; lp.mfaRequired = false;
+        // The master password has done its job — stop holding it in JS
+        // state (and re-serializing it into the DOM on every re-render).
+        lp.password = ""; lp.otp = "";
       } else if (r && r.mfa_required) {
         lp.mfaRequired = true;
         lp.loginError = r.error || "";

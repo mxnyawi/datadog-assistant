@@ -41,11 +41,15 @@ PYVER="$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 case "$PYVER" in
   3.10|3.11|3.12) ;;
   *)
-    echo "⚠️  Building with Python $PYVER. The native deps (pyobjc/rumps/py2app/"
-    echo "    pywebview) are unreliable on 3.13+ and the bundle may crash at"
-    echo "    launch. Install a stabler one and re-run, e.g.:"
-    echo "        brew install python@3.12"
-    echo "" ;;
+    echo "❌ Building with Python $PYVER. The native deps (pyobjc/rumps/py2app/"
+    echo "   pywebview) are unreliable on 3.13+ and the bundle is known to crash"
+    echo "   at launch — refusing to build a knowingly-broken app that release.sh"
+    echo "   would happily publish. Install a supported one and re-run:"
+    echo "       brew install python@3.12"
+    echo "   (override at your own risk: DD_ALLOW_UNSUPPORTED_PY=1)"
+    if [ "${DD_ALLOW_UNSUPPORTED_PY:-}" != "1" ]; then
+      exit 1
+    fi ;;
 esac
 echo "🐍 Using $PY (Python $PYVER)"
 
@@ -57,7 +61,9 @@ if [ -d "$BV" ] && ! "$BV/bin/python" -c "import sys; assert '%d.%d'%sys.version
   rm -rf "$BV"
 fi
 [ -d "$BV" ] || "$PY" -m venv "$BV"
-"$BV/bin/pip" install --quiet --upgrade pip py2app -r requirements.txt
+# py2app pinned to a known-good minor: an unpinned latest broke release
+# builds before with no code change in this repo.
+"$BV/bin/pip" install --quiet --upgrade pip "py2app>=0.28,<0.29" -r requirements.txt
 
 echo "🐶 Building 'Datadog Assistant.app' with py2app ..."
 rm -rf build dist

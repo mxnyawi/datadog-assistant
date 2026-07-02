@@ -9,13 +9,15 @@
 
 rumps>=0.4.0,<0.5
 
-# rumps' transitive macOS bridge. A floor is pinned (prebuilt wheels, avoids the
-# slow source build of older/yanked versions on Python 3.10+); the upper bound
-# is intentionally left open so it can track new macOS/Python releases.
-pyobjc-core>=9.0
-pyobjc-framework-Cocoa>=9.0
+# rumps' transitive macOS bridge. A floor is pinned (prebuilt wheels, avoids
+# the slow source build of older/yanked versions on Python 3.10+) AND a major
+# cap — this stack is fragile enough that the build script refuses unknown
+# Pythons, so an unbounded pyobjc major landing unannounced on user machines
+# contradicted the "pinned" promise above. Bump deliberately.
+pyobjc-core>=9.0,<12
+pyobjc-framework-Cocoa>=9.0,<12
 
 # Renders the first-run onboarding GUI in a native WKWebView window
 # (installer/onboarding/). Only needed when building the .app bundle / on first
 # launch — the menu-bar app doesn't import it at runtime.
-pywebview>=5.0
+pywebview>=5.0,<7

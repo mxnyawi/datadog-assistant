@@ -17,6 +17,7 @@ No GUI imports here — pure stdlib so it imports anywhere.
 import json
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -98,6 +99,25 @@ SITES = [
 ]
 
 
+_FALLBACK_VERSION = "1.1.0"
+
+
+def app_version():
+    """Single-sourced from datadog_assistant.py's __version__, so the
+    onboarding UI, the bundle plist (setup.py) and bug reports all agree
+    instead of each hardcoding its own number."""
+    src = app_source()
+    if src:
+        try:
+            with open(src) as f:
+                m = re.search(r'^__version__\s*=\s*"([^"]+)"', f.read(), re.M)
+            if m:
+                return m.group(1)
+        except OSError:
+            pass
+    return _FALLBACK_VERSION
+
+
 def detect_env():
     """What the onboarding UI needs to decide which paths to offer."""
     lpass = find_lpass()
@@ -111,7 +131,7 @@ def detect_env():
             "lpass_logged_in": lpass_logged_in(lpass),
             "frozen": FROZEN,
         },
-        "app_version": "1.0.0",
+        "app_version": app_version(),
     }
 
 
@@ -177,11 +197,15 @@ def _redact(text, *secrets):
 
 def _lp_log(msg):
     """Append a line to ~/.datadog-assistant/lastpass.log so LastPass login is
-    diagnosable even from the bundle (where stderr isn't a terminal)."""
+    diagnosable even from the bundle (where stderr isn't a terminal). Created
+    0600 — it holds login transcripts (email, prompt flow), which mustn't be
+    readable by other local users."""
     try:
         d = os.path.expanduser("~/.datadog-assistant")
         os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, "lastpass.log"), "a") as f:
+        fd = os.open(os.path.join(d, "lastpass.log"),
+                     os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as f:
             f.write(msg.rstrip("\n") + "\n")
     except Exception:
         pass
@@ -214,9 +238,12 @@ def lastpass_login(email, password, otp="", never_expire=True, on_log=None):
 
     env = dict(os.environ)
     env["LPASS_DISABLE_PINENTRY"] = "1"
-    # 0 = never time out (within a session) so the menu-bar app's session holds.
-    env["LPASS_AGENT_TIMEOUT"] = "0" if never_expire else env.get(
-        "LPASS_AGENT_TIMEOUT", "")
+    # 0 = never time out (within a session) so the menu-bar app's session
+    # holds. When the user opts OUT of "keep me signed in", fall back to 1h —
+    # an empty string parses as 0 in lpass, which would silently mean
+    # "never expire": the exact opposite of the user's choice.
+    env["LPASS_AGENT_TIMEOUT"] = "0" if never_expire else (
+        env.get("LPASS_AGENT_TIMEOUT") or "3600")
 
     log(f"$ lpass login --trust {email}")
     _lp_log(f"=== login attempt: lpass={lpass}, email={email}, "
@@ -233,9 +260,26 @@ def lastpass_login(email, password, otp="", never_expire=True, on_log=None):
             log("lpass: " + line)
             print("lpass: " + line, file=sys.stderr)
 
-    # `lpass status` is the source of truth for whether we're in.
-    if lpass_logged_in(lpass):
+    # `lpass status` is the source of truth for whether we're in — but it
+    # must show THIS account: a pre-existing session for a different account
+    # would otherwise mask a failed login and the app would silently read
+    # the wrong vault.
+    status_out = ""
+    try:
+        p = subprocess.run([lpass, "status"], capture_output=True,
+                           text=True, timeout=10)
+        status_out = (p.stdout or "").strip()
+        logged = p.returncode == 0 and "Logged in" in status_out
+    except Exception:
+        logged = False
+    if logged and email.lower() in status_out.lower():
         result = {"ok": True}
+    elif logged:
+        result = {"ok": False,
+                  "error": f"LastPass session belongs to a different account "
+                           f"({status_out}). Run `lpass logout` in Terminal, "
+                           f"then try again.",
+                  "detail": detail[-400:]}
     else:
         low = detail.lower()
         if saw_otp_prompt and not otp:
@@ -345,10 +389,29 @@ def _drive_lpass_login(lpass, email, password, otp, env):
                 os.kill(pid, signal.SIGTERM)
             except Exception:
                 pass
-            try:
-                os.waitpid(pid, 0)
-            except Exception:
-                pass
+            # Bounded reap: a wedged lpass that ignores SIGTERM must not
+            # hang this (GUI-facing) thread in a blocking waitpid forever —
+            # poll briefly, then SIGKILL.
+            reaped = False
+            for _ in range(20):                       # ~2s total
+                try:
+                    done, _st = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    reaped = True
+                    break
+                if done:
+                    reaped = True
+                    break
+                time.sleep(0.1)
+            if not reaped:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except Exception:
+                    pass
+                try:
+                    os.waitpid(pid, 0)
+                except Exception:
+                    pass
         try:
             os.close(fd)
         except OSError:
@@ -555,6 +618,29 @@ def plist_xml(c):
     return plistlib.dumps(_plist_dict(c)).decode()
 
 
+def _keychain_add(service, account, secret, log, dry):
+    """Store a secret in the login Keychain WITHOUT exposing it: the command is
+    fed to `security -i` on stdin, so the secret never appears in argv (visible
+    to any local process via ps) nor in the install log (which echoes every
+    command). The log line shows a redacted placeholder instead."""
+    log(f"$ security add-generic-password -U -s {service} -a {account} -w •••")
+    if dry:
+        return
+    quoted = '"' + secret.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    subprocess.run(
+        ["security", "-i"],
+        input=(f'add-generic-password -U -s "{service}" '
+               f'-a "{account}" -w {quoted}\n'),
+        capture_output=True, text=True)
+    # `security -i` exit codes are unreliable across macOS versions — verify
+    # the item actually landed instead of trusting the return code.
+    chk = subprocess.run(["security", "find-generic-password", "-s", service],
+                         capture_output=True, text=True)
+    if chk.returncode != 0:
+        raise RuntimeError(f"storing {service} in the Keychain failed — "
+                           "is the login keychain locked?")
+
+
 def install(config, on_progress=None, on_log=None, dry_run=None):
     """Run the full install. Calls on_progress(frac, message) and on_log(line).
     Returns {ok, error?}. Idempotent / safe to re-run."""
@@ -572,6 +658,12 @@ def install(config, on_progress=None, on_log=None, dry_run=None):
         if p.returncode != 0:
             raise RuntimeError(p.stderr.strip() or f"command failed: {args[0]}")
 
+    # config.json doubles as the "onboarding is done" marker (_should_onboard
+    # in datadog_assistant.py). If THIS run creates it and a later step fails,
+    # remove it again — otherwise a half-install permanently skips onboarding
+    # with no credentials and no login item.
+    config_existed = os.path.exists(CONFIG_PATH)
+    wrote_config = False
     try:
         prog(0.05, "Creating folders…")
         for d in (APP_DIR, CONFIG_DIR, os.path.dirname(PLIST_PATH)):
@@ -602,10 +694,14 @@ def install(config, on_progress=None, on_log=None, dry_run=None):
         prog(0.70, "Writing your settings…")
         cfg = build_config(config)
         # config.json is the testable contract — write it even in dry-run.
-        with open(CONFIG_PATH, "w") as f:
+        # Created 0600 (it can name vault entries etc.), not chmod'd after —
+        # no window of default-umask readability.
+        fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(cfg, f, indent=2)
+        wrote_config = True
         try:
-            os.chmod(CONFIG_PATH, 0o600)  # owner-only on principle
+            os.chmod(CONFIG_PATH, 0o600)  # pre-existing file: tighten anyway
         except OSError:
             pass
 
@@ -615,8 +711,7 @@ def install(config, on_progress=None, on_log=None, dry_run=None):
             for svc, val in ((API_KEY_SERVICE, config.get("api_key", "")),
                              (APP_KEY_SERVICE, config.get("app_key", ""))):
                 if val:
-                    sh(["security", "add-generic-password", "-U",
-                        "-s", svc, "-a", user, "-w", val])
+                    _keychain_add(svc, user, val, log, dry)
 
         prog(0.92, "Installing the login item…")
         if not dry:
@@ -628,6 +723,12 @@ def install(config, on_progress=None, on_log=None, dry_run=None):
         return {"ok": True}
     except Exception as e:
         log(f"ERROR: {e}")
+        if wrote_config and not config_existed:
+            try:
+                os.remove(CONFIG_PATH)
+                log("rolled back config.json so setup reopens next launch")
+            except OSError:
+                pass
         return {"ok": False, "error": str(e)}
 
 

@@ -39,6 +39,30 @@ elif [ ! -t 0 ]; then
   echo "   it directly (./install.sh), or pass settings via env vars (see AGENTS.md)."
 fi
 
+# Piped installs (curl … | bash) can't work: $0 is "bash", so SRC_DIR is the
+# cwd and the copy below would die under set -e AFTER creating directories —
+# a partial state with no explanation. Detect it up front, before any mkdir.
+if [ ! -f "$SRC_DIR/datadog_assistant.py" ]; then
+  echo "❌ datadog_assistant.py not found next to install.sh."
+  echo "   Piped installs (curl … | bash) aren't supported — the script needs"
+  echo "   the repo files next to it. Instead:"
+  echo "     git clone https://github.com/mxnyawi/datadog-assistant.git"
+  echo "     cd datadog-assistant && ./install.sh"
+  exit 1
+fi
+
+# keychain_add SERVICE SECRET — store a secret WITHOUT putting it in argv
+# (where any local process can read it via ps while the command runs): the
+# command is fed to `security -i` on stdin instead. Verifies the item landed
+# because `security -i` exit codes are unreliable across macOS versions.
+keychain_add() {
+  local svc="$1" val="$2" acct="${USER:-$(id -un)}"
+  val="${val//\\/\\\\}"; val="${val//\"/\\\"}"
+  printf 'add-generic-password -U -s "%s" -a "%s" -w "%s"\n' \
+    "$svc" "$acct" "$val" | security -i >/dev/null 2>&1 || true
+  security find-generic-password -s "$svc" >/dev/null
+}
+
 # write_config KEY VALUE — merge one string key into config.json
 write_config() {
   python3 - "$CONFIG_DIR/config.json" "$1" "$2" <<'EOF'
@@ -285,8 +309,8 @@ else
   write_config auth keys
   if [ -n "${DD_API_KEY:-}" ] && [ -n "${DD_APP_KEY:-}" ]; then
     # Unattended: keys supplied via env go straight to the Keychain.
-    security add-generic-password -U -s datadog-assistant-api-key -a "$USER" -w "$DD_API_KEY"
-    security add-generic-password -U -s datadog-assistant-app-key -a "$USER" -w "$DD_APP_KEY"
+    keychain_add datadog-assistant-api-key "$DD_API_KEY"
+    keychain_add datadog-assistant-app-key "$DD_APP_KEY"
     mark_keychain_keys
     echo "✅ Keys stored in Keychain"
   elif [ -n "$NONINTERACTIVE" ]; then
@@ -299,8 +323,8 @@ else
     if [[ "$yn" =~ ^[Yy]$ ]]; then
       read -r -s -p "   Datadog API key: " API_KEY; echo
       read -r -s -p "   Datadog APP key: " APP_KEY; echo
-      security add-generic-password -U -s datadog-assistant-api-key -a "$USER" -w "$API_KEY"
-      security add-generic-password -U -s datadog-assistant-app-key -a "$USER" -w "$APP_KEY"
+      keychain_add datadog-assistant-api-key "$API_KEY"
+      keychain_add datadog-assistant-app-key "$APP_KEY"
       mark_keychain_keys
       echo "✅ Keys stored in Keychain"
     else
@@ -342,9 +366,27 @@ $PLIST_ENV
 </dict>
 </plist>
 EOF
-launchctl unload "$PLIST" 2>/dev/null || true
-launchctl load "$PLIST"
-echo "✅ LaunchAgent installed — starts at login"
+# Register in the GUI session domain (mirrors installer/engine.py): bare
+# `launchctl load` fails from non-GUI contexts (SSH/CI) and silently no-ops
+# after a `launchctl unload -w` disable — and under set -e a bare failure
+# here used to abort the script AFTER everything else was installed.
+GUI_DOMAIN="gui/$(id -u)"
+launchctl bootout "$GUI_DOMAIN" "$PLIST" 2>/dev/null || true
+if launchctl bootstrap "$GUI_DOMAIN" "$PLIST" 2>/dev/null; then
+  launchctl kickstart "$GUI_DOMAIN/com.nour.datadog-assistant" 2>/dev/null || true
+  echo "✅ LaunchAgent installed — starts at login"
+else
+  launchctl unload "$PLIST" 2>/dev/null || true
+  if launchctl load -w "$PLIST" 2>/dev/null; then
+    echo "✅ LaunchAgent installed — starts at login"
+  else
+    echo "⚠️  Couldn't register the LaunchAgent (no GUI session? SSH/CI?)."
+    echo "   Files are installed. From a GUI session, register it with:"
+    echo "     launchctl bootstrap gui/\$(id -u) \"$PLIST\""
+    echo "   Or run the app directly:"
+    echo "     \"$APP_DIR/venv/bin/python3\" \"$APP_DIR/datadog_assistant.py\""
+  fi
+fi
 
 echo ""
 echo "🎉 Done! Look for 🐶 in your menu bar."

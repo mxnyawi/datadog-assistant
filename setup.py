@@ -18,6 +18,7 @@ Why bundle the *running* app?
 LSUIElement keeps it menu-bar-only (no dock icon, no app-switcher entry).
 """
 import os
+import re
 import sys
 
 from setuptools import setup
@@ -25,18 +26,31 @@ from setuptools import setup
 # Make installer/engine.py importable so py2app's dependency graph picks it up
 # (onboarding_app imports it via a runtime sys.path insert that the graph can't
 # follow).
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "installer"))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_HERE, "installer"))
 
 APP = ["datadog_assistant.py"]
+
+
+def _read_version():
+    """Single source of truth: __version__ in datadog_assistant.py (read by
+    regex, not import — the module needs rumps). engine.py reads the same."""
+    with open(os.path.join(_HERE, "datadog_assistant.py")) as f:
+        m = re.search(r'^__version__\s*=\s*"([^"]+)"', f.read(), re.M)
+    if not m:
+        raise RuntimeError("__version__ not found in datadog_assistant.py")
+    return m.group(1)
+
+
+VERSION = _read_version()
 
 PLIST = {
     "CFBundleName": "Datadog Assistant",
     "CFBundleDisplayName": "Datadog Assistant",
     # Matches the LaunchAgent label used by the installer.
     "CFBundleIdentifier": "com.nour.datadog-assistant",
-    "CFBundleShortVersionString": "1.0.0",
-    "CFBundleVersion": "1.0.0",
+    "CFBundleShortVersionString": VERSION,
+    "CFBundleVersion": VERSION,
     "LSUIElement": True,            # menu-bar app: no dock icon
     "LSMinimumSystemVersion": "10.13",
     "NSHumanReadableCopyright":
