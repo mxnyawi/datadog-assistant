@@ -1,8 +1,17 @@
 import Foundation
 
+/// One of the user's Datadog dashboards, for the Tools tab's quick access.
+struct DashboardLink: Equatable, Codable, Identifiable {
+    let id: String
+    let title: String
+    var url: URL?
+}
+
 struct Snapshot: Equatable, Codable {
     var monitors: [Monitor]
     var incidents: [Incident]
+    /// The user's dashboards (refreshed hourly), capped for display.
+    var dashboards: [DashboardLink] = []
     /// Recent changes (GitHub merges + Datadog deploy events), newest first.
     var deploys: [DeployEvent]
     /// Latest GitHub Actions run per workflow per watched repo, failures first.

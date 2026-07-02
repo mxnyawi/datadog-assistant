@@ -29,16 +29,19 @@ final class DatadogClient: DataSource {
         async let monitorsTask = fetchMonitors()
         async let incidentsTask = fetchIncidents()
         async let deploysTask = fetchDeployEvents()
+        async let dashboardsTask = fetchDashboards()
 
         var monitors = try await monitorsTask
         let incidents = await incidentsTask   // best-effort, never throws
         let deploys = await deploysTask       // best-effort, never throws
+        let dashboards = await dashboardsTask // best-effort, hourly-cached
 
         monitors = await attachSparklines(to: monitors, previous: previous)
 
         return Snapshot(
             monitors: monitors,
             incidents: incidents,
+            dashboards: dashboards,
             deploys: deploys,
             ciRuns: [],                           // store fills from GitHub
             activity: previous?.activity ?? [],   // store owns this series
@@ -472,6 +475,40 @@ final class DatadogClient: DataSource {
             )
         }
         .sorted { $0.severity.rawValue < $1.severity.rawValue }
+    }
+
+    // MARK: - Dashboards (hourly-cached)
+
+    private struct DashboardsDTO: Decodable {
+        struct Item: Decodable {
+            let id: String?
+            let title: String?
+            let url: String?
+        }
+        let dashboards: [Item]?
+    }
+
+    private var cachedDashboards: [DashboardLink] = []
+    private var dashboardsFetchedAt: Date = .distantPast
+
+    /// The user's dashboards for quick links; refreshed at most hourly since
+    /// dashboards rarely change.
+    private func fetchDashboards() async -> [DashboardLink] {
+        if Date().timeIntervalSince(dashboardsFetchedAt) < 3600 { return cachedDashboards }
+        let url = credentials.apiBaseURL.appendingPathComponent("/api/v1/dashboard")
+        guard let (data, response) = try? await session.data(for: authedRequest(url: url)),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let decoded = try? JSONDecoder().decode(DashboardsDTO.self, from: data)
+        else { return cachedDashboards }
+        cachedDashboards = (decoded.dashboards ?? []).compactMap { item in
+            guard let id = item.id, let title = item.title else { return nil }
+            return DashboardLink(
+                id: id,
+                title: title,
+                url: item.url.flatMap { URL(string: $0, relativeTo: credentials.appBaseURL) })
+        }
+        dashboardsFetchedAt = Date()
+        return cachedDashboards
     }
 
     // MARK: - Deploy events
