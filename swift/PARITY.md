@@ -88,6 +88,14 @@ in this Swift app, and how the missing ones should be implemented. Legend:
 | Jira OAuth (3LO via auth.atlassian.com, cloud_id) | ✅ | **Default auth mode.** Client ID/secret from LastPass note (jiraClientID/jiraClientSecret) or manual; callback on 8917; refresh-token rotation; Bearer via api.atlassian.com/ex/jira/<cloudID> |
 | Jira connection test (whoami, visible projects, project access) | ✅ | Test button in Settings → Jira |
 
+## GitHub (Swift-only feature, no Python equivalent)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Merge/deploy correlation + CI pipeline runs (Changes tab) | ✅ | REST via token |
+| Token from the gh CLI (`gh auth token`) | ✅ | Zero-setup when `gh` is logged in; chain: env → LastPass note → Keychain → gh CLI |
+| Repo suggestions from `gh repo list` | ✅ | "Add from your gh repos…" menu in Settings → GitHub |
+
 ## App shell & misc
 
 | Feature | Status | Notes / implementation plan |

@@ -699,25 +699,61 @@ private struct GitHubSettingsTab: View {
     @State private var gitHubToken = ""
     @State private var gitHubRepos = ""
     @State private var hasGitHub = GitHubConfig.load() != nil
+    @State private var ghAvailable = false
+    @State private var ghToken = false
+    @State private var suggestedRepos: [String] = []
     @State private var error: String?
+
+    /// Repos-only saves are fine whenever a token resolves elsewhere: the
+    /// LastPass note or the gh CLI.
+    private var tokenOptional: Bool { AuthMode.current == .lastPass || ghToken }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("GitHub — change correlation")
+            Text("GitHub — change correlation & CI")
                 .font(.headline)
             Text(hasGitHub
-                 ? "Configured. Enter new values to replace."
-                 : "A fine-grained token with repo read access, plus repos to watch for "
-                   + "merges. Map a repo to a service with service=owner/repo; bare "
-                   + "owner/repo entries apply org-wide. Comma-separated. In LastPass "
-                   + "mode the token can come from the note's githubToken field.")
+                 ? "Configured — merges and CI pipeline runs feed the Changes tab. "
+                   + "Enter new values to replace."
+                 : "Repos to watch for merges and CI runs. Map a repo to a service with "
+                   + "service=owner/repo; bare owner/repo entries apply org-wide. "
+                   + "Comma-separated.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            // gh CLI status: when it's logged in, no token is needed at all.
+            HStack(spacing: 6) {
+                Image(systemName: ghToken ? "checkmark.circle.fill"
+                      : ghAvailable ? "exclamationmark.circle" : "circle.dashed")
+                    .foregroundStyle(ghToken ? .green : .secondary)
+                Text(ghToken
+                     ? "gh CLI detected and logged in — token field is optional."
+                     : ghAvailable
+                       ? "gh CLI found but not logged in — run `gh auth login`, or paste a token."
+                       : "No gh CLI — paste a fine-grained token (or add githubToken to the "
+                         + "LastPass note).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Form {
-                SecureField("GitHub token", text: $gitHubToken)
+                SecureField(tokenOptional ? "GitHub token (optional)" : "GitHub token",
+                            text: $gitHubToken)
                 TextField("Repos (payments=acme/pay-api, acme/platform)", text: $gitHubRepos)
+            }
+
+            if !suggestedRepos.isEmpty {
+                Menu {
+                    ForEach(suggestedRepos, id: \.self) { repo in
+                        Button(repo) { appendRepo(repo) }
+                    }
+                } label: {
+                    Label("Add from your gh repos…", systemImage: "plus.circle")
+                        .font(.caption)
+                }
+                .fixedSize()
             }
 
             if let error {
@@ -735,13 +771,13 @@ private struct GitHubSettingsTab: View {
                 Spacer()
                 Button("Save") { save() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(gitHubRepos.isEmpty
-                              || (gitHubToken.isEmpty && AuthMode.current != .lastPass))
+                    .disabled(gitHubRepos.isEmpty || (gitHubToken.isEmpty && !tokenOptional))
             }
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(height: 340)
+        .frame(height: 360)
+        .onAppear { probeGH() }
     }
 
     private func save() {
@@ -764,5 +800,26 @@ private struct GitHubSettingsTab: View {
         } catch {
             self.error = "Keychain write failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Detect the gh CLI + login state and fetch repo suggestions, off the
+    /// main thread (each is a subprocess).
+    private func probeGH() {
+        Task.detached {
+            let available = GitHubCLI.isInstalled
+            let token = available && GitHubCLI.authToken() != nil
+            let repos = token ? GitHubCLI.listRepos() : []
+            await MainActor.run {
+                ghAvailable = available
+                ghToken = token
+                suggestedRepos = repos
+            }
+        }
+    }
+
+    private func appendRepo(_ repo: String) {
+        let existing = gitHubRepos.trimmingCharacters(in: .whitespaces)
+        guard !existing.contains(repo) else { return }
+        gitHubRepos = existing.isEmpty ? repo : "\(existing), \(repo)"
     }
 }
