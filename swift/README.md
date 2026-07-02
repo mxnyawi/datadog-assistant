@@ -38,14 +38,15 @@ install carries over automatically.
 **Shared team vault (LastPass).** Instead of storing keys on each machine,
 point the app at a LastPass secure note and the keys are fetched at runtime
 via the `lpass` CLI — the same integration the Python app uses, reading the
-same note. Set it up via right-click → Settings… → *Use LastPass* (enter the
-entry name, e.g. `Shared-SRE/datadog-assistant`), or export
-`DD_LASTPASS_ENTRY` before launching. The note holds `key=value` lines (or
-custom fields) named `datadogAPIKey` / `datadogAPPKey` by default (override
-with `DD_LASTPASS_API_FIELD` / `_APP_FIELD`); an optional `githubToken` field
-supplies the GitHub token for change correlation. Requires `lpass login` to
-have unlocked the vault (Homebrew: `brew install lastpass-cli`). Credential
-precedence is env vars → LastPass → Keychain.
+same note. Right-click → Settings… → LastPass → **Set up…** opens a guided
+sheet that installs the `lpass` CLI (via Homebrew), logs you in (with
+authenticator support), and lets you pick and validate the entry — no
+terminal needed. Already logged in? Just type the entry name and hit *Use
+LastPass*, or export `DD_LASTPASS_ENTRY` before launching. The note holds
+`key=value` lines (or custom fields) named `datadogAPIKey` / `datadogAPPKey`
+by default (override with `DD_LASTPASS_API_FIELD` / `_APP_FIELD`); an optional
+`githubToken` field supplies the GitHub token for change correlation.
+Credential precedence is env vars → LastPass → Keychain.
 
 `swift run` also works for a fast dev loop, but notifications require a real
 `.app` bundle, so they're disabled in that mode.
@@ -123,11 +124,12 @@ swift/
     notarize.sh                   # Developer ID sign + notarytool + staple
   Sources/DatadogAssistant/
     App/
-      Main.swift                  # NSApplication bootstrap
+      DatadogAssistantApp.swift   # @main NSApplication bootstrap
       AppDelegate.swift           # wires store ↔ notifications ↔ hotkey ↔ UI
       MenuBarController.swift     # status item (template pawprint + badge), panel
       FloatingPanel.swift         # borderless NSPanel + NSVisualEffectView glass
       SettingsWindowController.swift
+      LastPassSetupView.swift     # guided LastPass install/login/entry sheet
     Models/                       # Monitor, Incident, Snapshot (Codable)
     Services/
       DataSource.swift            # protocol: mock ↔ real swap at runtime
@@ -136,6 +138,7 @@ swift/
       SnapshotStore.swift         # adaptive poll loop, disk cache, alert diffing
       Credentials.swift           # Keychain (shared with Python app) + env vars
       LastPass.swift              # shared-vault keys via the lpass CLI
+      LastPassSetup.swift         # guided install + pty login + entry validate
       NotificationManager.swift   # actionable banners, recovery notices
       HotKey.swift                # Carbon global hotkey (⌥⌘D)
     Views/                        # RootView + Theme + Components/ + Sections/

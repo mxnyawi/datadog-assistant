@@ -8,16 +8,23 @@ import Foundation
 /// defaults (`datadogAPIKey` / `datadogAPPKey`) — so one secure note serves
 /// both apps. Secrets live only in the vault; nothing is written to disk here.
 enum LastPass {
-    /// Locate the `lpass` binary, checking the Homebrew paths that a
-    /// LaunchAgent's trimmed PATH would miss before falling back to a PATH
-    /// lookup. Falls back to the bare name (which fails gracefully in `run`).
-    static let binaryPath: String = {
+    /// Absolute path to `lpass`, or nil if it isn't installed. Checks the
+    /// Homebrew paths that a LaunchAgent's trimmed PATH would miss (cheap file
+    /// checks) before falling back to a PATH lookup. Re-resolved on each call
+    /// so a freshly `brew install`ed binary is picked up without a relaunch.
+    static func locate() -> String? {
         for path in ["/opt/homebrew/bin/lpass", "/usr/local/bin/lpass"]
         where FileManager.default.isExecutableFile(atPath: path) {
             return path
         }
-        return which("lpass") ?? "lpass"
-    }()
+        return which("lpass")
+    }
+
+    /// Is the `lpass` CLI installed?
+    static var isInstalled: Bool { locate() != nil }
+
+    /// The resolved path, or the bare name (which fails gracefully in `run`).
+    static var binaryPath: String { locate() ?? "lpass" }
 
     // MARK: Login status (cached briefly, like the Python app)
 
@@ -37,10 +44,16 @@ enum LastPass {
             return true
         }
         lock.unlock()
+        return statusLoggedIn()
+    }
 
+    /// Run `lpass status` right now (bypassing the cache) and refresh the
+    /// cached result. Use immediately after a login/logout, where the cached
+    /// value would otherwise be stale.
+    @discardableResult
+    static func statusLoggedIn() -> Bool {
         let result = run(["status"], timeout: 10)
         let ok = result?.status == 0 && (result?.output.contains("Logged in") ?? false)
-
         lock.lock()
         loginOK = ok
         loginCheckedAt = Date()

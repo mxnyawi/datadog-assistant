@@ -1,0 +1,269 @@
+import Darwin
+import Foundation
+
+/// Result of a guided `lpass login` attempt.
+enum LastPassLoginResult: Equatable {
+    case ok
+    case mfaRequired           // master password accepted, an authenticator code is needed
+    case failed(String)        // human-readable reason (secrets redacted)
+}
+
+/// Guided, in-app setup for the LastPass CLI — the macOS-native counterpart to
+/// the Python onboarding app's LastPass flow. It installs the `lpass` CLI via
+/// Homebrew, drives `lpass login` (handling the master-password and
+/// authenticator prompts through a pseudo-terminal, exactly as the Python
+/// installer does), and lists/validates the shared vault entry. Every call
+/// here blocks on a subprocess, so run them off the main thread.
+enum LastPassSetup {
+
+    // MARK: Install
+
+    /// Ensure the `lpass` CLI exists, installing it via `brew install
+    /// lastpass-cli` if it's missing. Streams brew output through `log`.
+    static func ensureInstalled(log: @escaping (String) -> Void) -> (installed: Bool, error: String?) {
+        if LastPass.isInstalled { return (true, nil) }
+        guard let brew = locateBrew() else {
+            return (false, "Homebrew isn't installed, so the LastPass CLI can't be "
+                    + "installed automatically. Install Homebrew from https://brew.sh, "
+                    + "then try again.")
+        }
+        log("$ brew install lastpass-cli")
+        let result = capture(URL(fileURLWithPath: brew), ["install", "lastpass-cli"], timeout: 900)
+        let output = result?.output.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !output.isEmpty { log(output) }
+        if result?.status != 0 {
+            return (false, output.isEmpty ? "brew install failed" : String(output.suffix(300)))
+        }
+        return (LastPass.isInstalled,
+                LastPass.isInstalled ? nil : "Install finished but lpass still isn't on PATH.")
+    }
+
+    private static func locateBrew() -> String? {
+        for path in ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+        where FileManager.default.isExecutableFile(atPath: path) {
+            return path
+        }
+        return nil
+    }
+
+    // MARK: Login
+
+    // Prompt fragments lpass prints; used to know which input it's waiting for.
+    private static let pwPrompts = ["master password", "password"]
+    private static let otpPrompts = ["code", "factor", "passcode", "otp",
+                                     "authenticat", "google", "yubikey", "out-of-band"]
+
+    /// Log in to LastPass by driving `lpass login --trust <email>`. Returns
+    /// `.ok` on success, `.mfaRequired` when the password was accepted but an
+    /// authenticator code is needed (re-call with `otp`), or `.failed`. `lpass
+    /// status` is the source of truth; the transcript (secrets redacted) is
+    /// streamed through `log` for diagnosis.
+    static func login(email: String, password: String, otp: String,
+                      log: @escaping (String) -> Void) -> LastPassLoginResult {
+        guard let lpass = LastPass.locate() else {
+            return .failed("LastPass CLI not found. Install it first.")
+        }
+        guard !email.isEmpty, !password.isEmpty else {
+            return .failed("Email and master password are required.")
+        }
+        log("$ lpass login --trust \(email)")
+
+        let (transcript, sawOTP) = drive(lpass: lpass, email: email, password: password, otp: otp)
+
+        var detail = transcript
+        for secret in [password, otp] where !secret.isEmpty {
+            detail = detail.replacingOccurrences(of: secret, with: "•••")
+        }
+        detail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        for line in detail.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { log("lpass: \(trimmed)") }
+        }
+
+        if LastPass.statusLoggedIn() { return .ok }
+        let low = detail.lowercased()
+        if sawOTP && otp.isEmpty { return .mfaRequired }
+        if sawOTP && !otp.isEmpty {
+            return .failed("LastPass rejected the authenticator code (or it expired — "
+                           + "try the current one).")
+        }
+        if low.contains("password"),
+           ["incorrect", "could not", "failed", "invalid"].contains(where: { low.contains($0) }) {
+            return .failed("LastPass rejected the master password.")
+        }
+        if detail.isEmpty { return .failed("LastPass didn't respond (no prompt seen).") }
+        return .failed(String(detail.suffix(200)))
+    }
+
+    /// Run `lpass login` under a pseudo-terminal, feeding the master password
+    /// and (if asked) the authenticator code. lpass reads the password from
+    /// the controlling terminal, not plain stdin, so a pty is required for MFA
+    /// accounts; falls back to a plain pipe if a pty can't be allocated.
+    /// Bounded by a hard deadline and an idle timeout so it can't hang the UI.
+    private static func drive(lpass: String, email: String, password: String, otp: String)
+        -> (transcript: String, sawOTP: Bool) {
+        let master = posix_openpt(O_RDWR | O_NOCTTY)
+        guard master >= 0, grantpt(master) == 0, unlockpt(master) == 0,
+              let namePtr = ptsname(master) else {
+            if master >= 0 { close(master) }
+            return drivePipe(lpass: lpass, email: email, password: password, otp: otp)
+        }
+        let slave = open(String(cString: namePtr), O_RDWR)
+        guard slave >= 0 else {
+            close(master)
+            return drivePipe(lpass: lpass, email: email, password: password, otp: otp)
+        }
+
+        var env = ProcessInfo.processInfo.environment
+        env["LPASS_DISABLE_PINENTRY"] = "1"
+        env["LPASS_AGENT_TIMEOUT"] = "0"   // hold the session for the menu-bar app
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: lpass)
+        process.arguments = ["login", "--trust", email]
+        process.environment = env
+        let slaveHandle = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
+        process.standardInput = slaveHandle
+        process.standardOutput = slaveHandle
+        process.standardError = slaveHandle
+        do {
+            try process.run()
+        } catch {
+            close(master); close(slave)
+            return ("Couldn't start lpass: \(error.localizedDescription)", false)
+        }
+        close(slave)   // the child holds its own copy
+
+        func writeMaster(_ text: String) {
+            let bytes = Array(text.utf8)
+            _ = bytes.withUnsafeBytes { Darwin.write(master, $0.baseAddress, bytes.count) }
+        }
+
+        var transcript = "", buffer = ""
+        var sentPassword = false, sentOTP = false, sawOTP = false
+        let start = Date()
+        var lastActivity = start
+
+        while Date().timeIntervalSince(start) < 45 {
+            var pfd = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&pfd, 1, 500)
+            if ready <= 0 {
+                if !process.isRunning { break }
+                if Date().timeIntervalSince(lastActivity) > 20 {
+                    transcript += "\n[timed out waiting for lpass]"
+                    break
+                }
+                continue
+            }
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            let count = read(master, &chunk, 4096)
+            if count <= 0 { break }
+            lastActivity = Date()
+            let text = String(decoding: chunk[0..<count], as: UTF8.self)
+            transcript += text
+            buffer += text
+            let low = buffer.lowercased()
+            if !sentPassword, pwPrompts.contains(where: { low.contains($0) }) {
+                writeMaster(password + "\n"); sentPassword = true; buffer = ""; continue
+            }
+            if sentPassword, !sentOTP, otpPrompts.contains(where: { low.contains($0) }) {
+                sawOTP = true
+                if !otp.isEmpty {
+                    writeMaster(otp + "\n"); sentOTP = true; buffer = ""; continue
+                }
+                break   // need a code we don't have → stop and report mfaRequired
+            }
+        }
+
+        if process.isRunning { process.terminate() }
+        process.waitUntilExit()
+        close(master)
+        return (transcript, sawOTP)
+    }
+
+    /// Fallback when no pty is available: feed the password (+ code) via stdin.
+    private static func drivePipe(lpass: String, email: String, password: String, otp: String)
+        -> (transcript: String, sawOTP: Bool) {
+        let stdin = otp.isEmpty ? password + "\n" : password + "\n" + otp + "\n"
+        let result = capture(URL(fileURLWithPath: lpass), ["login", "--trust", email],
+                             timeout: 45, stdin: stdin,
+                             extraEnv: ["LPASS_DISABLE_PINENTRY": "1", "LPASS_AGENT_TIMEOUT": "0"])
+        let output = result?.output ?? ""
+        let low = output.lowercased()
+        return (output, otpPrompts.contains(where: { low.contains($0) }))
+    }
+
+    // MARK: Logout / entries / validate
+
+    static func logout() {
+        guard let lpass = LastPass.locate() else { return }
+        _ = capture(URL(fileURLWithPath: lpass), ["logout", "--force"], timeout: 20)
+        LastPass.statusLoggedIn()
+    }
+
+    /// `lpass ls` → entry names (best-effort, empty on failure). Strips the
+    /// trailing `[id: ...]` some builds print.
+    static func listEntries() -> [String] {
+        guard let lpass = LastPass.locate(),
+              let result = capture(URL(fileURLWithPath: lpass), ["ls"], timeout: 45),
+              result.status == 0 else { return [] }
+        var seen = Set<String>(), entries: [String] = []
+        for line in result.output.split(separator: "\n") {
+            let name = line.components(separatedBy: " [id:").first?
+                .trimmingCharacters(in: .whitespaces) ?? ""
+            if !name.isEmpty, !seen.contains(name) { seen.insert(name); entries.append(name) }
+        }
+        return entries
+    }
+
+    /// Confirm the chosen entry actually yields both Datadog keys.
+    static func validate(entry: String, apiField: String, appField: String)
+        -> (ok: Bool, error: String?) {
+        guard LastPass.isInstalled else { return (false, "LastPass CLI not found.") }
+        let entry = entry.trimmingCharacters(in: .whitespaces)
+        guard !entry.isEmpty else { return (false, "Pick an entry.") }
+        let api = LastPass.get(entry: entry, field: apiField)
+        let app = LastPass.get(entry: entry, field: appField)
+        var missing: [String] = []
+        if api?.isEmpty ?? true { missing.append(apiField) }
+        if app?.isEmpty ?? true { missing.append(appField) }
+        if !missing.isEmpty {
+            return (false, "Couldn't read field(s) from “\(entry)”: \(missing.joined(separator: ", "))")
+        }
+        return (true, nil)
+    }
+
+    // MARK: Process helper
+
+    private static func capture(_ url: URL, _ args: [String], timeout: TimeInterval,
+                                stdin: String? = nil, extraEnv: [String: String]? = nil)
+        -> (status: Int32, output: String)? {
+        let process = Process()
+        process.executableURL = url
+        process.arguments = args
+        if let extraEnv {
+            var env = ProcessInfo.processInfo.environment
+            for (key, value) in extraEnv { env[key] = value }
+            process.environment = env
+        }
+        let outPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = outPipe
+        if stdin != nil { process.standardInput = Pipe() }
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        if let stdin, let inPipe = process.standardInput as? Pipe {
+            inPipe.fileHandleForWriting.write(Data(stdin.utf8))
+            try? inPipe.fileHandleForWriting.close()
+        }
+        let killer = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        killer.cancel()
+        return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+    }
+}

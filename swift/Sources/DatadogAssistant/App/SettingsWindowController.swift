@@ -43,6 +43,7 @@ struct SettingsView: View {
     @State private var lastPassEntry = ""
     @State private var hasLastPass = LastPassConfig.load() != nil
     @State private var lastPassLoggedIn = false
+    @State private var showLastPassSetup = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -84,8 +85,8 @@ struct SettingsView: View {
             Text("LastPass (optional) — shared team vault")
                 .font(.headline)
             Text(hasLastPass
-                 ? "Keys are fetched from this entry at runtime via the lpass CLI — \(lastPassLoggedIn ? "logged in ✓" : "run `lpass login` to unlock the vault.")"
-                 : "Fetch the team's Datadog keys (and GitHub token) from a LastPass secure note instead of storing them locally. Needs the lpass CLI and an active `lpass login`; note fields default to datadogAPIKey / datadogAPPKey / githubToken.")
+                 ? "Keys are fetched from this entry at runtime via the lpass CLI — \(lastPassLoggedIn ? "logged in ✓" : "run Set up… (or `lpass login`) to unlock the vault.")"
+                 : "Fetch the team's Datadog keys (and GitHub token) from a LastPass secure note instead of storing them locally. Set up… installs the lpass CLI and logs you in; note fields default to datadogAPIKey / datadogAPPKey / githubToken.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -104,6 +105,7 @@ struct SettingsView: View {
                     }
                 }
                 Spacer()
+                Button("Set up…") { showLastPassSetup = true }
                 Button("Use LastPass") { saveLastPass() }
                     .disabled(lastPassEntry.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -137,6 +139,12 @@ struct SettingsView: View {
             if let lastPass = LastPassConfig.load() {
                 lastPassEntry = lastPass.entry
                 lastPassLoggedIn = LastPass.isLoggedIn()
+            }
+        }
+        .sheet(isPresented: $showLastPassSetup) {
+            LastPassSetupView { chosenEntry in
+                lastPassEntry = chosenEntry
+                saveLastPass()
             }
         }
     }
