@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Security
 
 /// Jira Cloud OAuth 2.0 (3LO) — the client-credential flow the Python app
 /// uses: client ID + secret (from the shared LastPass note's `jiraClientID` /
