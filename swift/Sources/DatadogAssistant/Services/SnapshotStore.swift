@@ -46,11 +46,14 @@ final class SnapshotStore: ObservableObject {
     }
 
     struct Transition {
-        enum Kind { case fired, recovered }
+        enum Kind { case fired, warned, recovered }
         let kind: Kind
         let monitor: Monitor
     }
     var onTransitions: (([Transition]) -> Void)?
+    /// Fires after every successful poll while un-snoozed — drives the
+    /// "still alerting after N minutes" re-notify nag.
+    var onPoll: ((Snapshot) -> Void)?
 
     static let fastInterval: TimeInterval = 15
     static let slowInterval: TimeInterval = 60
@@ -109,6 +112,7 @@ final class SnapshotStore: ObservableObject {
     func replaceSource(_ newSource: DataSource) {
         source = newSource
         gitHub = GitHubConfig.load().map(GitHubClient.init)
+        filters = FilterConfig.load()   // Settings may have edited them
         snapshot = .empty
         lastError = nil
         start()
@@ -154,6 +158,7 @@ final class SnapshotStore: ObservableObject {
             Self.writeCache(next)
             // Snooze silences banners, not the panel — it stays live.
             if !transitions.isEmpty, !isSnoozed { onTransitions?(transitions) }
+            if !isSnoozed { onPoll?(next) }
         } catch {
             lastError = error.localizedDescription
             snapshot.connected = false
@@ -174,6 +179,8 @@ final class SnapshotStore: ObservableObject {
                     let lag = now.timeIntervalSince(since)
                     if lag >= 0, lag < 3600 { next.lastDetectionSeconds = Int(lag) }
                 }
+            case .warned:
+                break   // warnings aren't counted as alerts
             case .recovered:
                 if let since = transition.monitor.firingSince {
                     let duration = now.timeIntervalSince(since)
@@ -283,12 +290,20 @@ final class SnapshotStore: ObservableObject {
         guard old.lastRefresh != .distantPast else { return [] }  // first poll: no spam
         let oldAlerting = Set(old.alerting.map(\.id))
         let newAlerting = Set(new.alerting.map(\.id))
+        let oldWarning = Set(old.warning.map(\.id))
         let fired = new.alerting.filter { !oldAlerting.contains($0.id) }
+        // Newly warning (not an alert downgrade — that's a recovery in
+        // progress, not news). Whether it notifies is a settings decision
+        // made in NotificationManager.
+        let warned = new.warning.filter {
+            !oldWarning.contains($0.id) && !oldAlerting.contains($0.id)
+        }
         let recovered = old.alerting.filter { monitor in
             !newAlerting.contains(monitor.id)
                 && new.monitors.first(where: { $0.id == monitor.id })?.state == .ok
         }
         return fired.map { Transition(kind: .fired, monitor: $0) }
+            + warned.map { Transition(kind: .warned, monitor: $0) }
             + recovered.map { Transition(kind: .recovered, monitor: $0) }
     }
 

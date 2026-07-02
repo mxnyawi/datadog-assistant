@@ -58,6 +58,17 @@ by default (override with `DD_LASTPASS_API_FIELD` / `_APP_FIELD`); an optional
 `githubToken` field supplies the GitHub token for change correlation.
 Credential precedence is env vars → LastPass → Keychain.
 
+**Filters, notifications, Jira.** The panel's Monitors/List tabs carry a
+Filter dropdown — every tag the app has seen, grouped by key (team / env /
+service…), multi-select with OR semantics, plus a name filter — matching the
+Python app's `tag_filter`/`name_filter` and applied server-side. Settings is
+tabbed (Source / Filters / Notifications / Jira / GitHub): notifications get
+per-kind toggles, an alert-sound dropdown from `/System/Library/Sounds` (with
+instant preview), and a "re-notify while still alerting" nag interval;
+configuring Jira (site, email, project, issue type, API token — or the
+LastPass note's `jiraToken` field) adds a one-tap "Jira ticket" action to
+every alert row.
+
 `swift run` also works for a fast dev loop, but notifications require a real
 `.app` bundle, so they're disabled in that mode.
 
@@ -197,8 +208,8 @@ Design mockups for review live in `docs/` (rendered with
 
 ## Still to port from the Python app
 
-- Jira ticketing (create per alert, auto-create P1/P2, dedupe)
+- Jira auto-create for P1/P2 + dedupe (manual per-alert tickets work today)
 - DLQ grouping, No-Data triage, local rename
 - OAuth credential mode (Keychain, env, and LastPass work today)
-- Snooze-all, re-notify nag loop, daily digest
+- Daily digest
 - Monitor create/delete

@@ -8,6 +8,8 @@ struct MonitorRow: View {
     @EnvironmentObject var store: SnapshotStore
     let monitor: Monitor
     @State private var expanded = false
+    @State private var creatingTicket = false
+    @State private var ticketError: String?
 
     private var tint: Color { Theme.color(for: monitor.state) }
 
@@ -97,10 +99,39 @@ struct MonitorRow: View {
                     if let url = monitor.url { NSWorkspace.shared.open(url) }
                 }
                 .disabled(monitor.url == nil)
+                if let jira = JiraConfig.load() {
+                    actionButton(creatingTicket ? "Creating…" : "Jira ticket",
+                                 icon: "ticket.fill") {
+                        createTicket(jira)
+                    }
+                    .disabled(creatingTicket)
+                }
             }
             .padding(.top, 2)
+            if let ticketError {
+                Text(ticketError)
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.alert)
+                    .lineLimit(2)
+            }
         }
         .padding(.leading, 17)
+    }
+
+    /// Fire the Jira ticket and jump straight to it — the browser tab is the
+    /// success feedback.
+    private func createTicket(_ config: JiraConfig) {
+        creatingTicket = true
+        ticketError = nil
+        Task {
+            do {
+                let url = try await JiraClient.createIssue(for: monitor, config: config)
+                NSWorkspace.shared.open(url)
+            } catch {
+                ticketError = error.localizedDescription
+            }
+            creatingTicket = false
+        }
     }
 
     /// "What shipped right before this?" — the change-correlation callout,

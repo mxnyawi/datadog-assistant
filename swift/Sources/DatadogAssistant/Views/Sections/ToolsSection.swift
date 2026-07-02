@@ -13,7 +13,7 @@ struct ToolsSection: View {
                 .padding(.leading, 2)
 
             toolRow(icon: "gearshape.fill", label: "Settings…",
-                    detail: "Datadog keys, GitHub repos, site") {
+                    detail: "Credentials, filters, notifications, Jira, GitHub") {
                 NotificationCenter.default.post(name: .openSettingsWindow, object: nil)
             }
             toolRow(icon: "arrow.up.forward.square.fill", label: "Open Datadog",

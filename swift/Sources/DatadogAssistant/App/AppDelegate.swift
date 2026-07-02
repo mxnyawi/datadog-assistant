@@ -27,6 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.onTransitions = { transitions in
             NotificationManager.shared.deliver(transitions: transitions)
         }
+        store.onPoll = { snapshot in
+            NotificationManager.shared.nag(alerting: snapshot.alerting)
+        }
 
         store.start()
         menuBar = MenuBarController(store: store)

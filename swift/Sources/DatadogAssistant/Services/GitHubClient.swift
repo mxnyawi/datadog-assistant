@@ -53,6 +53,12 @@ struct GitHubConfig: Equatable {
         UserDefaults.standard.set(repoSpecs, forKey: Self.reposDefaultsKey)
     }
 
+    /// Persist just the repo list — LastPass mode, where the token resolves
+    /// from the shared vault at load time instead of the Keychain.
+    static func saveRepoSpecsOnly(_ specs: [String]) {
+        UserDefaults.standard.set(specs, forKey: reposDefaultsKey)
+    }
+
     static func clear() {
         Keychain.delete(service: tokenService)
         UserDefaults.standard.removeObject(forKey: reposDefaultsKey)
