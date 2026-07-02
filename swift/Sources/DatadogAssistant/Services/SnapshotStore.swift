@@ -18,10 +18,30 @@ final class SnapshotStore: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var refreshing = false
     @Published private(set) var snoozedUntil: Date?
+    @Published private(set) var stats = ResponseStats()
 
     var isSnoozed: Bool {
         guard let until = snoozedUntil else { return false }
         return until > Date()
+    }
+
+    /// The numbers the response-time story is told with. Session-scoped —
+    /// they accumulate from observed transitions, so a fresh launch starts
+    /// clean rather than showing stale counts.
+    struct ResponseStats: Equatable {
+        /// Poll-observed lag between a monitor starting to fire and this app
+        /// noticing — the honest "detected in Ns" figure.
+        var lastDetectionSeconds: Int?
+        var alertsToday: Int = 0
+        var recoveryDurations: [TimeInterval] = []
+
+        var medianRecoveryMinutes: Int? {
+            guard !recoveryDurations.isEmpty else { return nil }
+            let sorted = recoveryDurations.sorted()
+            return Int(sorted[sorted.count / 2] / 60)
+        }
+
+        var hasData: Bool { lastDetectionSeconds != nil || alertsToday > 0 }
     }
 
     struct Transition {
@@ -116,6 +136,7 @@ final class SnapshotStore: ObservableObject {
             if transitions.contains(where: { $0.kind == .recovered }) {
                 lastRecoveryAt = Date()
             }
+            updateStats(with: transitions)
             next.activity = Self.pushActivity(snapshot.activity, next: next)
             snapshot = next
             lastError = nil
@@ -126,6 +147,30 @@ final class SnapshotStore: ObservableObject {
             lastError = error.localizedDescription
             snapshot.connected = false
         }
+    }
+
+    // MARK: - Response stats
+
+    private func updateStats(with transitions: [Transition]) {
+        guard !transitions.isEmpty else { return }
+        var next = stats
+        let now = Date()
+        for transition in transitions {
+            switch transition.kind {
+            case .fired:
+                next.alertsToday += 1
+                if let since = transition.monitor.firingSince {
+                    let lag = now.timeIntervalSince(since)
+                    if lag >= 0, lag < 3600 { next.lastDetectionSeconds = Int(lag) }
+                }
+            case .recovered:
+                if let since = transition.monitor.firingSince {
+                    let duration = now.timeIntervalSince(since)
+                    if duration > 0 { next.recoveryDurations.append(duration) }
+                }
+            }
+        }
+        stats = next
     }
 
     // MARK: - Change correlation ("what shipped before this alert?")

@@ -2,17 +2,22 @@ import SwiftUI
 
 struct ActiveMonitorsSection: View {
     let snapshot: Snapshot
+    /// Monitor already shown as the hero card; kept out of the row list.
+    var excluding: Int? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Active monitors")
+            Text(excluding == nil ? "Active monitors" : "Also firing")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(Theme.textSecondary)
                 .padding(.leading, 2)
 
-            let active = (snapshot.alerting + snapshot.warning).prefix(4)
+            let active = (snapshot.alerting + snapshot.warning)
+                .filter { $0.id != excluding }
+                .prefix(4)
             if active.isEmpty {
-                emptyState
+                // With a hero card above, an empty remainder needs no state.
+                if excluding == nil { emptyState }
             } else {
                 VStack(spacing: 2) {
                     ForEach(Array(active), id: \.id) { MonitorRow(monitor: $0) }

@@ -38,6 +38,26 @@ install carries over automatically.
 `swift run` also works for a fast dev loop, but notifications require a real
 `.app` bundle, so they're disabled in that mode.
 
+### Demo mode (for live presentations)
+
+```bash
+DD_DEMO=1 ./Scripts/build-app.sh && DD_DEMO=1 "build/Datadog Assistant.app/Contents/MacOS/DatadogAssistant"
+```
+
+Runs a scripted ~4-minute incident arc on sample data — no keys, no real org,
+fully deterministic:
+
+| t+ | beat |
+|----|------|
+| 0:00 | calm — everything green except two warnings |
+| 0:40 | **PR #482 merges** — appears in Changes, marker lands on sparklines |
+| 1:00 | **payments-api P1 fires** — hero card takes over, value climbs toward 842, suspect PR flagged, "Ns to detect" stat appears |
+| 1:30 | checkout P2 follows — blast-radius chip shows "payments · 2 firing" |
+| 3:30 | recovery — recovery notification, median-recovery stat fills in |
+
+Every beat is triggered through the same transition pipeline real Datadog
+data drives, so what execs watch is the actual product logic, not a video.
+
 ## Change correlation & clever queries
 
 - **"What shipped?"** — the Changes tab merges Datadog deployment events

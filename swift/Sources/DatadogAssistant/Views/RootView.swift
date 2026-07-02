@@ -16,10 +16,17 @@ struct RootView: View {
                 VStack(spacing: 18) {
                     switch tab {
                     case .monitors:
+                        let hero = snapshot.alerting
+                            .sorted { ($0.priority, $0.id) < ($1.priority, $1.id) }
+                            .first { $0.priority <= .p2 }
                         ClusterChips(clusters: snapshot.clusters)
+                        if let hero {
+                            HeroAlertCard(monitor: hero)
+                        }
                         StateSection(snapshot: snapshot)
+                        ResponseStrip(stats: store.stats)
                         Divider().background(Theme.panelStroke)
-                        ActiveMonitorsSection(snapshot: snapshot)
+                        ActiveMonitorsSection(snapshot: snapshot, excluding: hero?.id)
                         Divider().background(Theme.panelStroke)
                         IncidentsSection(snapshot: snapshot)
                         Divider().background(Theme.panelStroke)

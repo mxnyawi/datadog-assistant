@@ -5,13 +5,21 @@ import Foundation
 /// occasionally mutes/unmutes nothing — states are stable so screenshots and
 /// design review are reproducible.
 final class MockDataSource: DataSource {
+    /// DD_DEMO=1 turns the static sample into a scripted incident arc for
+    /// live demos: calm → PR merges (t+40s) → P1 fires (t+60s) → second
+    /// monitor follows (t+90s) → recovery (t+210s). Every feature — suspect
+    /// correlation, deploy markers, detection latency, recovery stats —
+    /// triggers organically from the same transitions real data would cause.
+    private let demoMode = ProcessInfo.processInfo.environment["DD_DEMO"] == "1"
+    private let launchedAt = Date()
+
     private var seed: UInt64 = 0x5EED
     private var monitors: [Monitor]
     private var incidents: [Incident]
     private var deploys: [DeployEvent]
     private var ciRuns: [CIRun]
 
-    var sourceName: String { "Sample data" }
+    var sourceName: String { demoMode ? "Demo" : "Sample data" }
 
     init() {
         var s: UInt64 = 0xC0FFEE
@@ -124,6 +132,7 @@ final class MockDataSource: DataSource {
     }
 
     func fetchSnapshot(previous: Snapshot?) async throws -> Snapshot {
+        if demoMode { applyDemoScript() }
         monitors = monitors.map { m in
             var monitor = m
             monitor.sparkline = Self.roll(m.sparkline, seed: &seed, drift: 0.12)
@@ -154,6 +163,70 @@ final class MockDataSource: DataSource {
                 thresholdPosition: m.thresholdPosition
             )
         }
+    }
+
+    // MARK: - Demo script
+
+    private static let demoDeployAt: TimeInterval = 40
+    private static let demoFireAt: TimeInterval = 60
+    private static let demoSecondFireAt: TimeInterval = 90
+    private static let demoRecoverAt: TimeInterval = 210
+
+    /// Rebuilds the payments/checkout monitors from the arc's clock. States
+    /// derive from elapsed time, so pausing on a slide doesn't break the story.
+    private func applyDemoScript() {
+        let elapsed = Date().timeIntervalSince(launchedAt)
+
+        if elapsed >= Self.demoDeployAt, !deploys.contains(where: { $0.id == "demo-pr-482" }) {
+            deploys.insert(DeployEvent(
+                id: "demo-pr-482",
+                title: "PR #482 · raise cache TTL for quotes",
+                source: .github,
+                occurredAt: launchedAt.addingTimeInterval(Self.demoDeployAt),
+                url: URL(string: "https://github.com/acme/payments-api/pull/482"),
+                service: "payments"), at: 0)
+        }
+
+        let paymentsFiring = elapsed >= Self.demoFireAt && elapsed < Self.demoRecoverAt
+        let checkoutFiring = elapsed >= Self.demoSecondFireAt && elapsed < Self.demoRecoverAt
+
+        monitors = monitors.map { m in
+            switch m.id {
+            case 1001:
+                return demoVariant(of: m, firing: paymentsFiring,
+                                   since: launchedAt.addingTimeInterval(Self.demoFireAt),
+                                   firingValue: min(842, 520 + (elapsed - Self.demoFireAt) * 6),
+                                   calmValue: 210,
+                                   hosts: ["prod-pay-7", "prod-pay-9"], delta: 3.2)
+            case 1002:
+                return demoVariant(of: m, firing: checkoutFiring,
+                                   since: launchedAt.addingTimeInterval(Self.demoSecondFireAt),
+                                   firingValue: 4.1, calmValue: 0.3,
+                                   hosts: ["edge-3"], delta: 4.8)
+            default:
+                return m
+            }
+        }
+    }
+
+    /// Canonical hosts/delta are passed in rather than read from `m` — the
+    /// previous pass may have blanked them while calm.
+    private func demoVariant(of m: Monitor, firing: Bool, since: Date,
+                             firingValue: Double, calmValue: Double,
+                             hosts: [String], delta: Double) -> Monitor {
+        Monitor(
+            id: m.id, name: m.name,
+            state: firing ? .alert : .ok,
+            priority: m.priority,
+            firingSince: firing ? since : nil,
+            triggeredHosts: firing ? hosts : [],
+            sparkline: m.sparkline,
+            value: firing ? firingValue : calmValue,
+            threshold: m.threshold,
+            url: m.url, service: m.service,
+            delta: firing ? delta : nil,
+            thresholdPosition: m.thresholdPosition
+        )
     }
 
     // MARK: - Series generation
