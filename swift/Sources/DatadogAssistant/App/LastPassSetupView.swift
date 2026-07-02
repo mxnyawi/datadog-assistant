@@ -5,8 +5,8 @@ import SwiftUI
 /// validate the shared-vault entry. On success it hands the chosen entry back
 /// to the caller, which persists it as the active LastPassConfig.
 struct LastPassSetupView: View {
-    /// Called with the validated entry name when setup completes.
-    let onComplete: (String) -> Void
+    /// Called with the validated LastPass config when setup completes.
+    let onComplete: (LastPassConfig) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
@@ -18,6 +18,9 @@ struct LastPassSetupView: View {
     @State private var needsOTP = false
     @State private var entry = ""
     @State private var entries: [String] = []
+    @State private var apiField = "datadogAPIKey"
+    @State private var appField = "datadogAPPKey"
+    @State private var availableFields: [String] = []
     @State private var busy = false
     @State private var status: String?
     @State private var isError = false
@@ -75,20 +78,36 @@ struct LastPassSetupView: View {
             }
             .disabled(!installed)
 
-            // Step 3 — choose the entry
+            // Step 3 — choose the entry (and map its fields)
             GroupBox("3 · Shared vault entry") {
                 VStack(alignment: .leading, spacing: 8) {
-                    if !entries.isEmpty {
-                        Picker("Entry", selection: $entry) {
-                            Text("Select…").tag("")
+                    HStack {
+                        Picker("Note / folder", selection: $entry) {
+                            Text(entries.isEmpty ? "No entries loaded" : "Select a note…").tag("")
                             ForEach(entries, id: \.self) { Text($0).tag($0) }
                         }
+                        Button("Refresh") { loadEntries() }.disabled(busy || !loggedIn)
                     }
-                    TextField("Entry (e.g. Shared-SRE/datadog-assistant)", text: $entry)
-                    Text("The secure note holds datadogAPIKey / datadogAPPKey "
-                         + "(and optionally githubToken).")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    TextField("…or type the entry path", text: $entry)
+
+                    if !availableFields.isEmpty {
+                        Divider()
+                        Text("Map the keys to this note's fields:")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Picker("API key field", selection: $apiField) {
+                            ForEach(fieldOptions, id: \.self) { Text($0).tag($0) }
+                        }
+                        Picker("App key field", selection: $appField) {
+                            ForEach(fieldOptions, id: \.self) { Text($0).tag($0) }
+                        }
+                        Text("Fields found: \(availableFields.joined(separator: ", "))")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("The secure note should hold datadogAPIKey / datadogAPPKey "
+                             + "(or custom fields you'll map after picking it).")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 .padding(6)
             }
@@ -181,8 +200,20 @@ struct LastPassSetupView: View {
         Task.detached {
             LastPassSetup.logout()
             await MainActor.run {
-                busy = false; loggedIn = false; entries = []
+                busy = false; loggedIn = false; entries = []; availableFields = []
                 status = "Logged out."; isError = false
+            }
+        }
+    }
+
+    private func loadEntries() {
+        busy = true
+        Task.detached {
+            let entries = LastPassSetup.listEntries()
+            await MainActor.run {
+                busy = false
+                self.entries = entries
+                if entries.isEmpty { status = "No entries returned by `lpass ls`."; isError = true }
             }
         }
     }
@@ -191,19 +222,59 @@ struct LastPassSetupView: View {
         let chosen = entry.trimmingCharacters(in: .whitespaces)
         guard !chosen.isEmpty else { fail("Pick or type an entry."); return }
         busy = true; status = nil
+        let api = apiField, app = appField
         Task.detached {
-            let result = LastPassSetup.validate(entry: chosen,
-                                                apiField: "datadogAPIKey",
-                                                appField: "datadogAPPKey")
+            let result = LastPassSetup.validate(entry: chosen, apiField: api, appField: app)
+            // On failure, read the note's actual fields so the user can map them.
+            let fields = result.ok ? [] : LastPassSetup.availableFields(entry: chosen)
             await MainActor.run {
                 busy = false
-                if result.ok { onComplete(chosen); dismiss() }
-                else { fail(result.error ?? "Validation failed.") }
+                if result.ok {
+                    var config = LastPassConfig(entry: chosen)
+                    config.apiKeyField = api
+                    config.appKeyField = app
+                    onComplete(config)
+                    dismiss()
+                    return
+                }
+                availableFields = fields
+                autoMap(fields)
+                if fields.isEmpty {
+                    fail("Couldn't read “\(chosen)”. Make sure it's a secure note you can "
+                         + "access (not an empty folder), then try again.")
+                } else {
+                    fail("Couldn't read \(api) / \(app) from “\(chosen)”. Pick which of this "
+                         + "note's fields holds each key below, then Save again.")
+                }
             }
         }
     }
 
     // MARK: Helpers
+
+    /// Field names offered in the mapping pickers: the note's own fields plus
+    /// the current/default selections, so the Picker's tag always exists.
+    private var fieldOptions: [String] {
+        var options = availableFields
+        for field in [apiField, appField, "datadogAPIKey", "datadogAPPKey"]
+        where !field.isEmpty && !options.contains(field) {
+            options.append(field)
+        }
+        return options
+    }
+
+    /// Best-effort guess of which discovered fields hold the API / App keys.
+    private func autoMap(_ fields: [String]) {
+        guard !fields.isEmpty else { return }
+        if let match = fields.first(where: { $0.caseInsensitiveCompare("datadogAPIKey") == .orderedSame })
+            ?? fields.first(where: { $0.lowercased().contains("api") }) {
+            apiField = match
+        }
+        if let match = fields.first(where: { $0.caseInsensitiveCompare("datadogAPPKey") == .orderedSame })
+            ?? fields.first(where: { let l = $0.lowercased(); return l.contains("app") && !l.contains("api") }) {
+            appField = match
+        }
+    }
 
     private func fail(_ message: String) { status = message; isError = true }
 

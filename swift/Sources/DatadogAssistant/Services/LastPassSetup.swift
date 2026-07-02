@@ -216,6 +216,35 @@ enum LastPassSetup {
         return entries
     }
 
+    /// Field names available on an entry — both custom fields ("Label: value")
+    /// and `key=value` lines in the secure-note body — so the user can map
+    /// which field holds each key. Best-effort; empty on failure.
+    static func availableFields(entry: String) -> [String] {
+        let entry = entry.trimmingCharacters(in: .whitespaces)
+        guard !entry.isEmpty, let lpass = LastPass.locate(),
+              let result = capture(URL(fileURLWithPath: lpass), ["show", entry], timeout: 30),
+              result.status == 0 else { return [] }
+        // Standard headers lpass prints that aren't credential fields.
+        let standard: Set<String> = ["username", "password", "url", "notes",
+                                     "id", "name", "fullname", "group",
+                                     "last modified", "last touch"]
+        var seen = Set<String>(), fields: [String] = []
+        let lines = result.output.split(separator: "\n", omittingEmptySubsequences: false)
+        for (index, rawLine) in lines.enumerated() {
+            if index == 0 { continue }   // first line is the entry's own name/path
+            let line = String(rawLine)
+            var key = ""
+            if let colon = line.range(of: ": ") {
+                key = String(line[..<colon.lowerBound]).trimmingCharacters(in: .whitespaces)
+                if standard.contains(key.lowercased()) { key = "" }
+            } else if let eq = line.firstIndex(of: "=") {
+                key = String(line[..<eq]).trimmingCharacters(in: .whitespaces)
+            }
+            if !key.isEmpty, !seen.contains(key) { seen.insert(key); fields.append(key) }
+        }
+        return fields
+    }
+
     /// Confirm the chosen entry actually yields both Datadog keys.
     static func validate(entry: String, apiField: String, appField: String)
         -> (ok: Bool, error: String?) {

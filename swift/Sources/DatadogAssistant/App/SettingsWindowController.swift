@@ -142,9 +142,12 @@ struct SettingsView: View {
             }
         }
         .sheet(isPresented: $showLastPassSetup) {
-            LastPassSetupView { chosenEntry in
-                lastPassEntry = chosenEntry
-                saveLastPass()
+            LastPassSetupView { config in
+                config.save()
+                lastPassEntry = config.entry
+                hasLastPass = true
+                lastPassLoggedIn = LastPass.isLoggedIn()
+                onSave()
             }
         }
     }
