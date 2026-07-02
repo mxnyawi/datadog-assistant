@@ -35,6 +35,12 @@ through Settings go to the macOS Keychain under the same service names the
 Python app uses (`datadog-assistant-api-key` / `-app-key`), so an existing
 install carries over automatically.
 
+Settings has a **Credential source** selector — *Sample data*, *Keychain*, or
+*LastPass* — and the choice is remembered. The app reads from the selected
+source only: pick *LastPass* and it never touches (or prompts for) the
+Keychain; pick *Sample data* and it stays offline. Environment variables
+(`DD_API_KEY` / `DD_APP_KEY`) still override everything for the dev loop.
+
 **Shared team vault (LastPass).** Instead of storing keys on each machine,
 point the app at a LastPass secure note and the keys are fetched at runtime
 via the `lpass` CLI — the same integration the Python app uses, reading the

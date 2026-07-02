@@ -44,9 +44,31 @@ struct SettingsView: View {
     @State private var hasLastPass = LastPassConfig.load() != nil
     @State private var lastPassLoggedIn = false
     @State private var showLastPassSetup = false
+    @State private var authMode = AuthMode.current
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            Text("Credential source")
+                .font(.headline)
+            // A custom binding so only user selection drives the reload; setting
+            // `authMode` programmatically elsewhere just updates the display.
+            Picker("", selection: Binding(
+                get: { authMode },
+                set: { setMode($0) }
+            )) {
+                Text("Sample data").tag(AuthMode.sample)
+                Text("Keychain").tag(AuthMode.keychain)
+                Text("LastPass").tag(AuthMode.lastPass)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            Text(authSourceHint)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
             Text("Datadog credentials")
                 .font(.headline)
             Text(hasExistingKeys
@@ -101,7 +123,7 @@ struct SettingsView: View {
                         LastPassConfig.clear()
                         hasLastPass = false
                         lastPassEntry = ""
-                        onSave()
+                        setMode(.sample)
                     }
                 }
                 Spacer()
@@ -121,11 +143,11 @@ struct SettingsView: View {
                     Button("Remove keys", role: .destructive) {
                         Credentials.clear()
                         hasExistingKeys = false
-                        onSave()
+                        setMode(.sample)
                     }
                 }
                 Spacer()
-                Button("Use sample data") { onSave() }
+                Button("Use sample data") { setMode(.sample) }
                 Button("Save") { save() }
                     .keyboardShortcut(.defaultAction)
                     .disabled((apiKey.isEmpty || appKey.isEmpty)
@@ -147,9 +169,31 @@ struct SettingsView: View {
                 lastPassEntry = config.entry
                 hasLastPass = true
                 lastPassLoggedIn = LastPass.isLoggedIn()
-                onSave()
+                setMode(.lastPass)
             }
         }
+    }
+
+    private var authSourceHint: String {
+        switch authMode {
+        case .sample:
+            return "Running on sample data. Choose Keychain or LastPass below to connect real data."
+        case .keychain:
+            return "Using keys stored in the macOS Keychain."
+        case .lastPass:
+            return lastPassLoggedIn
+                ? "Using the shared LastPass vault — keys are fetched at runtime, nothing is stored locally."
+                : "LastPass selected. Run Set up… (or `lpass login`) to unlock the vault."
+        }
+    }
+
+    /// Persist the chosen source, keep the segmented control in sync, and
+    /// reload. Persisting the mode is what stops the app from falling back to
+    /// another source (and its Keychain prompt) the next time it opens.
+    private func setMode(_ mode: AuthMode) {
+        authMode = mode
+        AuthMode.set(mode)
+        onSave()
     }
 
     private func saveLastPass() {
@@ -159,13 +203,16 @@ struct SettingsView: View {
         config.save()
         hasLastPass = true
         lastPassLoggedIn = LastPass.isLoggedIn()
-        onSave()
+        setMode(.lastPass)
     }
 
     private func save() {
         do {
+            var savedKeys = false
             if !apiKey.isEmpty && !appKey.isEmpty {
                 try Credentials(apiKey: apiKey, appKey: appKey, site: site).save()
+                savedKeys = true
+                hasExistingKeys = true
             }
             let repoSpecs = gitHubRepos
                 .split(separator: ",")
@@ -174,7 +221,8 @@ struct SettingsView: View {
             if !gitHubToken.isEmpty && !repoSpecs.isEmpty {
                 try GitHubConfig(token: gitHubToken, repoSpecs: repoSpecs).save()
             }
-            onSave()
+            // Entering keys explicitly selects the Keychain source.
+            if savedKeys { setMode(.keychain) } else { onSave() }
         } catch {
             self.error = "Keychain write failed: \(error.localizedDescription)"
         }
