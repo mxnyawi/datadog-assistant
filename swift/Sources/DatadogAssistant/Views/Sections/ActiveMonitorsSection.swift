@@ -12,8 +12,10 @@ struct ActiveMonitorsSection: View {
                 .foregroundColor(Theme.textSecondary)
                 .padding(.leading, 2)
 
+            // DLQ monitors live in their own section (exclusive grouping).
+            let dlqExclusive = DLQConfig.load().exclusive
             let active = (snapshot.alerting + snapshot.warning)
-                .filter { $0.id != excluding }
+                .filter { $0.id != excluding && !(dlqExclusive && $0.isDLQ) }
                 .prefix(4)
             if active.isEmpty {
                 // With a hero card above, an empty remainder needs no state.

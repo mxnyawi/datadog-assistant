@@ -27,6 +27,7 @@ struct NotificationSettings: Equatable {
 
     var enabled = true
     var notifyOnWarn = true
+    var notifyOnNoData = true
     var notifyOnRecovery = true
     var style = Style.banner
     var soundEnabled = true
@@ -60,6 +61,7 @@ struct NotificationSettings: Equatable {
         var settings = NotificationSettings()
         settings.enabled = dict["enabled"] as? Bool ?? true
         settings.notifyOnWarn = dict["notifyOnWarn"] as? Bool ?? true
+        settings.notifyOnNoData = dict["notifyOnNoData"] as? Bool ?? true
         settings.notifyOnRecovery = dict["notifyOnRecovery"] as? Bool ?? true
         settings.style = (dict["style"] as? String).flatMap(Style.init) ?? .banner
         settings.soundEnabled = dict["soundEnabled"] as? Bool ?? true
@@ -89,6 +91,7 @@ struct NotificationSettings: Equatable {
         UserDefaults.standard.set([
             "enabled": enabled,
             "notifyOnWarn": notifyOnWarn,
+            "notifyOnNoData": notifyOnNoData,
             "notifyOnRecovery": notifyOnRecovery,
             "style": style.rawValue,
             "soundEnabled": soundEnabled,

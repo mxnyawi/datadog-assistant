@@ -378,6 +378,8 @@ private struct NotificationSettingsTab: View {
                 .disabled(!settings.enabled)
                 Toggle("Notify on warnings", isOn: $settings.notifyOnWarn)
                     .disabled(!settings.enabled)
+                Toggle("Notify on No Data (likely broken only)", isOn: $settings.notifyOnNoData)
+                    .disabled(!settings.enabled)
                 Toggle("Notify on recovery", isOn: $settings.notifyOnRecovery)
                     .disabled(!settings.enabled)
 

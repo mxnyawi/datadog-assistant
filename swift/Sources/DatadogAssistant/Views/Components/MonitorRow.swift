@@ -10,6 +10,8 @@ struct MonitorRow: View {
     @State private var expanded = false
     @State private var creatingTicket = false
     @State private var ticketError: String?
+    @State private var renaming = false
+    @State private var aliasText = ""
 
     private var tint: Color { Theme.color(for: monitor.state) }
 
@@ -88,6 +90,9 @@ struct MonitorRow: View {
                 detailItem(icon: "server.rack",
                            text: monitor.triggeredHosts.prefix(4).joined(separator: ", "))
             }
+            if let reason = monitor.noDataReason {
+                detailItem(icon: "magnifyingglass", text: reason)
+            }
             if let suspect = store.suspectDeploy(for: monitor) {
                 suspectRow(suspect)
             }
@@ -116,8 +121,57 @@ struct MonitorRow: View {
                     .foregroundColor(Theme.alert)
                     .lineLimit(2)
             }
+            renameRow
         }
         .padding(.leading, 17)
+    }
+
+    /// Local rename: a display alias for this app only (unwieldy monitor
+    /// titles → something readable). Reset restores the Datadog name.
+    @ViewBuilder private var renameRow: some View {
+        if renaming {
+            HStack(spacing: 6) {
+                TextField("Local name (blank resets)", text: $aliasText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11))
+                    .onSubmit { applyRename() }
+                Button("Save") { applyRename() }
+                    .font(.system(size: 11))
+                Button("Cancel") { renaming = false }
+                    .font(.system(size: 11))
+            }
+        } else {
+            HStack(spacing: 10) {
+                Button {
+                    aliasText = monitor.name
+                    renaming = true
+                } label: {
+                    Label("Rename (local)", systemImage: "pencil")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Theme.textMuted)
+                }
+                .buttonStyle(.plain)
+                if let original = monitor.originalName {
+                    Button {
+                        MonitorAliases.reset(monitorID: monitor.id)
+                        Task { await store.refresh() }
+                    } label: {
+                        Label("Reset to “\(original)”", systemImage: "arrow.uturn.backward")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(Theme.textMuted)
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func applyRename() {
+        MonitorAliases.set(aliasText == monitor.originalName ? "" : aliasText,
+                           for: monitor.id)
+        renaming = false
+        Task { await store.refresh() }
     }
 
     /// Mute durations (1 h / 4 h / 24 h / forever) or Unmute, depending on the

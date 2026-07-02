@@ -24,6 +24,7 @@ struct RootView: View {
                         if let hero {
                             HeroAlertCard(monitor: hero)
                         }
+                        DLQSection(snapshot: snapshot)
                         StateSection(snapshot: snapshot)
                         ResponseStrip(stats: store.stats)
                         Divider().background(Theme.panelStroke)

@@ -32,7 +32,9 @@ struct Monitor: Identifiable, Hashable, Codable {
     static let sparklineWindow: TimeInterval = 3600
 
     let id: Int
-    let name: String
+    /// Display name — the Datadog name, or a local alias (see MonitorAliases,
+    /// with the original kept in `originalName`).
+    var name: String
     let state: MonitorState
     let priority: Priority
     let firingSince: Date?
@@ -50,6 +52,17 @@ struct Monitor: Identifiable, Hashable, Codable {
     var service: String? = nil
     /// The monitor's Datadog tags (e.g. "team:payments"); drives filtering.
     var tags: [String] = []
+    /// No-Data triage verdict: true = "quiet" (expected silence — retired
+    /// monitor, event-stream type, resolve-on-missing…), false = likely
+    /// broken. Only meaningful when state == .noData.
+    var noDataQuiet: Bool = false
+    /// Human-readable triage reason ("no data for 3d — likely retired").
+    var noDataReason: String? = nil
+    /// Dead-letter-queue monitor (name/tag pattern match) — grouped into a
+    /// dedicated section.
+    var isDLQ: Bool = false
+    /// The Datadog-side name when a local rename (alias) is applied to `name`.
+    var originalName: String? = nil
     /// Current value ÷ same moment last week (week_before() time-shift query).
     /// 3.2 = "×3.2 vs last week". nil when the shifted series wasn't available.
     var delta: Double? = nil

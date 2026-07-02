@@ -105,6 +105,14 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 content.sound = Self.sound(settings, critical: false)
                 wantsSound = true
                 lastNotified[monitor.id] = Date()
+            case .wentNoData:
+                guard settings.notifyOnNoData else { continue }
+                content.title = "No Data · \(monitor.name)"
+                content.body = monitor.noDataReason ?? "Stopped reporting"
+                content.categoryIdentifier = Self.alertCategory
+                content.sound = Self.sound(settings, critical: false)
+                wantsSound = true
+                lastNotified[monitor.id] = Date()
             case .recovered:
                 guard settings.notifyOnRecovery else { continue }
                 content.title = "Recovered · \(monitor.name)"
@@ -266,6 +274,7 @@ extension SnapshotStore.Transition.Kind: CustomStringConvertible {
         switch self {
         case .fired: return "fired"
         case .warned: return "warned"
+        case .wentNoData: return "nodata"
         case .recovered: return "recovered"
         }
     }

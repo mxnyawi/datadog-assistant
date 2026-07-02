@@ -7,7 +7,27 @@ struct MonitorListSection: View {
     let snapshot: Snapshot
     @State private var query = ""
 
-    private static let groupOrder: [MonitorState] = [.alert, .warn, .noData, .muted, .ok]
+    /// Buckets, worst first. No Data splits into broken vs quiet (triage) and
+    /// DLQ monitors get their own bucket, mirroring the Python app's groups.
+    private struct Bucket {
+        let label: String
+        let tint: MonitorState
+        let matches: (Monitor) -> Bool
+    }
+
+    private static let buckets: [Bucket] = [
+        Bucket(label: "💀 DLQ", tint: .alert) { $0.isDLQ && $0.state != .ok },
+        Bucket(label: "Alerting", tint: .alert) { $0.state == .alert && !$0.isDLQ },
+        Bucket(label: "Warning", tint: .warn) { $0.state == .warn && !$0.isDLQ },
+        Bucket(label: "No Data (likely broken)", tint: .noData) {
+            $0.state == .noData && !$0.noDataQuiet && !$0.isDLQ
+        },
+        Bucket(label: "🤫 Quiet (no data, expected)", tint: .noData) {
+            $0.state == .noData && $0.noDataQuiet && !$0.isDLQ
+        },
+        Bucket(label: "Muted", tint: .muted) { $0.state == .muted && !$0.isDLQ },
+        Bucket(label: "Healthy", tint: .ok) { $0.state == .ok && !$0.isDLQ },
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -20,10 +40,10 @@ struct MonitorListSection: View {
                     .foregroundColor(Theme.textMuted)
                     .padding(.vertical, 8)
             } else {
-                ForEach(Self.groupOrder, id: \.self) { state in
-                    let group = filtered.filter { $0.state == state }
+                ForEach(Array(Self.buckets.enumerated()), id: \.offset) { _, bucket in
+                    let group = filtered.filter(bucket.matches)
                     if !group.isEmpty {
-                        stateGroup(state, monitors: group)
+                        monitorGroup(bucket, monitors: group)
                     }
                 }
             }
@@ -70,13 +90,13 @@ struct MonitorListSection: View {
         }
     }
 
-    private func stateGroup(_ state: MonitorState, monitors: [Monitor]) -> some View {
+    private func monitorGroup(_ bucket: Bucket, monitors: [Monitor]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Circle()
-                    .fill(Theme.color(for: state))
+                    .fill(Theme.color(for: bucket.tint))
                     .frame(width: 7, height: 7)
-                Text("\(state.label) · \(monitors.count)")
+                Text("\(bucket.label) · \(monitors.count)")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(Theme.textSecondary)
             }

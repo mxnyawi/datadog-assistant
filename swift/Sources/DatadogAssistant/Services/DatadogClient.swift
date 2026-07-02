@@ -76,18 +76,23 @@ final class DatadogClient: DataSource {
     private struct MonitorDTO: Decodable {
         struct Options: Decodable {
             let silenced: [String: Int?]?
+            let notify_no_data: Bool?
+            let on_missing_data: String?
         }
         struct StateGroup: Decodable {
             let status: String?
             let last_triggered_ts: Int?
+            let last_nodata_ts: Int?
         }
         struct State: Decodable {
             let groups: [String: StateGroup]?
         }
         let id: Int
         let name: String?
+        let type: String?
         let query: String?
         let overall_state: String?
+        let overall_state_modified: String?
         let priority: Int?
         let tags: [String]?
         let options: Options?
@@ -98,6 +103,7 @@ final class DatadogClient: DataSource {
         // Datadog's monitor_tags param is AND logic; the filter wants OR
         // (same as the Python app), so fetch once per selected tag and dedupe
         // by monitor ID.
+        probesThisPoll = 0
         let filter = FilterConfig.load()
         var dtos: [MonitorDTO]
         if filter.tags.count > 1 {
@@ -114,18 +120,118 @@ final class DatadogClient: DataSource {
         queriesByID = Dictionary(uniqueKeysWithValues: dtos.compactMap { dto in
             QueryParser.parse(dto.query ?? "").map { (dto.id, $0.metricQuery) }
         })
-        return dtos.map(Self.monitor(from:)).map { m in
-            var monitor = m
-            monitor.url = credentials.appBaseURL.appendingPathComponent("/monitors/\(m.id)")
-            return monitor
+        var monitors: [Monitor] = []
+        for dto in dtos {
+            var monitor = Self.monitor(from: dto)
+            monitor.url = credentials.appBaseURL.appendingPathComponent("/monitors/\(dto.id)")
+            monitor.isDLQ = DLQConfig.load().matches(name: monitor.name,
+                                                     tags: monitor.tags,
+                                                     query: dto.query ?? "")
+            if monitor.state == .noData {
+                (monitor.noDataQuiet, monitor.noDataReason) = await triageNoData(dto)
+            } else {
+                probeCache.removeValue(forKey: dto.id)
+            }
+            monitors.append(monitor)
         }
+        return monitors
+    }
+
+    // MARK: - No-Data triage (broken vs quiet)
+
+    private static let eventMonitorTypes: Set<String> = [
+        "log alert", "event alert", "event-v2 alert", "rum alert",
+        "trace-analytics alert", "error-tracking alert",
+        "ci-pipelines alert", "ci-tests alert", "audit alert",
+    ]
+    private static let staleHours = 48.0
+    private static let probeLookbackHours = 24.0
+    private static let maxProbes = 6
+
+    /// Verdicts cached while a monitor stays in No Data; probes are the
+    /// expensive part and silence rarely changes shape.
+    private var probeCache: [Int: (quiet: Bool, reason: String)] = [:]
+    private var probesThisPoll = 0
+
+    /// Split No Data into "likely broken" (top-level, notifies) and "quiet"
+    /// (expected — collapsed, silent). Port of the Python `_triage_no_data`
+    /// ladder; defaults to broken when ambiguous.
+    private func triageNoData(_ dto: MonitorDTO) async -> (quiet: Bool, reason: String) {
+        if let cached = probeCache[dto.id] { return cached }
+
+        func remember(_ verdict: (quiet: Bool, reason: String)) -> (Bool, String) {
+            probeCache[dto.id] = verdict
+            return verdict
+        }
+
+        let onMissing = dto.options?.on_missing_data ?? ""
+        if onMissing == "resolve" || onMissing == "show_ok" {
+            return remember((true, "resolves when data stops — silence is expected"))
+        }
+        if dto.options?.notify_no_data == false, !onMissing.hasPrefix("show_and_notify") {
+            return remember((true, "monitor doesn't alert on missing data"))
+        }
+        if let type = dto.type, Self.eventMonitorTypes.contains(type) {
+            return remember((true, "\(type) — zero events is normal"))
+        }
+        if let age = noDataAge(dto), age > Self.staleHours * 3600 {
+            return remember((true, "no data for \(Int(age / 86400))d — likely retired"))
+        }
+        // Live probe: was the metric flowing and then stopped (broken), or has
+        // it been silent all along (quiet)? Budgeted per poll.
+        if let metricQuery = queriesByID[dto.id], probesThisPoll < Self.maxProbes {
+            probesThisPoll += 1
+            if let hadData = await probeHadRecentData(metricQuery) {
+                return remember(hadData
+                    ? (false, "metric was flowing, then stopped")
+                    : (true, "metric has been silent for 24h+"))
+            }
+        }
+        if dto.options?.notify_no_data == true {
+            return remember((false, "monitor explicitly alerts on missing data"))
+        }
+        return remember((false, "no data — check the source"))
+    }
+
+    private func noDataAge(_ dto: MonitorDTO) -> TimeInterval? {
+        let now = Date().timeIntervalSince1970
+        if let ts = dto.state?.groups?.values.compactMap(\.last_nodata_ts).min() {
+            return now - TimeInterval(ts)
+        }
+        if let modified = dto.overall_state_modified {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = iso.date(from: modified) ?? ISO8601DateFormatter().date(from: modified) {
+                return now - date.timeIntervalSince1970
+            }
+        }
+        return nil
+    }
+
+    /// True if the metric had any points in the lookback window; nil when the
+    /// probe itself failed (no verdict).
+    private func probeHadRecentData(_ metricQuery: String) async -> Bool? {
+        let now = Int(Date().timeIntervalSince1970)
+        let url = credentials.apiBaseURL
+            .appendingPathComponent("/api/v1/query")
+            .appending(queryItems: [
+                URLQueryItem(name: "from", value: String(now - Int(Self.probeLookbackHours * 3600))),
+                URLQueryItem(name: "to", value: String(now)),
+                URLQueryItem(name: "query", value: metricQuery),
+            ])
+        guard let (data, response) = try? await session.data(for: authedRequest(url: url)),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let decoded = try? JSONDecoder().decode(QuerySeriesDTO.self, from: data)
+        else { return nil }
+        let points = decoded.series?.flatMap { $0.pointlist ?? [] } ?? []
+        return !points.isEmpty
     }
 
     /// Paginated fetch (200/page) so one giant response can't stall on large
     /// orgs; hard page cap mirrors the Python app's runaway-loop guard.
     private func fetchMonitorsPage(tag: String, name: String) async throws -> [MonitorDTO] {
         var queryItems = [
-            URLQueryItem(name: "group_states", value: "alert,warn"),
+            URLQueryItem(name: "group_states", value: "all"),
             URLQueryItem(name: "page_size", value: "200"),
         ]
         if !tag.isEmpty { queryItems.append(URLQueryItem(name: "monitor_tags", value: tag)) }

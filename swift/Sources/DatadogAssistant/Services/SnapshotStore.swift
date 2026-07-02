@@ -46,7 +46,7 @@ final class SnapshotStore: ObservableObject {
     }
 
     struct Transition {
-        enum Kind { case fired, warned, recovered }
+        enum Kind { case fired, warned, wentNoData, recovered }
         let kind: Kind
         let monitor: Monitor
     }
@@ -124,6 +124,7 @@ final class SnapshotStore: ObservableObject {
         do {
             var next = try await source.fetchSnapshot(previous: snapshot)
 
+            next.monitors = MonitorAliases.apply(to: next.monitors)
             // Remember every tag we've ever seen so the filter dropdown can
             // offer the full menu even while a narrowing filter is active.
             FilterConfig.recordSeenTags(next.monitors.flatMap(\.tags))
@@ -179,8 +180,8 @@ final class SnapshotStore: ObservableObject {
                     let lag = now.timeIntervalSince(since)
                     if lag >= 0, lag < 3600 { next.lastDetectionSeconds = Int(lag) }
                 }
-            case .warned:
-                break   // warnings aren't counted as alerts
+            case .warned, .wentNoData:
+                break   // not counted as alerts
             case .recovered:
                 if let since = transition.monitor.firingSince {
                     let duration = now.timeIntervalSince(since)
@@ -307,12 +308,19 @@ final class SnapshotStore: ObservableObject {
         let warned = new.warning.filter {
             !oldWarning.contains($0.id) && !oldAlerting.contains($0.id)
         }
+        // Newly broken-No-Data (triage already filtered the quiet kind out of
+        // `noData`) — silence that matters.
+        let oldNoData = Set(old.noData.map(\.id))
+        let wentNoData = new.noData.filter {
+            !oldNoData.contains($0.id) && !oldAlerting.contains($0.id)
+        }
         let recovered = old.alerting.filter { monitor in
             !newAlerting.contains(monitor.id)
                 && new.monitors.first(where: { $0.id == monitor.id })?.state == .ok
         }
         return fired.map { Transition(kind: .fired, monitor: $0) }
             + warned.map { Transition(kind: .warned, monitor: $0) }
+            + wentNoData.map { Transition(kind: .wentNoData, monitor: $0) }
             + recovered.map { Transition(kind: .recovered, monitor: $0) }
     }
 
