@@ -19,6 +19,7 @@
   "app_subdomain": "app",
   "browser": "",
   "refresh_seconds": 60,
+  "debug": false,
   "tag_filter": "team:payments env:prod",
   "name_filter": "",
   "notifications": {

@@ -29,9 +29,12 @@ import hashlib
 import http.client
 import http.server
 import json
+import logging
+import logging.handlers
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -42,6 +45,7 @@ import webbrowser
 import urllib.request
 import urllib.parse
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 try:
@@ -52,9 +56,38 @@ except ImportError:
         "(or use the provided install.sh)"
     )
 
+__version__ = "1.1.0"
+
 APP_NAME = "Datadog Assistant"
 CONFIG_DIR = os.path.expanduser("~/.config/datadog-assistant")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
+
+# --------------------------------------------------------------------------
+# Logging — a rotating file, because as an LSUIElement bundle there is no
+# terminal: without this every swallowed exception in the app is invisible.
+# DD_DEBUG=1 (or "debug": true in config.json) turns on debug logging.
+# --------------------------------------------------------------------------
+log = logging.getLogger("datadog-assistant")
+
+
+def _setup_logging(debug=False):
+    if log.handlers:      # idempotent (tests / re-init)
+        log.setLevel(logging.DEBUG if debug else logging.INFO)
+        return
+    log.setLevel(logging.DEBUG if debug else logging.INFO)
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        h = logging.handlers.RotatingFileHandler(
+            os.path.join(CONFIG_DIR, "app.log"),
+            maxBytes=1_000_000, backupCount=3)
+        h.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(message)s"))
+        log.addHandler(h)
+    except OSError:
+        log.addHandler(logging.NullHandler())
+
+
+_setup_logging(os.environ.get("DD_DEBUG") == "1")
 
 DEFAULT_CONFIG = {
     "auth": "keys",                # "keys" | "oauth" | "lastpass"
@@ -80,8 +113,12 @@ DEFAULT_CONFIG = {
                                    # — "" uses the system default (often Safari, where
                                    # you may not have a Datadog session)
     "refresh_seconds": 60,
-    "tag_filter": "",              # e.g. "team:payments env:prod" — only show matching monitors
+    "tag_filter": "",              # space-separated tags, OR logic — a monitor
+                                   # matching ANY of them is shown, e.g.
+                                   # "team:payments team:platform"
     "name_filter": "",             # substring match on monitor names
+    "debug": False,                # verbose logging to <config dir>/app.log
+                                   # (DD_DEBUG=1 env var works too)
     "notifications": {
         "enabled": True,
         "style": "both",           # "banner" | "modal" | "both"  (modal = unmissable popup)
@@ -276,25 +313,35 @@ def _ensure_config_dir():
         pass
 
 
+# Serializes every config/state mutation + dump across threads: the Jira
+# worker, the OAuth refresh path and main-thread Preferences all persist these
+# dicts, and json.dump over a dict another thread is mutating raises
+# "dictionary changed size during iteration" (previously swallowed, silently
+# losing the write). RLock so save_* can be called inside a locked section.
+_STATE_LOCK = threading.RLock()
+
+
 def _write_private_json(path, obj):
     """Write JSON atomically with 0600 perms: render to a temp file in the same
     dir, fsync, then os.replace() so a crash mid-write can't truncate the real
     file and concurrent writers can't interleave."""
     _ensure_config_dir()
-    fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".tmp-", suffix=".json")
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(obj, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except Exception:
+    with _STATE_LOCK:
+        fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".tmp-",
+                                   suffix=".json")
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(obj, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
 
 def load_config():
@@ -304,7 +351,15 @@ def load_config():
     try:
         with open(CONFIG_PATH) as f:
             user_cfg = json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as e:
+        # Don't silently run on defaults AND overwrite the user's file on the
+        # next Preferences save — keep the broken original for repair.
+        log.error("config.json unreadable (%s) — using defaults; original "
+                  "kept at config.json.broken", e)
+        try:
+            shutil.copy2(CONFIG_PATH, CONFIG_PATH + ".broken")
+        except OSError:
+            pass
         user_cfg = {}
     return deep_merge(DEFAULT_CONFIG, user_cfg)
 
@@ -325,6 +380,21 @@ def save_config(cfg):
     _write_private_json(CONFIG_PATH, _strip_ephemeral(cfg))
 
 
+# Set by DatadogAssistant.__init__ to persist the live config. The API
+# clients use it when an OAuth refresh token rotates and the Keychain write
+# fails: without persisting the cfg fallback, the rotated token lives only in
+# memory and the next restart is permanently locked out of OAuth.
+_CONFIG_SAVER = None
+
+
+def _persist_config():
+    if _CONFIG_SAVER is not None:
+        try:
+            _CONFIG_SAVER()
+        except Exception:
+            log.exception("persisting config failed")
+
+
 OPEN_BROWSER = ""  # set from cfg at startup; "" = system default browser
 
 
@@ -343,13 +413,24 @@ def open_url(url):
 
 
 def keychain_set(service, value):
+    """Store a secret in the login Keychain. The command is fed to
+    `security -i` on stdin so the secret never appears in argv, where any
+    local process could read it via ps while the call runs."""
+    account = os.environ.get("USER", "datadog-assistant")
+    quoted = '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
     try:
-        out = subprocess.run(
-            ["security", "add-generic-password", "-U", "-s", service,
-             "-a", os.environ.get("USER", "datadog-assistant"), "-w", value],
+        subprocess.run(
+            ["security", "-i"],
+            input=(f'add-generic-password -U -s "{service}" '
+                   f'-a "{account}" -w {quoted}\n'),
+            capture_output=True, text=True, timeout=10)
+        # `security -i` exit codes are unreliable — verify the item landed.
+        chk = subprocess.run(
+            ["security", "find-generic-password", "-s", service],
             capture_output=True, timeout=5)
-        return out.returncode == 0
+        return chk.returncode == 0
     except Exception:
+        log.exception("keychain_set(%s) failed", service)
         return False
 
 
@@ -362,7 +443,8 @@ def _cache_get(key):
     if key in _SECRET_CMD_CACHE:
         if time.time() - _SECRET_CMD_CACHE_TIME.get(key, 0) < _SECRET_CACHE_TTL:
             return _SECRET_CMD_CACHE[key]
-        del _SECRET_CMD_CACHE[key]
+        # pop, not del: two threads can expire the same key concurrently
+        _SECRET_CMD_CACHE.pop(key, None)
         _SECRET_CMD_CACHE_TIME.pop(key, None)
     return None
 
@@ -952,11 +1034,24 @@ DD_OAUTH_PORT = 8918  # must match the OAuth client's registered callback URL
 DD_OAUTH_SCOPES = ("monitors_read monitors_write monitors_downtime "
                    "dashboards_read incident_read metrics_read events_read")
 
+# Datadog regions the OAuth redirect may legitimately name in its `domain`
+# param. It gets persisted as the API base for ALL future traffic, so it must
+# be allowlisted — an attacker hitting the local listener could otherwise
+# reroute API calls (and the token POST with the client secret) anywhere.
+DD_SITES = {"datadoghq.com", "datadoghq.eu", "us3.datadoghq.com",
+            "us5.datadoghq.com", "ap1.datadoghq.com", "ap2.datadoghq.com",
+            "ddog-gov.com"}
+
 
 class DatadogClient:
     def __init__(self, cfg):
         self.cfg = cfg
         self._access = {"token": "", "expires": 0}  # cached OAuth access token
+        # One refresh at a time: the poll worker and main-thread menu actions
+        # can both find the token expired; with rotating refresh tokens, two
+        # concurrent refreshes send the same (single-use) token — providers
+        # treat reuse as theft and can revoke the whole grant.
+        self._tok_lock = threading.Lock()
 
     def auth_mode(self):
         return self.cfg.get("auth", "keys")
@@ -1015,6 +1110,10 @@ class DatadogClient:
         raw = json.dumps(blob)
         if not keychain_set("datadog-assistant-oauth", raw):
             self.cfg["oauth_blob"] = raw  # non-Keychain fallback
+            # Rotated refresh tokens are single-use: if this in-memory copy
+            # is lost to a restart before the config is next saved, OAuth is
+            # permanently dead until manual re-consent. Persist immediately.
+            _persist_config()
 
     def configured(self):
         """Are credentials present for the active auth mode?"""
@@ -1032,33 +1131,37 @@ class DatadogClient:
 
     def _access_token(self):
         """A valid OAuth access token (TTL ~1h), refreshed via the rotating
-        refresh token when the cached one is about to expire."""
-        if self._access["token"] and time.time() < self._access["expires"] - 60:
+        refresh token when the cached one is about to expire. Locked so
+        concurrent callers can't both consume the single-use refresh token."""
+        with self._tok_lock:
+            if self._access["token"] and \
+                    time.time() < self._access["expires"] - 60:
+                return self._access["token"]
+            blob = self._oauth_blob()
+            data = urllib.parse.urlencode({
+                "grant_type": "refresh_token",
+                "client_id": self.cfg.get("oauth_client_id", ""),
+                "client_secret": blob.get("client_secret", ""),
+                "refresh_token": blob.get("refresh_token", ""),
+            }).encode()
+            req = urllib.request.Request(
+                f"https://api.{self._oauth_api()}/oauth2/v1/token",
+                data=data, method="POST")
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
+            try:
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    tok = json.loads(resp.read().decode())
+            except urllib.error.HTTPError as e:
+                raise RuntimeError(
+                    f"Datadog OAuth refresh failed ({e.code}): "
+                    f"{http_error_detail(e)} — reconnect via Preferences") from e
+            self._access = {"token": tok["access_token"],
+                            "expires": time.time()
+                            + int(tok.get("expires_in", 3600))}
+            if tok.get("refresh_token"):  # Datadog rotates refresh tokens
+                blob["refresh_token"] = tok["refresh_token"]
+                self._save_oauth_blob(blob)
             return self._access["token"]
-        blob = self._oauth_blob()
-        data = urllib.parse.urlencode({
-            "grant_type": "refresh_token",
-            "client_id": self.cfg.get("oauth_client_id", ""),
-            "client_secret": blob.get("client_secret", ""),
-            "refresh_token": blob.get("refresh_token", ""),
-        }).encode()
-        req = urllib.request.Request(
-            f"https://api.{self._oauth_api()}/oauth2/v1/token",
-            data=data, method="POST")
-        req.add_header("Content-Type", "application/x-www-form-urlencoded")
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                tok = json.loads(resp.read().decode())
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(
-                f"Datadog OAuth refresh failed ({e.code}): "
-                f"{http_error_detail(e)} — reconnect via Preferences") from e
-        self._access = {"token": tok["access_token"],
-                        "expires": time.time() + int(tok.get("expires_in", 3600))}
-        if tok.get("refresh_token"):  # Datadog rotates refresh tokens
-            blob["refresh_token"] = tok["refresh_token"]
-            self._save_oauth_blob(blob)
-        return self._access["token"]
 
     def _request(self, method, path, params=None, body=None, version="v1",
                  timeout=30):
@@ -1072,8 +1175,13 @@ class DatadogClient:
         if params:
             url += "?" + urllib.parse.urlencode(params)
         data = json.dumps(body).encode() if body is not None else None
+        # Only GETs are retried: POST/DELETE here (mute, delete, create
+        # monitor) are not idempotent — a response that dies mid-read after
+        # the server processed it must not be re-sent (duplicate monitors,
+        # re-fired mutes).
+        attempts = 3 if method == "GET" else 1
         last_err = None
-        for attempt in range(3):
+        for attempt in range(attempts):
             req = urllib.request.Request(url, data=data, method=method)
             if oauth:
                 req.add_header("Authorization", "Bearer " + token)
@@ -1089,10 +1197,33 @@ class DatadogClient:
                         raw = gzip.decompress(raw)
                     payload = raw.decode()
                     return json.loads(payload) if payload else {}
+            except urllib.error.HTTPError as e:
+                # 429 (rate limit) / transient 5xx: back off and retry GETs,
+                # honouring Retry-After when Datadog sends one.
+                if e.code in (429, 502, 503, 504) and attempt < attempts - 1:
+                    retry_after = e.headers.get("Retry-After") if e.headers \
+                        else None
+                    try:
+                        delay = min(30, float(retry_after))
+                    except (TypeError, ValueError):
+                        delay = 1 + attempt * 2
+                    log.warning("HTTP %s from %s — retrying in %.1fs",
+                                e.code, path, delay)
+                    e.close()
+                    time.sleep(delay)
+                    last_err = e
+                    continue
+                raise
             except (http.client.IncompleteRead, ConnectionResetError,
-                    TimeoutError) as e:
+                    TimeoutError, socket.timeout,
+                    urllib.error.URLError) as e:
+                # URLError covers DNS blips and connect-phase timeouts, which
+                # the old tuple missed entirely.
                 last_err = e
-                time.sleep(1 + attempt)
+                if attempt < attempts - 1:
+                    log.debug("network error on %s (%s) — retry %d",
+                              path, e, attempt + 1)
+                    time.sleep(1 + attempt)
         raise last_err
 
     def get_monitors(self):
@@ -1165,11 +1296,22 @@ class DatadogClient:
         return f"{self.app_base}/incidents/{public_id}"
 
     def get_incidents(self):
-        """Active (non-resolved) incidents, newest first."""
-        data = self._request("GET", "/incidents",
-                             params={"page[size]": 25}, version="v2")
+        """Active (non-resolved) incidents, newest first. Paginated: on a busy
+        org the newest 25 can all be resolved ones, which would hide older
+        still-active incidents if only the first page were fetched."""
+        rows, offset = [], 0
+        for _ in range(8):               # cap: 8 pages = 200 incidents
+            data = self._request(
+                "GET", "/incidents",
+                params={"page[size]": 25, "page[offset]": offset},
+                version="v2")
+            batch = data.get("data", [])
+            rows.extend(batch)
+            if len(batch) < 25:
+                break
+            offset += 25
         out = []
-        for inc in data.get("data", []):
+        for inc in rows:
             a = inc.get("attributes", {})
             if (a.get("state") or "").lower() == "resolved":
                 continue
@@ -1276,6 +1418,7 @@ class JiraClient:
     def __init__(self, cfg):
         self.cfg = cfg or {}
         self._access = {"token": "", "expires": 0}  # cached OAuth access token
+        self._tok_lock = threading.Lock()  # see DatadogClient._tok_lock
 
     def enabled(self):
         return bool(self.cfg.get("enabled"))
@@ -1301,6 +1444,7 @@ class JiraClient:
         raw = json.dumps(blob)
         if not keychain_set("datadog-assistant-jira-oauth", raw):
             self.cfg["oauth_blob"] = raw  # non-Keychain fallback
+            _persist_config()  # rotated tokens are single-use — see Datadog twin
 
     def configured(self):
         if self.auth_mode() == "oauth":
@@ -1312,32 +1456,36 @@ class JiraClient:
 
     def _access_token(self):
         """Valid OAuth access token, refreshed via the (rotating) refresh
-        token when the cached one is about to expire."""
-        if self._access["token"] and time.time() < self._access["expires"] - 60:
+        token when the cached one is about to expire. Locked — Atlassian
+        treats refresh-token reuse as theft and revokes the token family."""
+        with self._tok_lock:
+            if self._access["token"] and \
+                    time.time() < self._access["expires"] - 60:
+                return self._access["token"]
+            blob = self._oauth_blob()
+            body = {"grant_type": "refresh_token",
+                    "client_id": self.cfg.get("oauth_client_id", ""),
+                    "client_secret": (self.cfg.get("_lp_client_secret")
+                                      or blob.get("client_secret", "")),
+                    "refresh_token": blob.get("refresh_token", "")}
+            req = urllib.request.Request(JIRA_OAUTH_TOKEN_URL,
+                                         data=json.dumps(body).encode(),
+                                         method="POST")
+            req.add_header("Content-Type", "application/json")
+            try:
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    tok = json.loads(resp.read().decode())
+            except urllib.error.HTTPError as e:
+                raise RuntimeError(
+                    f"Jira OAuth refresh failed ({e.code}): "
+                    f"{http_error_detail(e)} — reconnect via Preferences") from e
+            self._access = {"token": tok["access_token"],
+                            "expires": time.time()
+                            + int(tok.get("expires_in", 3600))}
+            if tok.get("refresh_token"):  # Atlassian rotates refresh tokens
+                blob["refresh_token"] = tok["refresh_token"]
+                self._save_oauth_blob(blob)
             return self._access["token"]
-        blob = self._oauth_blob()
-        body = {"grant_type": "refresh_token",
-                "client_id": self.cfg.get("oauth_client_id", ""),
-                "client_secret": (self.cfg.get("_lp_client_secret")
-                                  or blob.get("client_secret", "")),
-                "refresh_token": blob.get("refresh_token", "")}
-        req = urllib.request.Request(JIRA_OAUTH_TOKEN_URL,
-                                     data=json.dumps(body).encode(),
-                                     method="POST")
-        req.add_header("Content-Type", "application/json")
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                tok = json.loads(resp.read().decode())
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(
-                f"Jira OAuth refresh failed ({e.code}): "
-                f"{http_error_detail(e)} — reconnect via Preferences") from e
-        self._access = {"token": tok["access_token"],
-                        "expires": time.time() + int(tok.get("expires_in", 3600))}
-        if tok.get("refresh_token"):  # Atlassian rotates refresh tokens
-            blob["refresh_token"] = tok["refresh_token"]
-            self._save_oauth_blob(blob)
-        return self._access["token"]
 
     def _request(self, method, path, params=None, body=None):
         if self.auth_mode() == "oauth":
@@ -1512,7 +1660,7 @@ def notify_banner(title, subtitle, message, sound_name=None, url=None):
         f'with title "{esc(title)}" subtitle "{esc(subtitle)}"'
     )
     if sound_name:
-        script += f' sound name "{sound_name}"'
+        script += f' sound name "{esc(str(sound_name))}"'
     _osa(script)
 
 
@@ -1555,10 +1703,21 @@ def ask_text(title, message, default="", secure=False, ok="Next"):
     return m.group(1).strip() if m else None
 
 
+# At most a few modal dialogs at once: when a shared dependency dies and 30
+# monitors flip to Alert in one poll, 30 stacked "critical" dialogs (each
+# alive up to 300s) would make the desktop unusable. Overflow degrades to a
+# banner, which still carries the message.
+_MODAL_SLOTS = threading.BoundedSemaphore(3)
+
+
 def notify_modal(title, message, url=None):
     """The unmissable one. Blocks until dismissed; can jump to Datadog."""
     def esc(s):
         return s.replace("\\", "\\\\").replace('"', '\\"')
+
+    if not _MODAL_SLOTS.acquire(blocking=False):
+        notify_banner(title, "Datadog Assistant 🐶", message[:200], url=url)
+        return
 
     def run():
         buttons = '{"Open in Datadog 🔗", "Dismiss"}' if url else '{"Dismiss"}'
@@ -1576,7 +1735,9 @@ def notify_modal(title, message, url=None):
             if url and "Open in Datadog" in (out.stdout or ""):
                 open_url(url)
         except Exception:
-            pass
+            log.exception("modal notification failed")
+        finally:
+            _MODAL_SLOTS.release()
 
     threading.Thread(target=run, daemon=True).start()
 
@@ -1588,7 +1749,12 @@ def notify_modal(title, message, url=None):
 class DatadogAssistant(rumps.App):
     def __init__(self):
         self.cfg = load_config()
-        global OPEN_BROWSER
+        _setup_logging(bool(self.cfg.get("debug"))
+                       or os.environ.get("DD_DEBUG") == "1")
+        log.info("starting v%s (auth=%s, site=%s)", __version__,
+                 self.cfg.get("auth"), self.cfg.get("site"))
+        global OPEN_BROWSER, _CONFIG_SAVER
+        _CONFIG_SAVER = lambda: save_config(self.cfg)
         OPEN_BROWSER = self.cfg.get("browser", "")
         self.client = DatadogClient(self.cfg)
         # If using LastPass auth, auto-wire Jira OAuth credentials from the note
@@ -1634,7 +1800,10 @@ class DatadogAssistant(rumps.App):
         self.last_refresh = None
         self.last_error = None
         self.results = queue.Queue()
-        self._fetching = False
+        # Real lock, not a bool: _poll_tick can be reached from worker
+        # threads (via _request_poll), and a check-then-set flag lets two
+        # near-simultaneous callers both start a fetch.
+        self._fetch_lock = threading.Lock()
 
         self._menu_fp = None
         self._refresh_item = None
@@ -1670,12 +1839,24 @@ class DatadogAssistant(rumps.App):
     # -------------------- polling --------------------
 
     def _poll_tick(self, _):
-        if self._fetching:
-            return
-        self._fetching = True
+        """Kick a refresh. Main-thread only (it touches menu items) — worker
+        threads must use _request_poll instead."""
+        if not self._fetch_lock.acquire(blocking=False):
+            return  # a fetch is already in flight
         if self._refresh_item is not None:
             self._refresh_item.title = "⏳ Refreshing…"
         threading.Thread(target=self._fetch, daemon=True).start()
+
+    def _request_poll(self):
+        """Schedule _poll_tick on the main thread — safe from any thread.
+        Worker code (mute/delete actions, setup wizards) must not call
+        _poll_tick directly: it mutates NSMenuItem state, which is
+        main-thread-only in AppKit."""
+        try:
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(self._poll_tick, None)
+        except Exception:
+            self._poll_tick(None)  # no pyobjc (tests/dev) — call directly
 
     def _fetch(self):
         try:
@@ -1738,11 +1919,14 @@ class DatadogAssistant(rumps.App):
                     payload["monitors"], dict(self.nodata_probe))
                 self.results.put(("data", payload))
         except urllib.error.HTTPError as e:
+            log.warning("poll failed: HTTP %s from Datadog API (%s)",
+                        e.code, http_error_detail(e))
             self.results.put(("error", f"HTTP {e.code} from Datadog API"))
         except Exception as e:
+            log.exception("poll failed")
             self.results.put(("error", str(e)[:120]))
         finally:
-            self._fetching = False
+            self._fetch_lock.release()
             self._request_drain()
 
     def _request_drain(self):
@@ -1785,7 +1969,12 @@ class DatadogAssistant(rumps.App):
                        if k in nodata_ids},
                     **payload.get("nodata_probe", {})}
                 self._handle_new_monitors(payload["monitors"])
-                self._maybe_digest()
+                try:
+                    self._maybe_digest()
+                except Exception:
+                    # e.g. a malformed digest_hour — must not freeze the
+                    # menu/title update below on every drain
+                    log.exception("digest failed")
             else:
                 self.last_error = payload
             updated = True
@@ -1796,17 +1985,19 @@ class DatadogAssistant(rumps.App):
             fp = self._menu_fingerprint()
             if fp != self._menu_fp:
                 self._rebuild_menu()
-            elif self._refresh_item is not None and self.last_refresh:
-                self._refresh_item.title = (
-                    f"🔄 Refresh now (last: "
-                    f"{self.last_refresh.strftime('%H:%M:%S')})")
+            elif self._refresh_item is not None:
+                # always restore the row — even a repeat error with no
+                # last_refresh yet must clear "⏳ Refreshing…"
+                ts = (self.last_refresh.strftime("%H:%M:%S")
+                      if self.last_refresh else "never")
+                self._refresh_item.title = f"🔄 Refresh now (last: {ts})"
             self._update_title()
 
     def _menu_fingerprint(self):
         mons = tuple(sorted(
             (m.get("id") or 0, self._display_name(m), m.get("overall_state") or "",
              parse_priority(m) or 0,
-             bool((m.get("options") or {}).get("silenced")),
+             self._is_fully_muted(m),
              len(self._triggered_groups(m)),
              self._is_dlq(m),
              self._triage_no_data(m)[0]
@@ -1830,6 +2021,25 @@ class DatadogAssistant(rumps.App):
         return (self.last_error, time.time() < self.snooze_until,
                 mons, enr, dlqh, dep, svc, inc, dash, bucket)
 
+    @staticmethod
+    def _pmap(fn, items, workers=4):
+        """Run fn over items on a small thread pool, keeping (item, result)
+        pairs and dropping failures (logged). The per-monitor metric queries
+        were serial: with a degraded network each 10s timeout stacked up and
+        one refresh could take minutes, during which no alerts are noticed."""
+        results = []
+        if not items:
+            return results
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(fn, it): it for it in items}
+            for fut, it in futs.items():
+                try:
+                    results.append((it, fut.result()))
+                except Exception as e:
+                    log.debug("metric query failed for %s: %s",
+                              (it.get("id") if isinstance(it, dict) else it), e)
+        return results
+
     def _fetch_enrichment(self, monitors):
         """Live metric values + sparklines for the hottest alerting monitors."""
         window = int(self.cfg["context"].get("sparkline_window_minutes", 60))
@@ -1838,26 +2048,25 @@ class DatadogAssistant(rumps.App):
                if m.get("overall_state") in ("Alert", "Warn")
                and m.get("type") in ("metric alert", "query alert")]
         hot.sort(key=lambda m: parse_priority(m) or 9)
-        for m in hot[:8]:
+        hot = [m for m in hot[:8] if extract_metric_query(m.get("query", ""))]
+
+        def one(m):
             q = extract_metric_query(m.get("query", ""))
-            if not q:
+            return self.client.query_metrics(q, window).get("series", [])
+
+        for m, series in self._pmap(one, hot):
+            if not series:
                 continue
-            try:
-                series = self.client.query_metrics(q, window).get("series", [])
-                if not series:
-                    continue
-                points = [p[1] for p in series[0].get("pointlist", [])]
-                lasts = []
-                for s in series:
-                    pl = s.get("pointlist") or []
-                    if pl and pl[-1][1] is not None:
-                        lasts.append(pl[-1][1])
-                thr = ((m.get("options") or {}).get("thresholds") or {}).get("critical")
-                out[m["id"]] = {"spark": sparkline(points),
-                                "now": max(lasts) if lasts else None,
-                                "crit": thr}
-            except Exception:
-                continue
+            points = [p[1] for p in series[0].get("pointlist", [])]
+            lasts = []
+            for s in series:
+                pl = s.get("pointlist") or []
+                if pl and pl[-1][1] is not None:
+                    lasts.append(pl[-1][1])
+            thr = ((m.get("options") or {}).get("thresholds") or {}).get("critical")
+            out[m["id"]] = {"spark": sparkline(points),
+                            "now": max(lasts) if lasts else None,
+                            "crit": thr}
         return out
 
     def _fetch_dlq_history(self, monitors):
@@ -1874,34 +2083,34 @@ class DatadogAssistant(rumps.App):
         dlqs = [m for m in monitors if self._is_dlq(m)
                 and m.get("type") in ("metric alert", "query alert")]
         dlqs.sort(key=lambda m: SEV_RANK.get(self._bucket_of(m), 9))
-        out = {}
-        for m in dlqs[:cap]:
+        dlqs = [m for m in dlqs[:cap]
+                if extract_metric_query(m.get("query", ""))]
+
+        def one(m):
             q = extract_metric_query(m.get("query", ""))
-            if not q:
+            return self.client.query_metrics(q, window).get("series", [])
+
+        out = {}
+        for m, series in self._pmap(one, dlqs):
+            if not series:
                 continue
-            try:
-                series = self.client.query_metrics(q, window).get("series", [])
-                if not series:
-                    continue
-                # sum groups per timestamp -> total backlog over time
-                agg = {}
-                for s in series:
-                    for tms, val in s.get("pointlist", []):
-                        if val is not None:
-                            agg[tms] = agg.get(tms, 0.0) + val
-                points = [agg[t] for t in sorted(agg)]
-                if len(points) < 2:
-                    continue
-                chart = dither_chart(points, width, height)
-                if not chart:
-                    continue
-                thr = ((m.get("options") or {}).get("thresholds")
-                       or {}).get("critical")
-                out[m["id"]] = {"chart": chart, "now": points[-1],
-                                "peak": max(points), "crit": thr,
-                                "trend": _trend_label(points)}
-            except Exception:
+            # sum groups per timestamp -> total backlog over time
+            agg = {}
+            for s in series:
+                for tms, val in s.get("pointlist", []):
+                    if val is not None:
+                        agg[tms] = agg.get(tms, 0.0) + val
+            points = [agg[t] for t in sorted(agg)]
+            if len(points) < 2:
                 continue
+            chart = dither_chart(points, width, height)
+            if not chart:
+                continue
+            thr = ((m.get("options") or {}).get("thresholds")
+                   or {}).get("critical")
+            out[m["id"]] = {"chart": chart, "now": points[-1],
+                            "peak": max(points), "crit": thr,
+                            "trend": _trend_label(points)}
         return out
 
     # ---------------- service context: repos, deploys, runbooks ------------
@@ -2141,6 +2350,14 @@ class DatadogAssistant(rumps.App):
 
     # -------------------- state transitions & notifications --------------------
 
+    @staticmethod
+    def _is_fully_muted(m):
+        """options.silenced is a per-scope dict: {"*": end} mutes the whole
+        monitor, {"host:a": end} mutes ONE group. Only a whole-monitor mute
+        may suppress notifications/bucketing — treating any partial mute as
+        muted silently drops real alerts on the unmuted groups."""
+        return "*" in ((m.get("options") or {}).get("silenced") or {})
+
     def _handle_new_monitors(self, monitors):
         self.monitors = monitors
         ncfg = self.cfg["notifications"]
@@ -2153,7 +2370,7 @@ class DatadogAssistant(rumps.App):
             prev = self.prev_states.get(mid)
             name = self._display_name(m)
             url = self.client.monitor_url(mid)
-            muted = bool((m.get("options") or {}).get("silenced"))
+            muted = self._is_fully_muted(m)
 
             should, title, body = None, None, None
             if prev is None:
@@ -2207,10 +2424,17 @@ class DatadogAssistant(rumps.App):
                         title = "⚪ No Data — Datadog"
                         body = f"{name} ({reason})" if reason else name
 
-            self.prev_states[mid] = state
-            self.prev_muted[mid] = muted
+            # A transition whose notification is suppressed by snooze (or
+            # notifications-off) must NOT be committed to prev_states —
+            # otherwise it is consumed silently and never announced after
+            # waking up. Leaving prev unchanged re-detects it next poll.
+            notif_on = ncfg.get("enabled", True)
+            suppressed = bool(should) and (snoozed or not notif_on)
+            if not suppressed:
+                self.prev_states[mid] = state
+                self.prev_muted[mid] = muted
 
-            if should and ncfg.get("enabled", True) and not snoozed and not muted:
+            if should and notif_on and not snoozed and not muted:
                 self.last_notified[mid] = now
                 rule = self._severity_rule(m)
                 style = rule.get("style", ncfg.get("style", "both"))
@@ -2294,13 +2518,15 @@ class DatadogAssistant(rumps.App):
                                           f"{key} covers this monitor")
                         return
                 key = self.jira.create_issue(mid, name, url, ctx, auto_labels)
-                self.state.setdefault("jira_created", {})[str(mid)] = key
-                save_state(self.state)
+                with _STATE_LOCK:   # worker thread — serialize vs main saves
+                    self.state.setdefault("jira_created", {})[str(mid)] = key
+                    save_state(self.state)
                 notify_banner("🎫 Jira ticket created" + (" (auto)" if auto else ""),
                               "Datadog Assistant 🐶", f"{key} — {name[:60]}")
             except Exception as e:
                 # modal, not banner: banners truncate and their "Show"
                 # action goes nowhere, so the error was unreadable
+                log.exception("jira ticket creation failed for monitor %s", mid)
                 notify_modal("❌ Jira ticket failed", str(e)[:400])
 
         threading.Thread(target=run, daemon=True).start()
@@ -2316,21 +2542,27 @@ class DatadogAssistant(rumps.App):
         hour = self.cfg.get("digest_hour")
         if hour is None:
             return
+        try:
+            hour = int(hour)
+        except (TypeError, ValueError):
+            log.warning("invalid digest_hour %r — ignoring", hour)
+            return
         today = datetime.now().strftime("%Y-%m-%d")
-        if self.state.get("digest_date") == today or datetime.now().hour < int(hour):
+        if self.state.get("digest_date") == today or datetime.now().hour < hour:
             return
         g = self._grouped()
         notify_banner("🌅 Datadog daily digest", "Datadog Assistant 🐶",
                       f"{len(g['Alert'])} alerting · {len(g['Warn'])} warn · "
                       f"{len(g['OK'])} ok · {len(self.incidents)} incidents 🔥")
-        self.state["digest_date"] = today
-        save_state(self.state)
+        with _STATE_LOCK:
+            self.state["digest_date"] = today
+            save_state(self.state)
 
     # -------------------- title (menu bar icon) --------------------
 
     def _bucket_of(self, m):
         """Which display group a monitor belongs in, by mute/state/triage."""
-        if bool((m.get("options") or {}).get("silenced")):
+        if self._is_fully_muted(m):
             return "Muted"
         state = m.get("overall_state", "Unknown")
         if state == "No Data":
@@ -2411,8 +2643,25 @@ class DatadogAssistant(rumps.App):
         return []  # fully dynamic; rebuilt in _rebuild_menu
 
     def _rebuild_menu(self):
+        """Swap in a freshly-built menu. Build FIRST, clear after: rumps
+        swallows callback exceptions, so clearing before a build that then
+        raises (e.g. a malformed custom_links entry) would leave a permanently
+        empty menu — no items, no Quit — with the fingerprint already updated
+        so nothing ever rebuilds it."""
+        try:
+            items = self._build_menu_items()
+        except Exception:
+            log.exception("menu rebuild failed")
+            items = [rumps.MenuItem("⚠️ Menu build failed — see "
+                                    f"{CONFIG_DIR}/app.log"),
+                     None,
+                     rumps.MenuItem("❌ Quit", callback=rumps.quit_application,
+                                    key="q")]
         self.menu.clear()
         self._menu_fp = self._menu_fingerprint()
+        self.menu = items
+
+    def _build_menu_items(self):
         seen = set()  # rumps keys menus by title — keep them unique
         items = []
 
@@ -2501,6 +2750,13 @@ class DatadogAssistant(rumps.App):
                 items.append(header)
                 for m in monitors[:max_per]:
                     items.append(self._monitor_item(m, group, seen))
+                if len(monitors) > max_per:
+                    # never truncate silently — hidden alerting monitors must
+                    # at least be countable, with a jump to the full list
+                    items.append(rumps.MenuItem(
+                        unique_title(f"… {len(monitors) - max_per} more in "
+                                     "Datadog", seen),
+                        callback=self._open_manage_monitors))
             else:
                 # collapsed into a submenu (its own title namespace)
                 sub_seen = set()
@@ -2516,16 +2772,27 @@ class DatadogAssistant(rumps.App):
 
         links = rumps.MenuItem("🔗 Quick Links")
         link_seen = set()
+        # .get, not [..]: these lists are hand-edited in config.json, and a
+        # missing key must not take down the whole menu build
         for link in self.cfg.get("quick_links", []):
+            name, path = link.get("name"), link.get("path")
+            if not (name and path):
+                log.warning("skipping malformed quick_links entry: %r", link)
+                continue
             links.add(rumps.MenuItem(
-                unique_title(link["name"], link_seen),
-                callback=self._make_opener(self.client.app_base + link["path"])))
+                unique_title(name, link_seen),
+                callback=self._make_opener(self.client.app_base + path)))
         custom = self.cfg.get("custom_links", [])
         if custom:
             links.add(None)
             for link in custom:
-                links.add(rumps.MenuItem(unique_title(link["name"], link_seen),
-                                         callback=self._make_opener(link["url"])))
+                name, url = link.get("name"), link.get("url")
+                if not (name and url):
+                    log.warning("skipping malformed custom_links entry: %r",
+                                link)
+                    continue
+                links.add(rumps.MenuItem(unique_title(name, link_seen),
+                                         callback=self._make_opener(url)))
         if self.dashboards and self.cfg["context"].get("auto_dashboard_links", True):
             links.add(None)
             links.add(rumps.MenuItem("📊 MY DASHBOARDS"))
@@ -2542,7 +2809,7 @@ class DatadogAssistant(rumps.App):
         items.append(None)
         items.append(rumps.MenuItem("❌ Quit", callback=rumps.quit_application, key="q"))
 
-        self.menu = items
+        return items
 
     def _monitor_item(self, m, group, seen=None):
         mid = m.get("id")
@@ -2844,8 +3111,12 @@ class DatadogAssistant(rumps.App):
                 fn()
                 notify_banner("✅ Done", "Datadog Assistant 🐶", ok_msg)
             except Exception as e:
-                notify_banner("❌ Failed", "Datadog Assistant 🐶", str(e)[:100])
-            self._poll_tick(None)
+                # modal, not banner: with notification permission denied a
+                # banner is invisible, so a failed delete/mute would look
+                # exactly like success
+                log.exception("API action failed (%s)", ok_msg)
+                notify_modal("❌ Failed", f"{ok_msg}\n\n{str(e)[:300]}")
+            self._request_poll()   # worker thread — hop to the main thread
         threading.Thread(target=run, daemon=True).start()
 
     def _make_muter(self, mid, hours):
@@ -2888,19 +3159,21 @@ class DatadogAssistant(rumps.App):
             if not resp.clicked:
                 return
             new = resp.text.strip()
-            aliases = self._aliases()
-            if not new or new == dd_name:
-                aliases.pop(str(mid), None)
-            else:
-                aliases[str(mid)] = new
-            save_state(self.state)
+            with _STATE_LOCK:   # vs the jira worker's concurrent state save
+                aliases = self._aliases()
+                if not new or new == dd_name:
+                    aliases.pop(str(mid), None)
+                else:
+                    aliases[str(mid)] = new
+                save_state(self.state)
             self._rebuild_menu()
         return cb
 
     def _make_alias_resetter(self, mid):
         def cb(_):
-            self._aliases().pop(str(mid), None)
-            save_state(self.state)
+            with _STATE_LOCK:
+                self._aliases().pop(str(mid), None)
+                save_state(self.state)
             self._rebuild_menu()
         return cb
 
@@ -3022,7 +3295,15 @@ class DatadogAssistant(rumps.App):
     def _jira_setup(self):
         """One wizard for both auth methods: pick token vs OAuth, run the
         matching credential steps, then the shared ticket-field steps
-        (project/type/labels) once auth actually works."""
+        (project/type/labels) once auth actually works.
+
+        The WHOLE flow runs on a background thread — the dialogs are
+        osascript-based (thread-safe), and a blocking dialog on the main
+        thread stalls the runloop: no polls, no notifications, frozen menu
+        for as long as the dialog sits open."""
+        threading.Thread(target=self._jira_setup_choice, daemon=True).start()
+
+    def _jira_setup_choice(self):
         choice = ask_choice(
             "🎫 Jira setup",
             "How should the app authenticate to Jira?\n\n"
@@ -3038,11 +3319,7 @@ class DatadogAssistant(rumps.App):
             mode = "oauth"
         else:
             return
-        # background thread: the OAuth leg blocks on the browser redirect,
-        # and ask_text/ask_choice are osascript-based so they don't need
-        # the main thread
-        threading.Thread(target=self._jira_setup_flow, args=(mode,),
-                         daemon=True).start()
+        self._jira_setup_flow(mode)
 
     def _jira_setup_flow(self, mode):
         jc = self.cfg["jira"]
@@ -3156,7 +3433,14 @@ class DatadogAssistant(rumps.App):
 
         class Callback(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
-                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path != "/callback":
+                    # stray request (favicon probe, port scan) — 404 and keep
+                    # waiting instead of consuming the one flow
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                q = urllib.parse.parse_qs(parsed.query)
                 got["code"] = (q.get("code") or [""])[0]
                 got["state"] = (q.get("state") or [""])[0]
                 self.send_response(200)
@@ -3168,8 +3452,8 @@ class DatadogAssistant(rumps.App):
             def log_message(self, *a):
                 pass
 
-        # Evict a previous attempt still parked on the port — the one-shot
-        # server waits up to 4 min for a redirect that may never come (e.g.
+        # Evict a previous attempt still parked on the port — the server
+        # waits up to 4 min for a redirect that may never come (e.g.
         # the authorize page errored before redirecting).
         old = getattr(self, "_oauth_srv", None)
         if old is not None:
@@ -3190,7 +3474,7 @@ class DatadogAssistant(rumps.App):
             return False
         srv._cancelled = False
         self._oauth_srv = srv
-        srv.timeout = 240
+        srv.timeout = 2   # per-request; the overall wait is the loop deadline
         open_url(JIRA_OAUTH_AUTH_URL + "?" + urllib.parse.urlencode({
             "audience": "api.atlassian.com",
             "client_id": client_id,
@@ -3200,8 +3484,13 @@ class DatadogAssistant(rumps.App):
             "response_type": "code",
             "prompt": "consent",
         }))
+        deadline = time.time() + 240
         try:
-            srv.handle_request()  # one shot: blocks until redirect or timeout
+            # serve until the real callback lands, a newer attempt cancels
+            # us, or the deadline passes — stray requests don't abort the flow
+            while time.time() < deadline and not got.get("code") \
+                    and not getattr(srv, "_cancelled", False):
+                srv.handle_request()
         except Exception:
             pass  # socket yanked from under us by a newer attempt
         if getattr(srv, "_cancelled", False):
@@ -3303,7 +3592,13 @@ class DatadogAssistant(rumps.App):
 
     def _unlock_lastpass(self, _):
         """Re-login to LastPass from the menu (e.g. after a reboot dropped the
-        agent). Reuses the osascript dialogs so no GUI dependency is needed."""
+        agent). Reuses the osascript dialogs so no GUI dependency is needed.
+        Threaded: two blocking dialogs plus a pty-driven `lpass login` must
+        not stall the main runloop (see _jira_setup)."""
+        threading.Thread(target=self._unlock_lastpass_flow,
+                         daemon=True).start()
+
+    def _unlock_lastpass_flow(self):
         lp = self.cfg.get("lastpass", {})
         email = ask_text("🔓 Unlock LastPass", "Your LastPass email:",
                          default=lp.get("email", ""))
@@ -3327,7 +3622,7 @@ class DatadogAssistant(rumps.App):
             notify_banner("🔓 LastPass unlocked", "Datadog Assistant 🐶",
                           "Fetching your monitors…")
             self.monitors = []
-            self._poll_tick(None)
+            self._request_poll()
         else:
             notify_modal("❌ LastPass unlock failed",
                          err or "Could not log in to LastPass.")
@@ -3363,7 +3658,12 @@ class DatadogAssistant(rumps.App):
 
     def _datadog_setup(self):
         """One wizard for both auth methods: pick API keys vs OAuth vs
-        LastPass, run the matching credential steps, then test."""
+        LastPass, run the matching credential steps, then test. Fully on a
+        background thread (see _jira_setup for why)."""
+        threading.Thread(target=self._datadog_setup_choice,
+                         daemon=True).start()
+
+    def _datadog_setup_choice(self):
         choice = ask_choice(
             "🔐 Datadog credentials",
             "How should the app authenticate to Datadog?\n\n"
@@ -3385,9 +3685,7 @@ class DatadogAssistant(rumps.App):
             mode = "lastpass"
         else:
             return
-        # Thread: OAuth blocks on browser redirect; osascript dialogs are safe off main thread.
-        threading.Thread(target=self._datadog_setup_flow, args=(mode,),
-                         daemon=True).start()
+        self._datadog_setup_flow(mode)
 
     def _datadog_setup_flow(self, mode):
         if mode == "keys":
@@ -3494,7 +3792,7 @@ class DatadogAssistant(rumps.App):
         self._datadog_connection_test()
         # Refetch with the new credentials; the main-thread drain timer
         # rebuilds the menu (mutating it from this worker thread is unsafe).
-        self._poll_tick(None)
+        self._request_poll()
 
     def _datadog_oauth_browser_flow(self, client_id, secret):
         # PKCE: a high-entropy verifier and its S256 challenge.
@@ -3508,7 +3806,12 @@ class DatadogAssistant(rumps.App):
 
         class Callback(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
-                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path != "/callback":
+                    self.send_response(404)   # stray request — keep waiting
+                    self.end_headers()
+                    return
+                q = urllib.parse.parse_qs(parsed.query)
                 got["code"] = (q.get("code") or [""])[0]
                 got["state"] = (q.get("state") or [""])[0]
                 # Datadog returns the org's region as `domain` on the redirect.
@@ -3541,7 +3844,7 @@ class DatadogAssistant(rumps.App):
             return False
         srv._cancelled = False
         self._dd_oauth_srv = srv
-        srv.timeout = 240
+        srv.timeout = 2   # per-request; the overall wait is the loop deadline
         open_url(f"https://app.{site}/oauth2/v1/authorize?" +
                  urllib.parse.urlencode({
                      "client_id": client_id,
@@ -3552,8 +3855,11 @@ class DatadogAssistant(rumps.App):
                      "scope": DD_OAUTH_SCOPES,
                      "state": state,
                  }))
+        deadline = time.time() + 240
         try:
-            srv.handle_request()  # one shot: blocks until redirect or timeout
+            while time.time() < deadline and not got.get("code") \
+                    and not getattr(srv, "_cancelled", False):
+                srv.handle_request()
         except Exception:
             pass
         if getattr(srv, "_cancelled", False):
@@ -3569,6 +3875,12 @@ class DatadogAssistant(rumps.App):
                          "(timed out or cancelled in the browser).")
             return False
         domain = got.get("domain") or site
+        if domain not in DD_SITES:
+            # never let an unvalidated redirect param choose where the client
+            # secret is POSTed or reroute all future API traffic
+            log.warning("OAuth redirect named unknown domain %r — using "
+                        "configured site %s", domain, site)
+            domain = site
         try:
             data = urllib.parse.urlencode({
                 "grant_type": "authorization_code",
@@ -3676,7 +3988,10 @@ class DatadogAssistant(rumps.App):
         return cb
 
     def _open_config(self, _):
-        subprocess.run(["open", "-t", CONFIG_PATH])
+        try:
+            subprocess.run(["open", "-t", CONFIG_PATH], timeout=10)
+        except Exception:
+            log.exception("opening config file failed")
 
     def _test_notification(self, _):
         ncfg = self.cfg["notifications"]

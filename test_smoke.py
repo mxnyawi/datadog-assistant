@@ -619,6 +619,85 @@ with mock.patch.object(da.DatadogClient, "get_monitors", return_value=FAKE), \
     assert any("On-call: pagerduty" in t for t in pl), pl
     assert any("Software Catalog" in t for t in pl), pl
 
+    # ---- daily digest: fires once per day after the hour; bad hour is safe ----
+    app.cfg["digest_hour"] = 0            # any current hour qualifies
+    app.state.pop("digest_date", None)
+    notifications.clear()
+    app._maybe_digest()
+    assert any("daily digest" in t for k, t, m in notifications), notifications
+    n_dig = len(notifications)
+    app._maybe_digest()                   # same day → deduped
+    assert len(notifications) == n_dig, notifications
+    app.cfg["digest_hour"] = "9am"        # malformed must not raise
+    app.state.pop("digest_date", None)
+    app._maybe_digest()
+    assert len(notifications) == n_dig, notifications
+    app.cfg["digest_hour"] = None
+
+    # ---- a transition during snooze is announced after waking up ----
+    sn = {"id": 400, "name": "snoozy svc", "overall_state": "OK", "options": {}}
+    app._handle_new_monitors([sn])        # baseline OK
+    app._make_snoozer(30)(None)
+    notifications.clear()
+    sn2 = json.loads(json.dumps(sn))
+    sn2["overall_state"] = "Alert"
+    app._handle_new_monitors([sn2])       # suppressed, NOT consumed
+    assert notifications == [], notifications
+    assert app.prev_states[400] == "OK", app.prev_states
+    app.snooze_until = 0                  # wake
+    app._handle_new_monitors([sn2])
+    assert any("ALERT" in t for k, t, m in notifications), notifications
+    assert app.prev_states[400] == "Alert"
+
+    # ---- partial mute: an alert on the unmuted group still notifies ----
+    pm = {"id": 401, "name": "multi-group latency", "overall_state": "OK",
+          "options": {"silenced": {"host:a": None}}}
+    app._handle_new_monitors([pm])        # baseline
+    notifications.clear()
+    pm2 = json.loads(json.dumps(pm))
+    pm2["overall_state"] = "Alert"
+    app._handle_new_monitors([pm2])
+    assert any("ALERT" in t for k, t, m in notifications), notifications
+    assert app._bucket_of(pm2) == "Alert", app._bucket_of(pm2)   # not "Muted"
+
+    # ---- menu never bricks: malformed links are skipped, and a build
+    # exception falls back to an error menu that still has Quit ----
+    app.monitors = []
+    app.cfg["custom_links"] = [{"name": "no url here"}]
+    app.cfg["quick_links"] = [{"nope": 1},
+                              {"name": "📟 Monitors", "path": "/monitors"}]
+    app._rebuild_menu()
+    titles = [getattr(i, "title", "") for i in app.menu if i]
+    assert any("Quit" in t for t in titles), titles
+    app.cfg["custom_links"] = []
+    _orig_build = app._build_menu_items
+    app._build_menu_items = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    app._rebuild_menu()
+    titles = [getattr(i, "title", "") for i in app.menu if i]
+    assert any("Menu build failed" in t for t in titles), titles
+    assert any("Quit" in t for t in titles), titles
+    app._build_menu_items = _orig_build
+
+    # ---- top-level groups never truncate silently ----
+    app.cfg["menu"]["max_per_group"] = 2
+    app.monitors = [{"id": 500 + i, "name": f"alert {i}",
+                     "overall_state": "Alert", "options": {}}
+                    for i in range(4)]
+    app._rebuild_menu()
+    titles = [getattr(i, "title", "") for i in app.menu if i]
+    assert any("more in Datadog" in t for t in titles), titles
+    app.cfg["menu"]["max_per_group"] = 25
+
+    # ---- repeated identical errors still clear the ⏳ refresh row ----
+    app.last_refresh = None
+    app.results.put(("error", "HTTP 503 from Datadog API"))
+    app._drain_results(None)
+    app._refresh_item.title = "⏳ Refreshing…"    # simulate in-flight poll
+    app.results.put(("error", "HTTP 503 from Datadog API"))
+    app._drain_results(None)
+    assert "Refresh now" in app._refresh_item.title, app._refresh_item.title
+    app.last_error = None
+
     # ---- deploy hint rides along on the alert notification ----
     app.deploys = {902: {"headline": "🚀 Deploy “x” 4m before this alert",
                          "sig": "x"}}
@@ -765,5 +844,112 @@ ok, mfa, err = da.lpass_login("", "")
 assert ok is False and "required" in err.lower(), (ok, err)
 ok, mfa, err = da.lpass_login("a@b.com", "pw")   # lpass almost certainly absent
 assert ok is False, (ok, mfa, err)
+
+
+# ==========================================================================
+# API client hardening (no app instance needed — outside the class mocks)
+# ==========================================================================
+
+class _Resp(io.BytesIO):
+    headers = {}
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+
+
+# GET retries a 429 (honouring Retry-After) and succeeds on the next attempt
+calls = {"n": 0}
+
+
+def rate_limited_then_ok(req, timeout=None):
+    calls["n"] += 1
+    if calls["n"] == 1:
+        raise da.urllib.error.HTTPError(
+            req.full_url, 429, "Too Many Requests",
+            {"Retry-After": "0"}, io.BytesIO(b""))
+    return _Resp(b'{"ok": 1}')
+
+
+ddc = da.DatadogClient({"api_key": "k", "app_key": "p"})
+with mock.patch.object(da.urllib.request, "urlopen", rate_limited_then_ok):
+    assert ddc._request("GET", "/monitor") == {"ok": 1}
+assert calls["n"] == 2, calls
+
+# URLError (DNS blip / connect timeout) is retried for GETs
+calls["n"] = 0
+
+
+def urlerr_then_ok(req, timeout=None):
+    calls["n"] += 1
+    if calls["n"] == 1:
+        raise da.urllib.error.URLError("dns blip")
+    return _Resp(b"[]")
+
+
+with mock.patch.object(da.urllib.request, "urlopen", urlerr_then_ok), \
+     mock.patch.object(da.time, "sleep", lambda *_: None):
+    assert ddc._request("GET", "/monitor") == []
+assert calls["n"] == 2, calls
+
+# non-idempotent methods are NEVER retried — a mute/delete/create whose
+# response died mid-read must not be re-sent (duplicate side effects)
+calls["n"] = 0
+
+
+def always_reset(req, timeout=None):
+    calls["n"] += 1
+    raise ConnectionResetError("boom")
+
+
+with mock.patch.object(da.urllib.request, "urlopen", always_reset):
+    try:
+        ddc._request("POST", "/monitor/1/mute")
+        raise AssertionError("expected ConnectionResetError")
+    except ConnectionResetError:
+        pass
+assert calls["n"] == 1, calls   # exactly one attempt
+
+# ---- get_monitors: pagination + multi-tag OR dedupe (real code path) ----
+
+
+def paged(method, path, params=None, **kw):
+    page = (params or {}).get("page", 0)
+    return [{"id": page * 200 + i} for i in range(200)] if page == 0 \
+        else [{"id": 999}]
+
+
+with mock.patch.object(da.DatadogClient, "_request", side_effect=paged):
+    mons = da.DatadogClient({"api_key": "k", "app_key": "p"}) \
+        ._fetch_monitors_page()
+assert len(mons) == 201 and mons[-1]["id"] == 999, len(mons)
+
+
+def tagged(method, path, params=None, **kw):
+    tag = (params or {}).get("monitor_tags")
+    return [{"id": 1}, {"id": 2}] if tag == "team:a" else [{"id": 2}, {"id": 3}]
+
+
+ddc2 = da.DatadogClient({"api_key": "k", "app_key": "p",
+                         "tag_filter": "team:a team:b"})
+with mock.patch.object(da.DatadogClient, "_request", side_effect=tagged):
+    mons = ddc2.get_monitors()
+assert sorted(m["id"] for m in mons) == [1, 2, 3], mons   # deduped union
+
+# ---- OAuth blob fallback persists the rotated token immediately ----
+# (a rotated refresh token is single-use: losing the in-memory copy to a
+# restart before the next config save permanently kills OAuth)
+saved = {"n": 0}
+da._CONFIG_SAVER = lambda: saved.__setitem__("n", saved["n"] + 1)
+oc = da.DatadogClient({"auth": "oauth"})
+oc._save_oauth_blob({"refresh_token": "rX"})     # keychain absent on Linux
+assert saved["n"] == 1, saved
+assert json.loads(oc.cfg["oauth_blob"])["refresh_token"] == "rX"
+da._CONFIG_SAVER = None
+
+# ---- partial mutes: one muted group must NOT silence the whole monitor ----
+part = {"id": 300, "name": "multi-group cpu", "overall_state": "OK",
+        "options": {"silenced": {"host:a": None}}}
+assert da.DatadogAssistant._is_fully_muted(part) is False
+assert da.DatadogAssistant._is_fully_muted(
+    {"options": {"silenced": {"*": None}}}) is True
 
 print("SMOKE TEST PASSED ✅")
