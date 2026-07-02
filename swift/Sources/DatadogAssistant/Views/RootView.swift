@@ -19,6 +19,7 @@ struct RootView: View {
                         let hero = snapshot.alerting
                             .sorted { ($0.priority, $0.id) < ($1.priority, $1.id) }
                             .first { $0.priority <= .p2 }
+                        FilterBar()
                         ClusterChips(clusters: snapshot.clusters)
                         if let hero {
                             HeroAlertCard(monitor: hero)
@@ -38,6 +39,7 @@ struct RootView: View {
                     case .tools:
                         ToolsSection()
                     case .list:
+                        FilterBar()
                         MonitorListSection(snapshot: snapshot)
                     }
                 }

@@ -19,6 +19,7 @@ final class SnapshotStore: ObservableObject {
     @Published private(set) var refreshing = false
     @Published private(set) var snoozedUntil: Date?
     @Published private(set) var stats = ResponseStats()
+    @Published private(set) var filters = FilterConfig.load()
 
     var isSnoozed: Bool {
         guard let until = snoozedUntil else { return false }
@@ -119,6 +120,16 @@ final class SnapshotStore: ObservableObject {
         do {
             var next = try await source.fetchSnapshot(previous: snapshot)
 
+            // Remember every tag we've ever seen so the filter dropdown can
+            // offer the full menu even while a narrowing filter is active.
+            FilterConfig.recordSeenTags(next.monitors.flatMap(\.tags))
+            // Server-side filtering already narrowed the fetch for the real
+            // client; re-apply here so mock data and just-changed filters
+            // take effect immediately.
+            if filters.isActive {
+                next.monitors = next.monitors.filter { filters.matches($0) }
+            }
+
             if let gitHub {
                 let merges = await gitHub.recentMerges(within: Self.deployLookback)
                 next.deploys += merges
@@ -214,6 +225,21 @@ final class SnapshotStore: ObservableObject {
                 return serviceMatches ? 1.0 - age / window : nil
             }
         }
+    }
+
+    // MARK: - Filters
+
+    /// Apply a new filter: persist it, narrow the current snapshot instantly
+    /// for a snappy UI, then refetch so a *widened* filter (which needs data
+    /// we don't have locally) fills in.
+    func setFilters(_ newFilters: FilterConfig) {
+        guard newFilters != filters else { return }
+        filters = newFilters
+        newFilters.save()
+        if newFilters.isActive {
+            snapshot.monitors = snapshot.monitors.filter { newFilters.matches($0) }
+        }
+        Task { await refresh() }
     }
 
     // MARK: - Snooze

@@ -48,6 +48,8 @@ struct Monitor: Identifiable, Hashable, Codable {
     var url: URL? = nil
     /// From the monitor's service: tag; groups firing monitors into clusters.
     var service: String? = nil
+    /// The monitor's Datadog tags (e.g. "team:payments"); drives filtering.
+    var tags: [String] = []
     /// Current value ÷ same moment last week (week_before() time-shift query).
     /// 3.2 = "×3.2 vs last week". nil when the shifted series wasn't available.
     var delta: Double? = nil

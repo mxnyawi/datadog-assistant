@@ -87,12 +87,22 @@ final class DatadogClient: DataSource {
     }
 
     private func fetchMonitors() async throws -> [Monitor] {
-        let url = credentials.apiBaseURL
-            .appendingPathComponent("/api/v1/monitor")
-            .appending(queryItems: [URLQueryItem(name: "group_states", value: "alert,warn")])
-        let (data, response) = try await session.data(for: authedRequest(url: url))
-        try Self.checkHTTP(response)
-        let dtos = try JSONDecoder().decode([MonitorDTO].self, from: data)
+        // Datadog's monitor_tags param is AND logic; the filter wants OR
+        // (same as the Python app), so fetch once per selected tag and dedupe
+        // by monitor ID.
+        let filter = FilterConfig.load()
+        var dtos: [MonitorDTO]
+        if filter.tags.count > 1 {
+            var byID: [Int: MonitorDTO] = [:]
+            for tag in filter.tags {
+                for dto in try await fetchMonitorsPage(tag: tag, name: filter.name) {
+                    byID[dto.id] = byID[dto.id] ?? dto
+                }
+            }
+            dtos = Array(byID.values)
+        } else {
+            dtos = try await fetchMonitorsPage(tag: filter.tags.first ?? "", name: filter.name)
+        }
         queriesByID = Dictionary(uniqueKeysWithValues: dtos.compactMap { dto in
             QueryParser.parse(dto.query ?? "").map { (dto.id, $0.metricQuery) }
         })
@@ -101,6 +111,19 @@ final class DatadogClient: DataSource {
             monitor.url = credentials.appBaseURL.appendingPathComponent("/monitors/\(m.id)")
             return monitor
         }
+    }
+
+    private func fetchMonitorsPage(tag: String, name: String) async throws -> [MonitorDTO] {
+        var queryItems = [URLQueryItem(name: "group_states", value: "alert,warn")]
+        if !tag.isEmpty { queryItems.append(URLQueryItem(name: "monitor_tags", value: tag)) }
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        if !trimmedName.isEmpty { queryItems.append(URLQueryItem(name: "name", value: trimmedName)) }
+        let url = credentials.apiBaseURL
+            .appendingPathComponent("/api/v1/monitor")
+            .appending(queryItems: queryItems)
+        let (data, response) = try await session.data(for: authedRequest(url: url))
+        try Self.checkHTTP(response)
+        return try JSONDecoder().decode([MonitorDTO].self, from: data)
     }
 
     private static func monitor(from dto: MonitorDTO) -> Monitor {
@@ -142,7 +165,8 @@ final class DatadogClient: DataSource {
             value: nil,
             threshold: parsed?.threshold,
             url: nil,
-            service: service
+            service: service,
+            tags: dto.tags ?? []
         )
     }
 

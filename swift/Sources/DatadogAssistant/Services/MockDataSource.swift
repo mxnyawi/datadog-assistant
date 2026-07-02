@@ -34,7 +34,7 @@ final class MockDataSource: DataSource {
                     sparkline: Self.series(starting: 0.62, count: 48, seed: &s, drift: 0.18),
                     value: 842, threshold: 500,
                     url: URL(string: "https://app.datadoghq.com/monitors/1001"),
-                    service: "payments", delta: 3.2, thresholdPosition: 0.55),
+                    service: "payments", tags: ["team:payments", "env:prod", "service:payments"], delta: 3.2, thresholdPosition: 0.55),
             Monitor(id: 1002,
                     name: "checkout · 5xx rate",
                     state: .alert,
@@ -44,7 +44,7 @@ final class MockDataSource: DataSource {
                     sparkline: Self.series(starting: 0.55, count: 48, seed: &s, drift: 0.20),
                     value: 4.1, threshold: 1.0,
                     url: URL(string: "https://app.datadoghq.com/monitors/1002"),
-                    service: "payments", delta: 4.8, thresholdPosition: 0.30),
+                    service: "payments", tags: ["team:payments", "env:prod", "service:checkout"], delta: 4.8, thresholdPosition: 0.30),
             Monitor(id: 1003,
                     name: "kafka · consumer lag",
                     state: .warn,
@@ -54,7 +54,7 @@ final class MockDataSource: DataSource {
                     sparkline: Self.series(starting: 0.45, count: 48, seed: &s, drift: 0.10),
                     value: 12_400, threshold: 20_000,
                     url: URL(string: "https://app.datadoghq.com/monitors/1003"),
-                    service: "kafka", delta: 1.4, thresholdPosition: 0.85),
+                    service: "kafka", tags: ["team:platform", "env:prod", "service:kafka"], delta: 1.4, thresholdPosition: 0.85),
             Monitor(id: 1004,
                     name: "auth-svc · CPU",
                     state: .warn,
@@ -64,7 +64,7 @@ final class MockDataSource: DataSource {
                     sparkline: Self.series(starting: 0.50, count: 48, seed: &s, drift: 0.08),
                     value: 78, threshold: 85,
                     url: URL(string: "https://app.datadoghq.com/monitors/1004"),
-                    service: "auth", delta: 1.1, thresholdPosition: 0.80),
+                    service: "auth", tags: ["team:identity", "env:prod", "service:auth"], delta: 1.1, thresholdPosition: 0.80),
             Monitor(id: 1005,
                     name: "search · index lag",
                     state: .ok,
@@ -72,7 +72,8 @@ final class MockDataSource: DataSource {
                     firingSince: nil, triggeredHosts: [],
                     sparkline: Self.series(starting: 0.32, count: 48, seed: &s, drift: 0.05),
                     value: 1.2, threshold: 5.0,
-                    url: URL(string: "https://app.datadoghq.com/monitors/1005")),
+                    url: URL(string: "https://app.datadoghq.com/monitors/1005"),
+                    tags: ["team:search", "env:prod", "service:search"]),
             Monitor(id: 1006,
                     name: "billing · job duration",
                     state: .noData,
@@ -80,7 +81,8 @@ final class MockDataSource: DataSource {
                     firingSince: nil, triggeredHosts: [],
                     sparkline: [],
                     value: nil, threshold: nil,
-                    url: URL(string: "https://app.datadoghq.com/monitors/1006")),
+                    url: URL(string: "https://app.datadoghq.com/monitors/1006"),
+                    tags: ["team:billing", "env:prod", "service:billing"]),
         ]
         self.incidents = [
             Incident(id: "IR-482", title: "Payments degraded · LATAM",
@@ -159,7 +161,7 @@ final class MockDataSource: DataSource {
                 id: m.id, name: m.name, state: .muted, priority: m.priority,
                 firingSince: nil, triggeredHosts: m.triggeredHosts,
                 sparkline: m.sparkline, value: m.value, threshold: m.threshold,
-                url: m.url, service: m.service, delta: m.delta,
+                url: m.url, service: m.service, tags: m.tags, delta: m.delta,
                 thresholdPosition: m.thresholdPosition
             )
         }
@@ -223,7 +225,7 @@ final class MockDataSource: DataSource {
             sparkline: m.sparkline,
             value: firing ? firingValue : calmValue,
             threshold: m.threshold,
-            url: m.url, service: m.service,
+            url: m.url, service: m.service, tags: m.tags,
             delta: firing ? delta : nil,
             thresholdPosition: m.thresholdPosition
         )
