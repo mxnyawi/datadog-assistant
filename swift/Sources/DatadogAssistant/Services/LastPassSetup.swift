@@ -263,6 +263,156 @@ enum LastPassSetup {
         return fields
     }
 
+    /// Read the entry the same way the running app will, capturing stderr and
+    /// the app's environment, and return a redacted transcript. This is the
+    /// "Test" path: it surfaces exactly why a read fails from inside the app
+    /// (e.g. a different HOME/agent than the terminal) instead of silently
+    /// falling back. Secret values are never included — only key names and
+    /// character counts.
+    static func diagnostics(entry: String, apiField: String, appField: String, site: String)
+        -> (ok: Bool, report: String) {
+        let entry = entry.trimmingCharacters(in: .whitespaces)
+        var lines: [String] = []
+        let env = ProcessInfo.processInfo.environment
+
+        // Environment the app sees — the usual terminal-vs-GUI culprits.
+        let home = env["HOME"] ?? "(unset)"
+        lines.append("HOME=\(home)")
+        if let lpassHome = env["LPASS_HOME"] { lines.append("LPASS_HOME=\(lpassHome)") }
+        let vaultDir = env["LPASS_HOME"] ?? (env["HOME"].map { "\($0)/.lpass" } ?? "")
+        if !vaultDir.isEmpty {
+            lines.append("vault dir exists: \(FileManager.default.fileExists(atPath: vaultDir)) (\(vaultDir))")
+        }
+
+        guard let lpass = LastPass.locate() else {
+            lines.append("lpass binary: NOT FOUND — checked /opt/homebrew/bin/lpass, "
+                         + "/usr/local/bin/lpass, and PATH. The bundled app's PATH differs "
+                         + "from your shell; install lpass to a standard Homebrew path.")
+            return (false, lines.joined(separator: "\n"))
+        }
+        lines.append("lpass binary: \(lpass)")
+
+        func run(_ args: [String]) -> (status: Int32, output: String) {
+            let result = capture(URL(fileURLWithPath: lpass), args, timeout: 30)
+            lines.append("")
+            lines.append("$ lpass \(args.joined(separator: " "))")
+            lines.append("exit: \(result.map { String($0.status) } ?? "no result (couldn't launch)")")
+            return (result?.status ?? -1, result?.output ?? "")
+        }
+
+        // 1) Are we logged in from the app's point of view? (no secrets here)
+        let status = run(["status"])
+        let out = status.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !out.isEmpty { lines.append(out) }
+
+        // 2) Read the API/App keys via --field, then the note body.
+        let api = probe(lpass, entry: entry, field: apiField, lines: &lines)
+        let app = probe(lpass, entry: entry, field: appField, lines: &lines)
+        guard let api, !api.isEmpty, let app, !app.isEmpty else {
+            lines.append("")
+            let missing = (api?.isEmpty ?? true) ? apiField : appField
+            lines.append("❌ Couldn't read \(missing) from “\(entry)”. See the output above.")
+            return (false, lines.joined(separator: "\n"))
+        }
+
+        // 3) End-to-end: do the keys actually work against Datadog? A 403 here
+        //    with a readable note usually means the wrong site for the org, or
+        //    an App key missing scopes.
+        lines.append("")
+        lines.append("$ GET https://api.\(site)/api/v1/validate")
+        let (ok, detail) = validateDatadog(apiKey: api, appKey: app, site: site)
+        lines.append(detail)
+        lines.append("")
+        lines.append(ok
+                     ? "✅ Keys read and validated against Datadog (\(site)). Save to use this note."
+                     : "❌ Keys were read from the note, but Datadog rejected them (see above).")
+        return (ok, lines.joined(separator: "\n"))
+    }
+
+    /// Call Datadog's key-validation endpoint. Runs synchronously (caller is
+    /// already off the main thread) so it can fold into the transcript.
+    private static func validateDatadog(apiKey: String, appKey: String, site: String)
+        -> (ok: Bool, detail: String) {
+        guard let url = URL(string: "https://api.\(site)/api/v1/validate") else {
+            return (false, "→ invalid site “\(site)”.")
+        }
+        var request = URLRequest(url: url)
+        request.setValue(apiKey, forHTTPHeaderField: "DD-API-KEY")
+        request.setValue(appKey, forHTTPHeaderField: "DD-APPLICATION-KEY")
+        request.timeoutInterval = 15
+        let semaphore = DispatchSemaphore(value: 0)
+        var detail = "→ no response"
+        var ok = false
+        let task = URLSession.shared.dataTask(with: request) { _, response, error in
+            defer { semaphore.signal() }
+            if let error {
+                detail = "→ network error: \(error.localizedDescription)"
+                return
+            }
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            switch code {
+            case 200:
+                ok = true
+                detail = "→ 200 OK — keys are valid for site \(site)."
+            case 403:
+                detail = "→ 403 Forbidden — Datadog rejected the keys for site \(site). "
+                    + "Likely the wrong site for your org (try datadoghq.eu / us3 / us5 / "
+                    + "ap1 in Settings), or the App key lacks the needed scopes."
+            case 401:
+                detail = "→ 401 Unauthorized — the API key is invalid for site \(site)."
+            default:
+                detail = "→ HTTP \(code)."
+            }
+        }
+        task.resume()
+        _ = semaphore.wait(timeout: .now() + 20)
+        return (ok, detail)
+    }
+
+    /// Probe one field like `get` does (--field then key=value notes), logging
+    /// each step with the value redacted. Returns the value found, or nil.
+    private static func probe(_ lpass: String, entry: String, field: String,
+                              lines: inout [String]) -> String? {
+        let fieldResult = capture(URL(fileURLWithPath: lpass),
+                                  ["show", "--field", field, entry], timeout: 30)
+        lines.append("")
+        lines.append("$ lpass show --field \(field) \(entry)")
+        lines.append("exit: \(fieldResult.map { String($0.status) } ?? "no result")")
+        let fieldValue = fieldResult?.status == 0
+            ? (fieldResult?.output.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") : ""
+        if let raw = fieldResult?.output.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty {
+            // Redact: if this looks like the value, mask it; otherwise it's an
+            // lpass error message worth showing verbatim.
+            lines.append(fieldResult?.status == 0 ? "→ value: ••• (\(raw.count) chars)" : raw)
+        }
+        if !fieldValue.isEmpty { return fieldValue }
+
+        let notes = capture(URL(fileURLWithPath: lpass), ["show", "--notes", entry], timeout: 30)
+        lines.append("")
+        lines.append("$ lpass show --notes \(entry)")
+        lines.append("exit: \(notes.map { String($0.status) } ?? "no result")")
+        guard notes?.status == 0, let body = notes?.output else {
+            if let err = notes?.output.trimmingCharacters(in: .whitespacesAndNewlines), !err.isEmpty {
+                lines.append(err)
+            }
+            return nil
+        }
+        var keys: [String] = []
+        var found: String?
+        for line in body.split(separator: "\n") {
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            let key = String(line[..<eq]).trimmingCharacters(in: .whitespaces)
+            if !key.isEmpty { keys.append(key) }
+            if key == field {
+                let value = String(line[line.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
+                if !value.isEmpty { found = value }
+            }
+        }
+        lines.append("keys in note: \(keys.isEmpty ? "(none parsed)" : keys.joined(separator: ", "))")
+        return found
+    }
+
     /// Confirm the chosen entry actually yields both Datadog keys.
     static func validate(entry: String, apiField: String, appField: String)
         -> (ok: Bool, error: String?) {

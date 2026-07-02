@@ -20,11 +20,14 @@ struct LastPassSetupView: View {
     @State private var entries: [String] = []
     @State private var apiField = "datadogAPIKey"
     @State private var appField = "datadogAPPKey"
+    @State private var site = Credentials.currentSite()
     @State private var availableFields: [String] = []
     @State private var busy = false
     @State private var status: String?
     @State private var isError = false
     @State private var log: [String] = []
+    @State private var testReport = ""
+    @State private var testOK: Bool?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -90,6 +93,10 @@ struct LastPassSetupView: View {
                     }
                     TextField("…or type the entry path", text: $entry)
 
+                    Picker("Datadog site", selection: $site) {
+                        ForEach(Credentials.knownSites, id: \.self) { Text($0) }
+                    }
+
                     if !availableFields.isEmpty {
                         Divider()
                         Text("Map the keys to this note's fields:")
@@ -119,27 +126,34 @@ struct LastPassSetupView: View {
                     .foregroundStyle(isError ? .red : .secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if !log.isEmpty {
+
+            // Console: install/login log, or the Test transcript when present.
+            if !testReport.isEmpty || !log.isEmpty {
+                let text = testReport.isEmpty ? log.joined(separator: "\n") : testReport
                 ScrollView {
-                    Text(log.joined(separator: "\n"))
+                    Text(text)
                         .font(.system(.caption2, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }
-                .frame(height: 72)
+                .frame(height: testReport.isEmpty ? 72 : 150)
                 .background(Color(nsColor: .textBackgroundColor))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(.quaternary))
             }
 
             HStack {
                 if busy { ProgressView().controlSize(.small) }
                 Spacer()
                 Button("Cancel") { dismiss() }
+                Button("Test") { test() }
+                    .disabled(busy || !loggedIn || entry.trimmingCharacters(in: .whitespaces).isEmpty)
                 Button("Save") { save() }
+                    .keyboardShortcut(.defaultAction)
                     .disabled(busy || !loggedIn || entry.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
         .padding(20)
-        .frame(width: 460)
+        .frame(width: 480)
         .onAppear { refreshState() }
     }
 
@@ -218,6 +232,29 @@ struct LastPassSetupView: View {
         }
     }
 
+    private func test() {
+        let chosen = entry.trimmingCharacters(in: .whitespaces)
+        guard !chosen.isEmpty else { fail("Pick or type an entry."); return }
+        busy = true; status = nil; log = []; testReport = ""
+        let api = apiField, app = appField, site = self.site
+        Task.detached {
+            let result = LastPassSetup.diagnostics(entry: chosen, apiField: api, appField: app, site: site)
+            // On failure, surface the note's fields so the user can remap.
+            let fields = result.ok ? [] : LastPassSetup.availableFields(entry: chosen)
+            await MainActor.run {
+                busy = false
+                testReport = result.report
+                testOK = result.ok
+                if result.ok {
+                    status = "Read OK — Save to use this note."; isError = false
+                } else {
+                    if !fields.isEmpty { availableFields = fields; autoMap(fields) }
+                    fail("Test failed — see the output below.")
+                }
+            }
+        }
+    }
+
     private func save() {
         let chosen = entry.trimmingCharacters(in: .whitespaces)
         guard !chosen.isEmpty else { fail("Pick or type an entry."); return }
@@ -230,6 +267,7 @@ struct LastPassSetupView: View {
             await MainActor.run {
                 busy = false
                 if result.ok {
+                    Credentials.setSite(site)
                     var config = LastPassConfig(entry: chosen)
                     config.apiKeyField = api
                     config.appKeyField = app

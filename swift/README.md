@@ -47,7 +47,11 @@ via the `lpass` CLI — the same integration the Python app uses, reading the
 same note. Right-click → Settings… → LastPass → **Set up…** opens a guided
 sheet that installs the `lpass` CLI (via Homebrew), logs you in (with
 authenticator support), and lets you pick and validate the entry — no
-terminal needed. Already logged in? Just type the entry name and hit *Use
+terminal needed. **Test** reads the note the way the app will (capturing the
+environment and `lpass` stderr) and then calls Datadog's `/api/v1/validate`,
+printing the full transcript so a failure — a locked vault, a field-name
+mismatch, or a wrong-site 403 — is diagnosable right in the window before you
+save. Already logged in? Just type the entry name and hit *Use
 LastPass*, or export `DD_LASTPASS_ENTRY` before launching. The note holds
 `key=value` lines (or custom fields) named `datadogAPIKey` / `datadogAPPKey`
 by default (override with `DD_LASTPASS_API_FIELD` / `_APP_FIELD`); an optional

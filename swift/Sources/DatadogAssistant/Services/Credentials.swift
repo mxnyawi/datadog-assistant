@@ -51,6 +51,14 @@ struct Credentials: Equatable {
         UserDefaults.standard.string(forKey: siteDefaultsKey) ?? "datadoghq.com"
     }
 
+    /// The persisted Datadog site (shared across auth modes and with the
+    /// Python app's config). Exposed so the LastPass setup sheet can pick and
+    /// persist a site while testing keys.
+    static func currentSite() -> String { storedSite() }
+    static func setSite(_ site: String) {
+        UserDefaults.standard.set(site, forKey: siteDefaultsKey)
+    }
+
     /// Load credentials for the *selected* auth mode only — no silent
     /// cross-mode fallback. This is what stops the app from prompting for the
     /// Keychain when the user chose the LastPass vault: in `.lastPass` mode the
