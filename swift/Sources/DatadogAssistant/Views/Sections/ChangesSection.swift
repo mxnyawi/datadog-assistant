@@ -74,7 +74,7 @@ struct CIRunRow: View {
 
     var body: some View {
         Button {
-            if let url = run.url { NSWorkspace.shared.open(url) }
+            if let url = run.url { LinkOpener.open(url) }
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: symbol)
@@ -119,7 +119,7 @@ struct DeployRow: View {
 
     var body: some View {
         Button {
-            if let url = deploy.url { NSWorkspace.shared.open(url) }
+            if let url = deploy.url { LinkOpener.open(url) }
         } label: {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {

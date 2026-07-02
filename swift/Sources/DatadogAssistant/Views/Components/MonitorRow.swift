@@ -96,12 +96,12 @@ struct MonitorRow: View {
                     Task { await store.mute(monitor, for: 3600) }
                 }
                 actionButton("Open in Datadog", icon: "arrow.up.forward.square") {
-                    if let url = monitor.url { NSWorkspace.shared.open(url) }
+                    if let url = monitor.url { LinkOpener.open(url) }
                 }
                 .disabled(monitor.url == nil)
                 if let ticket = JiraTicketStore.ticket(for: monitor.id) {
                     actionButton("Open \(ticket.key)", icon: "ticket.fill") {
-                        NSWorkspace.shared.open(ticket.url)
+                        LinkOpener.open(ticket.url)
                     }
                 } else if let jira = JiraConfig.load() {
                     actionButton(creatingTicket ? "Creating…" : "Jira ticket",
@@ -130,7 +130,7 @@ struct MonitorRow: View {
         Task {
             do {
                 let ticket = try await JiraClient.createIssue(for: monitor, config: config)
-                NSWorkspace.shared.open(ticket.url)
+                LinkOpener.open(ticket.url)
             } catch {
                 ticketError = error.localizedDescription
             }
@@ -142,7 +142,7 @@ struct MonitorRow: View {
     /// clickable straight to the PR/event.
     private func suspectRow(_ deploy: DeployEvent) -> some View {
         Button {
-            if let url = deploy.url { NSWorkspace.shared.open(url) }
+            if let url = deploy.url { LinkOpener.open(url) }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: deploy.source == .github ? "arrow.triangle.pull" : "shippingbox.fill")

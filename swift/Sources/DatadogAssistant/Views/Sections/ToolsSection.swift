@@ -18,7 +18,7 @@ struct ToolsSection: View {
             }
             toolRow(icon: "arrow.up.forward.square.fill", label: "Open Datadog",
                     detail: "Monitors overview in the browser") {
-                NSWorkspace.shared.open(
+                LinkOpener.open(
                     Credentials.currentAppBaseURL().appendingPathComponent("/monitors/manage"))
             }
             toolRow(icon: "arrow.clockwise", label: "Refresh now",

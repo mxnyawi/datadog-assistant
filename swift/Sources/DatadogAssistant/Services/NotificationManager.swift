@@ -179,7 +179,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             if let id = info["monitorID"] as? Int { onMuteRequest?(id) }
         case Self.openAction, UNNotificationDefaultActionIdentifier:
             if let raw = info["url"] as? String, let url = URL(string: raw), !raw.isEmpty {
-                NSWorkspace.shared.open(url)
+                LinkOpener.open(url)
             }
         default:
             break

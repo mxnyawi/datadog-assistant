@@ -124,7 +124,7 @@ struct HeroAlertCard: View {
 
     private func suspectChip(_ deploy: DeployEvent) -> some View {
         Button {
-            if let url = deploy.url { NSWorkspace.shared.open(url) }
+            if let url = deploy.url { LinkOpener.open(url) }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: deploy.source == .github ? "arrow.triangle.pull" : "shippingbox.fill")
@@ -160,7 +160,7 @@ struct HeroAlertCard: View {
                 Task { await store.mute(monitor, for: 3600) }
             }
             heroButton("Open in Datadog", icon: "arrow.up.forward.square", prominent: true) {
-                if let url = monitor.url { NSWorkspace.shared.open(url) }
+                if let url = monitor.url { LinkOpener.open(url) }
             }
         }
     }

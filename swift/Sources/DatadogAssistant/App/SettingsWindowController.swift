@@ -68,6 +68,7 @@ private struct SourceSettingsTab: View {
     @State private var showLastPassSetup = false
     @State private var authMode = AuthMode.current
     @State private var subdomain = Credentials.currentSubdomain()
+    @State private var browser = LinkOpener.currentBrowser()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -201,6 +202,10 @@ private struct SourceSettingsTab: View {
                 TextField("Org subdomain (yourorg → yourorg.\(Credentials.currentSite()))",
                           text: $subdomain)
                     .onSubmit { onSave() }   // rebuild monitor links now
+                Picker("Open links in", selection: $browser) {
+                    Text("System default").tag("")
+                    ForEach(LinkOpener.installedBrowsers(), id: \.self) { Text($0).tag($0) }
+                }
             }
             Text("Browser links open at \(subdomain.isEmpty ? "app" : subdomain)"
                  + ".\(Credentials.currentSite()) — set your org's subdomain so "
@@ -211,6 +216,9 @@ private struct SourceSettingsTab: View {
         }
         .onChange(of: subdomain) { newValue in
             Credentials.setSubdomain(newValue)
+        }
+        .onChange(of: browser) { newValue in
+            LinkOpener.setBrowser(newValue)
         }
     }
 
@@ -406,32 +414,43 @@ private struct NotificationSettingsTab: View {
 // MARK: - Jira
 
 private struct JiraSettingsTab: View {
+    @State private var authMode: JiraConfig.Auth = .oauth
     @State private var baseURL = ""
     @State private var email = ""
     @State private var projectKey = ""
     @State private var issueType = "Task"
     @State private var autoCreate = 0
     @State private var token = ""
-    @State private var configured = JiraConfig.load() != nil
+    @State private var clientID = ""
+    @State private var clientSecret = ""
+    @State private var connected = JiraOAuth.isConnected
+    @State private var busy = false
     @State private var status: String?
     @State private var isError = false
 
+    private var hasLastPassCreds: Bool {
+        AuthMode.current == .lastPass
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("Jira ticketing")
                 .font(.headline)
-            Text(configured
-                 ? "Configured — alerts show a “Jira ticket” action. Enter new values to change."
-                 : "One-tap tickets from any alert. In LastPass mode the API token can "
-                   + "come from the shared note's jiraToken field; otherwise it's stored "
-                   + "in the Keychain.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+
+            Picker("", selection: $authMode) {
+                Text("OAuth (client ID + secret)").tag(JiraConfig.Auth.oauth)
+                Text("API token").tag(JiraConfig.Auth.token)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            if authMode == .oauth {
+                oauthSection
+            } else {
+                tokenSection
+            }
 
             Form {
-                TextField("Site (yourorg.atlassian.net)", text: $baseURL)
-                TextField("Account email", text: $email)
                 TextField("Project key (e.g. OPS)", text: $projectKey)
                 Picker("Issue type", selection: $issueType) {
                     ForEach(JiraConfig.issueTypes, id: \.self) { Text($0) }
@@ -441,65 +460,160 @@ private struct JiraSettingsTab: View {
                     Text("P1 only").tag(1)
                     Text("P1 + P2").tag(2)
                 }
-                SecureField(AuthMode.current == .lastPass
-                            ? "API token (blank = LastPass jiraToken field)"
-                            : "API token",
-                            text: $token)
             }
 
             if let status {
                 Text(status)
                     .font(.caption)
                     .foregroundStyle(isError ? .red : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {
-                if configured {
-                    Button("Disable Jira", role: .destructive) {
-                        JiraConfig.clear()
-                        configured = false
-                        baseURL = ""; email = ""; projectKey = ""; token = ""
-                        status = nil
-                    }
+                Button("Disable Jira", role: .destructive) {
+                    JiraConfig.clear()
+                    connected = false
+                    baseURL = ""; email = ""; projectKey = ""; token = ""
+                    clientID = ""; clientSecret = ""
+                    status = nil
                 }
+                if busy { ProgressView().controlSize(.small) }
                 Spacer()
+                Button("Test") { testConnection() }
+                    .disabled(busy || projectKey.isEmpty)
                 Button("Save") { save() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(baseURL.isEmpty || email.isEmpty || projectKey.isEmpty)
+                    .disabled(busy || projectKey.isEmpty
+                              || (authMode == .token && (baseURL.isEmpty || email.isEmpty)))
             }
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(height: 340)
-        .onAppear {
-            if let config = JiraConfig.load() {
-                baseURL = config.baseURL
-                email = config.email
-                projectKey = config.projectKey
-                issueType = config.issueType
-                autoCreate = config.autoCreatePriority
+        .frame(height: 420)
+        .onAppear { loadStored() }
+    }
+
+    private var oauthSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(connected
+                 ? "Connected ✓ — tickets are created via OAuth"
+                   + (JiraOAuth.siteURL().map { " at \($0)" } ?? "") + "."
+                 : hasLastPassCreds
+                   ? "Client ID and secret come from the LastPass note's jiraClientID / "
+                     + "jiraClientSecret fields — leave the fields blank and hit Connect."
+                   : "Enter your Atlassian OAuth app's client ID and secret (redirect URL "
+                     + "must be http://localhost:8917/callback), then Connect.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Form {
+                TextField(hasLastPassCreds ? "Client ID (blank = LastPass jiraClientID)"
+                                           : "Client ID", text: $clientID)
+                SecureField(hasLastPassCreds ? "Client secret (blank = LastPass jiraClientSecret)"
+                                             : "Client secret", text: $clientSecret)
+                TextField("Site (yourorg.atlassian.net — picks the right org)", text: $baseURL)
+            }
+            HStack {
+                Spacer()
+                Button(connected ? "Reconnect…" : "Connect Jira…") { connect() }
+                    .disabled(busy)
             }
         }
     }
 
-    private func save() {
-        var config = JiraConfig(baseURL: baseURL, email: email, projectKey: projectKey)
-        config.issueType = issueType
-        config.autoCreatePriority = autoCreate
-        config.save()
-        if !token.isEmpty {
-            do {
-                try JiraConfig.saveToken(token)
-                token = ""
-            } catch {
-                status = "Keychain write failed: \(error.localizedDescription)"
-                isError = true
-                return
+    private var tokenSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Legacy mode: email + API token Basic auth. In LastPass mode the token "
+                 + "can come from the note's jiraToken field.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Form {
+                TextField("Site (yourorg.atlassian.net)", text: $baseURL)
+                TextField("Account email", text: $email)
+                SecureField(hasLastPassCreds ? "API token (blank = LastPass jiraToken field)"
+                                             : "API token", text: $token)
             }
         }
-        configured = true
-        status = "Saved."
+    }
+
+    private func loadStored() {
+        let config = JiraConfig.loadStored()
+        authMode = config.auth
+        baseURL = config.baseURL
+        email = config.email
+        projectKey = config.projectKey
+        issueType = config.issueType
+        autoCreate = config.autoCreatePriority
+        clientID = JiraOAuth.storedClientID()
+    }
+
+    private func currentConfig() -> JiraConfig {
+        var config = JiraConfig(baseURL: baseURL, projectKey: projectKey)
+        config.auth = authMode
+        config.email = email
+        config.issueType = issueType
+        config.autoCreatePriority = autoCreate
+        return config
+    }
+
+    private func save() {
+        let config = currentConfig()
+        config.save()
+        do {
+            if authMode == .oauth, !clientID.isEmpty {
+                try JiraOAuth.saveClientCredentials(id: clientID, secret: clientSecret)
+                clientSecret = ""
+            }
+            if authMode == .token, !token.isEmpty {
+                try JiraConfig.saveToken(token)
+                token = ""
+            }
+        } catch {
+            status = "Keychain write failed: \(error.localizedDescription)"
+            isError = true
+            return
+        }
+        status = authMode == .oauth && !connected
+            ? "Saved — now hit Connect to authorize." : "Saved."
         isError = false
+    }
+
+    /// Save first (so credentials are in place), then run the browser flow.
+    private func connect() {
+        save()
+        guard !isError else { return }
+        busy = true; status = "Opening browser for Atlassian consent…"; isError = false
+        let host = baseURL
+        Task {
+            do {
+                let site = try await JiraOAuth.connect(preferredHost: host)
+                connected = true
+                if baseURL.isEmpty {
+                    baseURL = site.replacingOccurrences(of: "https://", with: "")
+                }
+                currentConfig().save()
+                status = "Connected ✓ (\(site))"
+                isError = false
+            } catch {
+                status = error.localizedDescription
+                isError = true
+            }
+            busy = false
+        }
+    }
+
+    private func testConnection() {
+        save()
+        guard !isError else { return }
+        busy = true; status = "Testing…"; isError = false
+        let config = currentConfig()
+        Task {
+            let report = await JiraClient.connectionTest(config: config)
+            status = report
+            isError = report.lowercased().contains("failed")
+            busy = false
+        }
     }
 }
 

@@ -1,26 +1,33 @@
 import Foundation
 
-/// Jira Cloud configuration for one-tap ticket creation from an alert.
-/// Non-secret fields persist in UserDefaults; the API token lives in the
-/// Keychain — or, in LastPass mode, comes out of the same shared secure note
-/// as the Datadog keys (field `jiraToken` by default), so a team vault
-/// provisions Jira too. Env vars (JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN)
-/// override for the dev loop.
+/// Jira configuration for ticket creation from alerts. Two auth modes,
+/// mirroring the Python app:
+/// - **oauth** (default): client ID + secret — from the shared LastPass
+///   note's `jiraClientID`/`jiraClientSecret` fields, or entered manually —
+///   with browser consent (see JiraOAuth). Requests go Bearer against
+///   api.atlassian.com/ex/jira/<cloudID>.
+/// - **token**: legacy email + API token Basic auth against the site host.
+/// Non-secret fields persist in UserDefaults; secrets in Keychain/LastPass.
 struct JiraConfig: Equatable {
-    /// Host only, e.g. "yourorg.atlassian.net".
+    enum Auth: String { case oauth, token }
+
+    var auth: Auth = .oauth
+    /// Site host for browse links and OAuth site matching,
+    /// e.g. "yourorg.atlassian.net". In OAuth mode this may be filled from
+    /// accessible-resources at connect time.
     var baseURL: String
-    var email: String
+    var email: String = ""
     var projectKey: String
     var issueType: String = "Task"
-    /// LastPass note field holding the API token (LastPass mode only).
+    /// LastPass note field holding the API token (token mode only).
     var lastPassTokenField: String = "jiraToken"
     /// Auto-create tickets when a monitor fires: 0 = off, 1 = P1 only,
-    /// 2 = P1+P2. Dedupe: a monitor that already has a ticket never gets
-    /// another.
+    /// 2 = P1+P2.
     var autoCreatePriority: Int = 0
 
     static let issueTypes = ["Task", "Bug", "Incident", "Story"]
 
+    private static let authKey = "jiraAuthMode"
     private static let baseURLKey = "jiraBaseURL"
     private static let emailKey = "jiraEmail"
     private static let projectKey_ = "jiraProjectKey"
@@ -29,25 +36,39 @@ struct JiraConfig: Equatable {
     private static let autoCreateKey = "jiraAutoCreatePriority"
     private static let tokenService = "datadog-assistant-jira-token"
 
-    /// Loaded config, or nil until the base URL, email, and project are set.
+    /// Loaded config, or nil until it's actually usable for ticket creation:
+    /// a project key plus either a connected OAuth session or token-mode
+    /// coordinates.
     static func load() -> JiraConfig? {
+        let stored = loadStored()
+        guard !stored.projectKey.isEmpty else { return nil }
+        switch stored.auth {
+        case .oauth:
+            return JiraOAuth.isConnected ? stored : nil
+        case .token:
+            return (!stored.baseURL.isEmpty && !stored.email.isEmpty) ? stored : nil
+        }
+    }
+
+    /// The persisted fields regardless of connection state — what Settings
+    /// edits.
+    static func loadStored() -> JiraConfig {
         let env = ProcessInfo.processInfo.environment
         let defaults = UserDefaults.standard
-        let baseURL = env["JIRA_BASE_URL"] ?? defaults.string(forKey: baseURLKey) ?? ""
-        let email = env["JIRA_EMAIL"] ?? defaults.string(forKey: emailKey) ?? ""
-        let project = defaults.string(forKey: projectKey_) ?? ""
-        guard !baseURL.isEmpty, !email.isEmpty, !project.isEmpty else { return nil }
-        return JiraConfig(
-            baseURL: baseURL,
-            email: email,
-            projectKey: project,
-            issueType: defaults.string(forKey: issueTypeKey) ?? "Task",
-            lastPassTokenField: defaults.string(forKey: lastPassFieldKey) ?? "jiraToken",
-            autoCreatePriority: defaults.integer(forKey: autoCreateKey))
+        var config = JiraConfig(
+            baseURL: env["JIRA_BASE_URL"] ?? defaults.string(forKey: baseURLKey) ?? "",
+            projectKey: defaults.string(forKey: projectKey_) ?? "")
+        config.auth = Auth(rawValue: defaults.string(forKey: authKey) ?? "oauth") ?? .oauth
+        config.email = env["JIRA_EMAIL"] ?? defaults.string(forKey: emailKey) ?? ""
+        config.issueType = defaults.string(forKey: issueTypeKey) ?? "Task"
+        config.lastPassTokenField = defaults.string(forKey: lastPassFieldKey) ?? "jiraToken"
+        config.autoCreatePriority = defaults.integer(forKey: autoCreateKey)
+        return config
     }
 
     func save() {
         let defaults = UserDefaults.standard
+        defaults.set(auth.rawValue, forKey: Self.authKey)
         defaults.set(baseURL, forKey: Self.baseURLKey)
         defaults.set(email, forKey: Self.emailKey)
         defaults.set(projectKey, forKey: Self.projectKey_)
@@ -58,18 +79,19 @@ struct JiraConfig: Equatable {
 
     static func clear() {
         let defaults = UserDefaults.standard
-        for key in [baseURLKey, emailKey, projectKey_, issueTypeKey, lastPassFieldKey,
-                    autoCreateKey] {
+        for key in [authKey, baseURLKey, emailKey, projectKey_, issueTypeKey,
+                    lastPassFieldKey, autoCreateKey] {
             defaults.removeObject(forKey: key)
         }
         Keychain.delete(service: tokenService)
+        JiraOAuth.disconnect()
     }
 
     static func saveToken(_ token: String) throws {
         try Keychain.write(service: tokenService, value: token)
     }
 
-    /// Env → LastPass vault → Keychain, same precedence as everything else.
+    /// Token-mode secret: env → LastPass vault → Keychain.
     func resolveToken() -> String? {
         let env = ProcessInfo.processInfo.environment
         if let token = env["JIRA_API_TOKEN"], !token.isEmpty { return token }
@@ -80,11 +102,25 @@ struct JiraConfig: Equatable {
         }
         return Keychain.read(service: Self.tokenService)
     }
+
+    /// The site host used for browse links.
+    var browseHost: String {
+        let stored = baseURL
+            .replacingOccurrences(of: "https://", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        if !stored.isEmpty { return stored }
+        if let site = JiraOAuth.siteURL() {
+            return site.replacingOccurrences(of: "https://", with: "")
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+        }
+        return ""
+    }
 }
 
 /// Which ticket belongs to which monitor, persisted across launches. This is
-/// the dedupe: an alert that already has a ticket shows "Open PROJ-123"
-/// instead of minting duplicates every time it fires.
+/// the local dedupe: an alert that already has a ticket shows "Open PROJ-123"
+/// instead of minting duplicates. (createIssue additionally checks Jira
+/// itself via JQL, so tickets created elsewhere are respected too.)
 enum JiraTicketStore {
     private static let key = "jiraTicketsByMonitor"
 
@@ -109,9 +145,9 @@ enum JiraTicketStore {
     }
 }
 
-/// Auto-create tickets for high-priority alerts, mirroring the Python app's
-/// P1/P2 auto-create with dedupe. Runs on fired transitions; the created
-/// ticket is announced with a notification that opens it on tap.
+/// Auto-create tickets for high-priority alerts (P1/P2), with dedupe. Runs on
+/// fired transitions; the created ticket is announced with a notification
+/// that opens it on tap.
 @MainActor
 enum JiraAutoCreate {
     static func handle(_ transitions: [SnapshotStore.Transition]) {
@@ -130,68 +166,199 @@ enum JiraAutoCreate {
     }
 }
 
-/// Minimal Jira Cloud REST client: create one issue for a firing monitor.
+/// Jira Cloud REST client (v3): create issues for firing monitors, find
+/// existing ones by label, and test the connection.
 enum JiraClient {
     enum JiraError: LocalizedError {
         case noToken
+        case notConnected
         case http(Int, String)
         var errorDescription: String? {
             switch self {
             case .noToken:
                 return "No Jira API token — add one in Settings → Jira (or the LastPass note)."
+            case .notConnected:
+                return "Jira isn't connected — run Connect in Settings → Jira."
             case .http(let code, let detail):
                 return "Jira returned HTTP \(code)\(detail.isEmpty ? "" : " — \(detail)")"
             }
         }
     }
 
-    private struct CreateResponse: Decodable { let key: String }
+    /// Every monitor's ticket carries this label, which is what the JQL
+    /// dedupe searches for.
+    static func monitorLabel(_ monitorID: Int) -> String { "dd-monitor-\(monitorID)" }
 
-    /// Create a ticket for a monitor and remember the monitor → ticket
-    /// mapping; returns the new issue's key and browse URL.
-    static func createIssue(for monitor: Monitor, config: JiraConfig) async throws
-        -> (key: String, url: URL) {
-        guard let token = config.resolveToken(), !token.isEmpty else { throw JiraError.noToken }
-        let host = config.baseURL
-            .replacingOccurrences(of: "https://", with: "")
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
-        guard let url = URL(string: "https://\(host)/rest/api/2/issue") else {
-            throw JiraError.http(0, "invalid base URL")
+    // MARK: Requests (auth-mode aware)
+
+    /// REST base: OAuth goes through the api.atlassian.com gateway; token
+    /// mode hits the site host directly.
+    private static func restBase(_ config: JiraConfig) throws -> URL {
+        switch config.auth {
+        case .oauth:
+            guard let cloudID = JiraOAuth.cloudID() else { throw JiraError.notConnected }
+            return URL(string: "https://api.atlassian.com/ex/jira/\(cloudID)")!
+        case .token:
+            let host = config.browseHost
+            guard !host.isEmpty else { throw JiraError.http(0, "no Jira site configured") }
+            return URL(string: "https://\(host)")!
         }
+    }
 
-        var description = "Created by Datadog Assistant.\n\n"
-        description += "*State:* \(monitor.state.label) (\(monitor.priority.label))\n"
-        if let duration = monitor.firingDuration { description += "*Firing for:* \(duration)\n" }
-        if !monitor.triggeredHosts.isEmpty {
-            description += "*Groups:* \(monitor.triggeredHosts.joined(separator: ", "))\n"
+    private static func authedRequest(_ config: JiraConfig, path: String,
+                                      query: [URLQueryItem] = []) async throws -> URLRequest {
+        var components = URLComponents(
+            url: try restBase(config).appendingPathComponent(path),
+            resolvingAgainstBaseURL: false)!
+        if !query.isEmpty { components.queryItems = query }
+        var request = URLRequest(url: components.url!)
+        request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        switch config.auth {
+        case .oauth:
+            let token = try await JiraOAuth.accessToken()
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        case .token:
+            guard let token = config.resolveToken(), !token.isEmpty else {
+                throw JiraError.noToken
+            }
+            let basic = Data("\(config.email):\(token)".utf8).base64EncodedString()
+            request.setValue("Basic \(basic)", forHTTPHeaderField: "Authorization")
         }
-        if let monitorURL = monitor.url { description += "\n[Open in Datadog|\(monitorURL.absoluteString)]" }
+        return request
+    }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let basic = Data("\(config.email):\(token)".utf8).base64EncodedString()
-        request.setValue("Basic \(basic)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 15
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "fields": [
-                "project": ["key": config.projectKey],
-                "summary": "[\(monitor.priority.label)] \(monitor.name)",
-                "description": description,
-                "issuetype": ["name": config.issueType],
-                "labels": ["datadog-assistant"],
-            ],
-        ])
-
+    private static func send(_ request: URLRequest) async throws -> Data {
         let (data, response) = try await URLSession.shared.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(code) else {
-            let detail = String(data: data.prefix(200), encoding: .utf8) ?? ""
-            throw JiraError.http(code, detail)
+            throw JiraError.http(code, String(data: data.prefix(200), encoding: .utf8) ?? "")
         }
+        return data
+    }
+
+    // MARK: Create / find issues
+
+    private struct CreateResponse: Decodable { let key: String }
+    private struct SearchResponse: Decodable {
+        struct Issue: Decodable { let key: String }
+        let issues: [Issue]?
+    }
+
+    /// An already-open ticket for this monitor, found via the dd-monitor-<id>
+    /// label — respects tickets created by teammates or a previous install.
+    static func findOpenIssue(monitorID: Int, config: JiraConfig) async throws -> String? {
+        let jql = "labels = \"\(monitorLabel(monitorID))\" AND statusCategory != Done"
+        let request = try await authedRequest(
+            config, path: "/rest/api/3/search/jql",
+            query: [URLQueryItem(name: "jql", value: jql),
+                    URLQueryItem(name: "fields", value: "key"),
+                    URLQueryItem(name: "maxResults", value: "1")])
+        let data = try await send(request)
+        return try JSONDecoder().decode(SearchResponse.self, from: data).issues?.first?.key
+    }
+
+    /// Create a ticket for a monitor (or adopt an existing open one), record
+    /// the monitor → ticket mapping, and return the key and browse URL.
+    static func createIssue(for monitor: Monitor, config: JiraConfig) async throws
+        -> (key: String, url: URL) {
+        let host = config.browseHost
+
+        // Server-side dedupe first (best-effort — a search failure shouldn't
+        // block ticket creation).
+        if let existing = try? await findOpenIssue(monitorID: monitor.id, config: config),
+           let existingKey = existing {
+            let url = URL(string: "https://\(host)/browse/\(existingKey)")!
+            JiraTicketStore.record(ticketKey: existingKey, url: url, for: monitor.id)
+            return (existingKey, url)
+        }
+
+        var lines = ["State: \(monitor.state.label) (\(monitor.priority.label))"]
+        if let duration = monitor.firingDuration { lines.append("Firing for: \(duration)") }
+        if !monitor.triggeredHosts.isEmpty {
+            lines.append("Groups: \(monitor.triggeredHosts.joined(separator: ", "))")
+        }
+        if let monitorURL = monitor.url { lines.append(monitorURL.absoluteString) }
+
+        // Labels: configured base + one per monitor tag + the dedupe label.
+        var labels = ["datadog-alert", monitorLabel(monitor.id)]
+        for tag in monitor.tags {
+            let label = jiraLabel("datadog-alert-\(tag)")
+            if !labels.contains(label) { labels.append(label) }
+        }
+
+        var request = try await authedRequest(config, path: "/rest/api/3/issue")
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "fields": [
+                "project": ["key": config.projectKey],
+                "summary": String("[\(monitor.priority.label)] \(monitor.name)".prefix(254)),
+                "description": adfDocument(paragraphs: lines),
+                "issuetype": ["name": config.issueType],
+                "labels": labels,
+            ],
+        ])
+        let data = try await send(request)
         let created = try JSONDecoder().decode(CreateResponse.self, from: data)
         let browseURL = URL(string: "https://\(host)/browse/\(created.key)")!
         JiraTicketStore.record(ticketKey: created.key, url: browseURL, for: monitor.id)
         return (created.key, browseURL)
+    }
+
+    /// Atlassian Document Format body — v3 requires it.
+    private static func adfDocument(paragraphs: [String]) -> [String: Any] {
+        [
+            "type": "doc",
+            "version": 1,
+            "content": paragraphs.map { text in
+                ["type": "paragraph",
+                 "content": [["type": "text", "text": text]]]
+            },
+        ]
+    }
+
+    /// Jira labels can't contain spaces; mirror the Python sanitizer
+    /// (non-alphanumerics → "-").
+    private static func jiraLabel(_ raw: String) -> String {
+        String(raw.map { $0.isLetter || $0.isNumber ? $0 : "-" })
+    }
+
+    // MARK: Connection test
+
+    private struct Myself: Decodable {
+        let displayName: String?
+        let emailAddress: String?
+    }
+    private struct ProjectSearch: Decodable {
+        struct Project: Decodable { let key: String }
+        let total: Int?
+        let values: [Project]?
+    }
+
+    /// Who am I, how many projects can I see, and is the configured project
+    /// among them? Diagnoses the "token works but sees nothing" failure mode.
+    static func connectionTest(config: JiraConfig) async -> String {
+        do {
+            let meData = try await send(
+                try await authedRequest(config, path: "/rest/api/3/myself"))
+            let me = try JSONDecoder().decode(Myself.self, from: meData)
+            let projectData = try await send(try await authedRequest(
+                config, path: "/rest/api/3/project/search",
+                query: [URLQueryItem(name: "maxResults", value: "50")]))
+            let projects = try JSONDecoder().decode(ProjectSearch.self, from: projectData)
+            let keys = (projects.values ?? []).map(\.key)
+            var report = "Connected as \(me.displayName ?? me.emailAddress ?? "unknown") · "
+                + "\(projects.total ?? keys.count) project(s) visible."
+            if keys.contains(config.projectKey) {
+                report += " Project \(config.projectKey) ✓"
+            } else {
+                report += " ⚠️ Project \(config.projectKey) not visible"
+                    + (keys.isEmpty ? "." : " — visible: \(keys.prefix(10).joined(separator: ", "))")
+            }
+            return report
+        } catch {
+            return "Connection test failed: \(error.localizedDescription)"
+        }
     }
 }
