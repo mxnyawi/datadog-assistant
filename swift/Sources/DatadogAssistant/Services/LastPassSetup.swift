@@ -216,31 +216,49 @@ enum LastPassSetup {
         return entries
     }
 
-    /// Field names available on an entry — both custom fields ("Label: value")
-    /// and `key=value` lines in the secure-note body — so the user can map
-    /// which field holds each key. Best-effort; empty on failure.
+    /// Field names available on an entry — the `key=value` lines in the
+    /// secure-note body (the shared-vault format) plus any custom
+    /// "Label: value" fields — so the user can map which field holds each key.
+    /// Best-effort; empty on failure.
     static func availableFields(entry: String) -> [String] {
         let entry = entry.trimmingCharacters(in: .whitespaces)
-        guard !entry.isEmpty, let lpass = LastPass.locate(),
-              let result = capture(URL(fileURLWithPath: lpass), ["show", entry], timeout: 30),
-              result.status == 0 else { return [] }
-        // Standard headers lpass prints that aren't credential fields.
+        guard !entry.isEmpty, let lpass = LastPass.locate() else { return [] }
+        var seen = Set<String>(), fields: [String] = []
+        func add(_ raw: String) {
+            let key = raw.trimmingCharacters(in: .whitespaces)
+            if !key.isEmpty, !seen.contains(key) { seen.insert(key); fields.append(key) }
+        }
+
+        // Secure-note body: key=value lines (datadogAPIKey=…, datadogAPPKey=…).
+        // `--notes` prints just the body, so every line is a candidate.
+        if let notes = capture(URL(fileURLWithPath: lpass), ["show", "--notes", entry], timeout: 30),
+           notes.status == 0 {
+            for line in notes.output.split(separator: "\n") {
+                if let eq = line.firstIndex(of: "=") { add(String(line[..<eq])) }
+            }
+        }
+
+        // Custom-field entries: "Label: value" lines from the full show,
+        // skipping lpass's standard headers.
         let standard: Set<String> = ["username", "password", "url", "notes",
                                      "id", "name", "fullname", "group",
                                      "last modified", "last touch"]
-        var seen = Set<String>(), fields: [String] = []
-        let lines = result.output.split(separator: "\n", omittingEmptySubsequences: false)
-        for (index, rawLine) in lines.enumerated() {
-            if index == 0 { continue }   // first line is the entry's own name/path
-            let line = String(rawLine)
-            var key = ""
-            if let colon = line.range(of: ": ") {
-                key = String(line[..<colon.lowerBound]).trimmingCharacters(in: .whitespaces)
-                if standard.contains(key.lowercased()) { key = "" }
-            } else if let eq = line.firstIndex(of: "=") {
-                key = String(line[..<eq]).trimmingCharacters(in: .whitespaces)
+        if let full = capture(URL(fileURLWithPath: lpass), ["show", entry], timeout: 30),
+           full.status == 0 {
+            let lines = full.output.split(separator: "\n", omittingEmptySubsequences: false)
+            for (index, rawLine) in lines.enumerated() {
+                if index == 0 { continue }   // first line is the entry's own name/path
+                let line = String(rawLine)
+                guard let colon = line.range(of: ": ") else { continue }
+                let key = String(line[..<colon.lowerBound]).trimmingCharacters(in: .whitespaces)
+                if key.lowercased() == "notes" {
+                    // The first note line rides on "Notes: <first line>" — grab its key too.
+                    let rest = line[colon.upperBound...]
+                    if let eq = rest.firstIndex(of: "=") { add(String(rest[..<eq])) }
+                } else if !standard.contains(key.lowercased()) {
+                    add(key)
+                }
             }
-            if !key.isEmpty, !seen.contains(key) { seen.insert(key); fields.append(key) }
         }
         return fields
     }
