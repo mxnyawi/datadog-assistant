@@ -138,6 +138,19 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    /// Announce an auto-created Jira ticket; tapping opens it in the browser
+    /// (the default-action handler follows the `url` in userInfo).
+    func notifyTicketCreated(ticketKey: String, monitorName: String, url: URL) {
+        guard available else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Jira \(ticketKey) created"
+        content.body = monitorName
+        content.sound = nil
+        content.userInfo = ["url": url.absoluteString]
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "jira-\(ticketKey)", content: content, trigger: nil))
+    }
+
     /// The notification's own sound. When the user picked a named system
     /// sound we attach silence here and play it via NSSound instead —
     /// UNNotificationSound can't reliably reach /System/Library/Sounds.

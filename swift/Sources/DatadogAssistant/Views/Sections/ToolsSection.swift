@@ -18,7 +18,8 @@ struct ToolsSection: View {
             }
             toolRow(icon: "arrow.up.forward.square.fill", label: "Open Datadog",
                     detail: "Monitors overview in the browser") {
-                NSWorkspace.shared.open(URL(string: "https://app.datadoghq.com/monitors/manage")!)
+                NSWorkspace.shared.open(
+                    Credentials.currentAppBaseURL().appendingPathComponent("/monitors/manage"))
             }
             toolRow(icon: "arrow.clockwise", label: "Refresh now",
                     detail: store.refreshing ? "Checking…" : "Poll immediately") {

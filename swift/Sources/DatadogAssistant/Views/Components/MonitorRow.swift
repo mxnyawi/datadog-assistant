@@ -99,7 +99,11 @@ struct MonitorRow: View {
                     if let url = monitor.url { NSWorkspace.shared.open(url) }
                 }
                 .disabled(monitor.url == nil)
-                if let jira = JiraConfig.load() {
+                if let ticket = JiraTicketStore.ticket(for: monitor.id) {
+                    actionButton("Open \(ticket.key)", icon: "ticket.fill") {
+                        NSWorkspace.shared.open(ticket.url)
+                    }
+                } else if let jira = JiraConfig.load() {
                     actionButton(creatingTicket ? "Creating…" : "Jira ticket",
                                  icon: "ticket.fill") {
                         createTicket(jira)
@@ -125,8 +129,8 @@ struct MonitorRow: View {
         ticketError = nil
         Task {
             do {
-                let url = try await JiraClient.createIssue(for: monitor, config: config)
-                NSWorkspace.shared.open(url)
+                let ticket = try await JiraClient.createIssue(for: monitor, config: config)
+                NSWorkspace.shared.open(ticket.url)
             } catch {
                 ticketError = error.localizedDescription
             }

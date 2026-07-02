@@ -67,6 +67,7 @@ private struct SourceSettingsTab: View {
     @State private var lastPassLoggedIn = false
     @State private var showLastPassSetup = false
     @State private var authMode = AuthMode.current
+    @State private var subdomain = Credentials.currentSubdomain()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -99,13 +100,18 @@ private struct SourceSettingsTab: View {
                 lastPassSection
             }
 
+            if authMode != .sample {
+                Divider()
+                linksSection
+            }
+
             if let error {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(height: 340)
+        .frame(height: 380)
         .onAppear {
             if let lastPass = LastPassConfig.load() {
                 lastPassEntry = lastPass.entry
@@ -184,6 +190,27 @@ private struct SourceSettingsTab: View {
                 Button("Use LastPass") { saveLastPass() }
                     .disabled(lastPassEntry.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+        }
+    }
+
+    /// Org subdomain for browser links. With the generic app.* host, orgs
+    /// that use a vanity subdomain get bounced to a login page on every link.
+    private var linksSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Form {
+                TextField("Org subdomain (yourorg → yourorg.\(Credentials.currentSite()))",
+                          text: $subdomain)
+                    .onSubmit { onSave() }   // rebuild monitor links now
+            }
+            Text("Browser links open at \(subdomain.isEmpty ? "app" : subdomain)"
+                 + ".\(Credentials.currentSite()) — set your org's subdomain so "
+                 + "Datadog doesn't re-ask you to log in.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onChange(of: subdomain) { newValue in
+            Credentials.setSubdomain(newValue)
         }
     }
 
@@ -383,6 +410,7 @@ private struct JiraSettingsTab: View {
     @State private var email = ""
     @State private var projectKey = ""
     @State private var issueType = "Task"
+    @State private var autoCreate = 0
     @State private var token = ""
     @State private var configured = JiraConfig.load() != nil
     @State private var status: String?
@@ -407,6 +435,11 @@ private struct JiraSettingsTab: View {
                 TextField("Project key (e.g. OPS)", text: $projectKey)
                 Picker("Issue type", selection: $issueType) {
                     ForEach(JiraConfig.issueTypes, id: \.self) { Text($0) }
+                }
+                Picker("Auto-create on alert", selection: $autoCreate) {
+                    Text("Off").tag(0)
+                    Text("P1 only").tag(1)
+                    Text("P1 + P2").tag(2)
                 }
                 SecureField(AuthMode.current == .lastPass
                             ? "API token (blank = LastPass jiraToken field)"
@@ -444,6 +477,7 @@ private struct JiraSettingsTab: View {
                 email = config.email
                 projectKey = config.projectKey
                 issueType = config.issueType
+                autoCreate = config.autoCreatePriority
             }
         }
     }
@@ -451,6 +485,7 @@ private struct JiraSettingsTab: View {
     private func save() {
         var config = JiraConfig(baseURL: baseURL, email: email, projectKey: projectKey)
         config.issueType = issueType
+        config.autoCreatePriority = autoCreate
         config.save()
         if !token.isEmpty {
             do {

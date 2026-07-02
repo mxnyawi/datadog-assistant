@@ -33,6 +33,11 @@ struct Credentials: Equatable {
     var apiKey: String
     var appKey: String
     var site: String   // e.g. "datadoghq.com", "datadoghq.eu", "us3.datadoghq.com"
+    /// Org subdomain for browser links ("yourorg" → yourorg.datadoghq.com).
+    /// Orgs with a custom subdomain get re-asked to log in when links open
+    /// under the generic app.* host — same fix as the Python app's
+    /// app_subdomain config.
+    var subdomain: String = "app"
 
     static let knownSites = [
         "datadoghq.com", "datadoghq.eu", "us3.datadoghq.com",
@@ -40,15 +45,25 @@ struct Credentials: Equatable {
     ]
 
     var apiBaseURL: URL { URL(string: "https://api.\(site)")! }
-    var appBaseURL: URL { URL(string: "https://app.\(site)")! }
+    var appBaseURL: URL {
+        let sub = subdomain.trimmingCharacters(in: .whitespaces)
+        return URL(string: "https://\(sub.isEmpty ? "app" : sub).\(site)")!
+    }
 
     // Same service names install.sh writes, so existing users need no re-entry.
     private static let apiService = "datadog-assistant-api-key"
     private static let appService = "datadog-assistant-app-key"
     private static let siteDefaultsKey = "datadogSite"
+    private static let subdomainDefaultsKey = "datadogSubdomain"
 
     private static func storedSite() -> String {
         UserDefaults.standard.string(forKey: siteDefaultsKey) ?? "datadoghq.com"
+    }
+
+    private static func storedSubdomain() -> String {
+        let env = ProcessInfo.processInfo.environment
+        return env["DD_APP_SUBDOMAIN"]
+            ?? UserDefaults.standard.string(forKey: subdomainDefaultsKey) ?? "app"
     }
 
     /// The persisted Datadog site (shared across auth modes and with the
@@ -59,6 +74,20 @@ struct Credentials: Equatable {
         UserDefaults.standard.set(site, forKey: siteDefaultsKey)
     }
 
+    /// The persisted org subdomain for browser links ("app" default).
+    static func currentSubdomain() -> String { storedSubdomain() }
+    static func setSubdomain(_ subdomain: String) {
+        let trimmed = subdomain.trimmingCharacters(in: .whitespaces)
+        UserDefaults.standard.set(trimmed.isEmpty ? "app" : trimmed,
+                                  forKey: subdomainDefaultsKey)
+    }
+
+    /// Where browser links should point with the current config — usable even
+    /// without credentials (e.g. the Tools tab's "Open Datadog").
+    static func currentAppBaseURL() -> URL {
+        URL(string: "https://\(storedSubdomain()).\(storedSite())")!
+    }
+
     /// Load credentials for the *selected* auth mode only — no silent
     /// cross-mode fallback. This is what stops the app from prompting for the
     /// Keychain when the user chose the LastPass vault: in `.lastPass` mode the
@@ -67,7 +96,9 @@ struct Credentials: Equatable {
     static func load() -> Credentials? {
         let env = ProcessInfo.processInfo.environment
         if let api = env["DD_API_KEY"], let app = env["DD_APP_KEY"], !api.isEmpty, !app.isEmpty {
-            return Credentials(apiKey: api, appKey: app, site: env["DD_SITE"] ?? "datadoghq.com")
+            return Credentials(apiKey: api, appKey: app,
+                               site: env["DD_SITE"] ?? "datadoghq.com",
+                               subdomain: storedSubdomain())
         }
         switch AuthMode.current {
         case .sample:
@@ -79,11 +110,13 @@ struct Credentials: Equatable {
             guard let lastPass = LastPassConfig.load(), LastPass.isLoggedIn(),
                   let keys = lastPass.datadogKeys() else { return nil }
             return Credentials(apiKey: keys.api, appKey: keys.app,
-                               site: lastPass.site() ?? storedSite())
+                               site: lastPass.site() ?? storedSite(),
+                               subdomain: storedSubdomain())
         case .keychain:
             guard let api = Keychain.read(service: apiService),
                   let app = Keychain.read(service: appService) else { return nil }
-            return Credentials(apiKey: api, appKey: app, site: storedSite())
+            return Credentials(apiKey: api, appKey: app, site: storedSite(),
+                               subdomain: storedSubdomain())
         }
     }
 

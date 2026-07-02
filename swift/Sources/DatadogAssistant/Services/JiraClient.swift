@@ -14,6 +14,10 @@ struct JiraConfig: Equatable {
     var issueType: String = "Task"
     /// LastPass note field holding the API token (LastPass mode only).
     var lastPassTokenField: String = "jiraToken"
+    /// Auto-create tickets when a monitor fires: 0 = off, 1 = P1 only,
+    /// 2 = P1+P2. Dedupe: a monitor that already has a ticket never gets
+    /// another.
+    var autoCreatePriority: Int = 0
 
     static let issueTypes = ["Task", "Bug", "Incident", "Story"]
 
@@ -22,6 +26,7 @@ struct JiraConfig: Equatable {
     private static let projectKey_ = "jiraProjectKey"
     private static let issueTypeKey = "jiraIssueType"
     private static let lastPassFieldKey = "jiraLastPassTokenField"
+    private static let autoCreateKey = "jiraAutoCreatePriority"
     private static let tokenService = "datadog-assistant-jira-token"
 
     /// Loaded config, or nil until the base URL, email, and project are set.
@@ -37,7 +42,8 @@ struct JiraConfig: Equatable {
             email: email,
             projectKey: project,
             issueType: defaults.string(forKey: issueTypeKey) ?? "Task",
-            lastPassTokenField: defaults.string(forKey: lastPassFieldKey) ?? "jiraToken")
+            lastPassTokenField: defaults.string(forKey: lastPassFieldKey) ?? "jiraToken",
+            autoCreatePriority: defaults.integer(forKey: autoCreateKey))
     }
 
     func save() {
@@ -47,11 +53,13 @@ struct JiraConfig: Equatable {
         defaults.set(projectKey, forKey: Self.projectKey_)
         defaults.set(issueType, forKey: Self.issueTypeKey)
         defaults.set(lastPassTokenField, forKey: Self.lastPassFieldKey)
+        defaults.set(autoCreatePriority, forKey: Self.autoCreateKey)
     }
 
     static func clear() {
         let defaults = UserDefaults.standard
-        for key in [baseURLKey, emailKey, projectKey_, issueTypeKey, lastPassFieldKey] {
+        for key in [baseURLKey, emailKey, projectKey_, issueTypeKey, lastPassFieldKey,
+                    autoCreateKey] {
             defaults.removeObject(forKey: key)
         }
         Keychain.delete(service: tokenService)
@@ -74,6 +82,54 @@ struct JiraConfig: Equatable {
     }
 }
 
+/// Which ticket belongs to which monitor, persisted across launches. This is
+/// the dedupe: an alert that already has a ticket shows "Open PROJ-123"
+/// instead of minting duplicates every time it fires.
+enum JiraTicketStore {
+    private static let key = "jiraTicketsByMonitor"
+
+    static func ticket(for monitorID: Int) -> (key: String, url: URL)? {
+        guard let map = UserDefaults.standard.dictionary(forKey: key) as? [String: String],
+              let raw = map[String(monitorID)] else { return nil }
+        let parts = raw.split(separator: "|", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let url = URL(string: parts[1]) else { return nil }
+        return (parts[0], url)
+    }
+
+    static func record(ticketKey: String, url: URL, for monitorID: Int) {
+        var map = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+        map[String(monitorID)] = "\(ticketKey)|\(url.absoluteString)"
+        UserDefaults.standard.set(map, forKey: key)
+    }
+
+    static func forget(monitorID: Int) {
+        var map = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+        map.removeValue(forKey: String(monitorID))
+        UserDefaults.standard.set(map, forKey: key)
+    }
+}
+
+/// Auto-create tickets for high-priority alerts, mirroring the Python app's
+/// P1/P2 auto-create with dedupe. Runs on fired transitions; the created
+/// ticket is announced with a notification that opens it on tap.
+@MainActor
+enum JiraAutoCreate {
+    static func handle(_ transitions: [SnapshotStore.Transition]) {
+        guard let config = JiraConfig.load(), config.autoCreatePriority > 0 else { return }
+        for transition in transitions where transition.kind == .fired {
+            let monitor = transition.monitor
+            guard monitor.priority.rawValue <= config.autoCreatePriority,
+                  JiraTicketStore.ticket(for: monitor.id) == nil else { continue }
+            Task {
+                guard let result = try? await JiraClient.createIssue(for: monitor, config: config)
+                else { return }
+                NotificationManager.shared.notifyTicketCreated(
+                    ticketKey: result.key, monitorName: monitor.name, url: result.url)
+            }
+        }
+    }
+}
+
 /// Minimal Jira Cloud REST client: create one issue for a firing monitor.
 enum JiraClient {
     enum JiraError: LocalizedError {
@@ -91,8 +147,10 @@ enum JiraClient {
 
     private struct CreateResponse: Decodable { let key: String }
 
-    /// Create a ticket for a monitor; returns the browse URL of the new issue.
-    static func createIssue(for monitor: Monitor, config: JiraConfig) async throws -> URL {
+    /// Create a ticket for a monitor and remember the monitor → ticket
+    /// mapping; returns the new issue's key and browse URL.
+    static func createIssue(for monitor: Monitor, config: JiraConfig) async throws
+        -> (key: String, url: URL) {
         guard let token = config.resolveToken(), !token.isEmpty else { throw JiraError.noToken }
         let host = config.baseURL
             .replacingOccurrences(of: "https://", with: "")
@@ -132,6 +190,8 @@ enum JiraClient {
             throw JiraError.http(code, detail)
         }
         let created = try JSONDecoder().decode(CreateResponse.self, from: data)
-        return URL(string: "https://\(host)/browse/\(created.key)")!
+        let browseURL = URL(string: "https://\(host)/browse/\(created.key)")!
+        JiraTicketStore.record(ticketKey: created.key, url: browseURL, for: monitor.id)
+        return (created.key, browseURL)
     }
 }
