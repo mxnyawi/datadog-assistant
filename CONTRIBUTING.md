@@ -39,8 +39,11 @@ It's deliberately simple:
 git clone https://github.com/mxnyawi/datadog-assistant.git
 cd datadog-assistant
 
-# Run the logic tests anywhere (no Mac, no rumps needed):
+# Run the logic tests anywhere (no Mac, no rumps needed) — the same three
+# suites CI runs:
 python3 test_smoke.py
+DD_DRY_RUN=1 python3 installer/test_engine.py
+DD_DRY_RUN=1 python3 test_onboarding.py
 
 # Run the app for real (needs macOS + rumps + your own Datadog keys):
 pip3 install rumps
@@ -58,7 +61,8 @@ needs a real Mac to verify.** Please say in your PR what you were able to test.
 2. Make your change. Match the surrounding style — it's plain, readable Python;
    no formatter is enforced, just keep it consistent and add comments where the
    *why* isn't obvious.
-3. Run `python3 test_smoke.py` and add/extend a test if you changed logic.
+3. Run the test suites above (smoke + engine + onboarding) and add/extend a
+   test if you changed logic.
 4. Update **`README.md`** and **`config.example.json`** if you added or changed a
    config key or user-facing behaviour.
 5. Open a PR using the template and describe **what** changed, **why**, and **how

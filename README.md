@@ -259,7 +259,9 @@ Everything is configurable (see `config.example.json` for a full example):
 - **`notifications.style`** — `"banner"`, `"modal"` (the unmissable popup), or `"both"`
 - **`notifications.sound_name`** — any macOS sound: `Sosumi`, `Glass`, `Hero`, `Submarine`, `Funk`…
 - **`notifications.renotify_minutes`** — nag interval while still alerting (0 = off)
-- **`tag_filter`** / **`name_filter`** — scope to your team, e.g. `"team:payments env:prod"`
+- **`tag_filter`** / **`name_filter`** — scope to your team. Space-separated
+  tags use **OR** logic: `"team:payments team:platform"` shows monitors
+  matching *either* tag (each extra tag adds one API fetch per refresh)
 - **`browser`** — open links in a specific browser, e.g. `"Google Chrome"`,
   `"Firefox"`, `"Arc"`. Empty = system default. Set this if every link asks
   you to log in: links were opening in the default browser (often Safari)
@@ -339,9 +341,10 @@ Notes:
 
 - Commands run through `/bin/sh`, so Vault/AWS pipelines work too
   (`vault kv get -field=key secret/datadog`).
-- Successful lookups are cached in memory for the app's lifetime; if the
-  vault is locked the lookup fails, the menu bar shows 🔌 with a "password
-  manager unlocked?" hint, and it retries on the next poll after you unlock.
+- Successful lookups are cached in memory for 15 minutes (so key rotation is
+  picked up without a restart); if the vault is locked the lookup fails, the
+  menu bar shows 🔌 with a "password manager unlocked?" hint, and it retries
+  on the next poll after you unlock.
 - What this buys you: central rotation (rotate once in the vault, every
   machine follows), instant revocation, audit logs, and users who never see
   the key value. What it does *not* do: make the secret unreachable on a
@@ -513,7 +516,10 @@ Everything is **read-only**.
   `yourcompany.datadoghq.eu` in the address bar but links go to `app.datadoghq.eu/login?next=…`,
   set the subdomain via **Preferences → 🏢 Company subdomain…** (it suggests a guess from
   your org name) or `"app_subdomain"` in the config / install.sh.
-- **Logs** → `~/.datadog-assistant/stderr.log`
+- **Logs** → the app log at `~/.config/datadog-assistant/app.log` (rotating;
+  API failures, retries, swallowed errors). Set `"debug": true` in the config
+  or launch with `DD_DEBUG=1` for verbose logging. Process-level
+  stdout/stderr land in `~/.datadog-assistant/stderr.log`.
 - **Uninstall** →
   ```bash
   launchctl unload ~/Library/LaunchAgents/com.nour.datadog-assistant.plist

@@ -413,9 +413,6 @@ app._make_deleter(99, "doomed")(None)            # default responder types DELET
 check(("delete", 99) in CALLS, "C4 delete with DELETE typed -> API called")
 CALLS.clear()
 globals()["WINDOW_RESPONDER"] = lambda win: _Resp(True, "nope")   # wrong text
-da_mod = sys.modules["rumps"]
-da_mod.__dict__  # noop
-import builtins
 # patch the responder the app's Window.run uses
 rumps.Window.run = lambda self: _Resp(True, "nope")
 app._make_deleter(99, "doomed")(None)

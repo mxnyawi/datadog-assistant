@@ -18,11 +18,35 @@ permissions:
   contents: write
 
 jobs:
+  # Gate: a tag on a commit with failing tests must never reach
+  # releases/latest (the README's and website's primary download link).
+  test:
+    name: Test gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Manual dispatch must build the tag it claims, not default-branch
+          # HEAD — otherwise the published zip doesn't match its tag.
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run the test suite
+        run: |
+          python -m py_compile $(git ls-files '*.py')
+          python test_smoke.py
+          DD_DRY_RUN=1 python installer/test_engine.py
+          DD_DRY_RUN=1 python test_onboarding.py
+
   build:
     name: Build & publish macOS app
+    needs: test
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       # 3.12: the native stack (pyobjc/rumps/py2app/pywebview) is unreliable on
       # 3.13+, so pin a stable interpreter for the bundle.

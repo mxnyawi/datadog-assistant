@@ -35,6 +35,40 @@ jobs:
           DD_DRY_RUN=1 python installer/test_engine.py
           DD_DRY_RUN=1 python test_onboarding.py
 
+  lint:
+    name: Lint (errors & undefined names)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # E9/F only (syntax errors, undefined names, unused imports/variables):
+      # real defects in rarely-hit branches, zero style churn.
+      - name: ruff check
+        run: |
+          pip install --quiet ruff
+          ruff check --select E9,F .
+
+  macos:
+    # The app is macOS-only but the test jobs stub rumps on Linux, so
+    # dependency-resolution breakage (rumps/pyobjc/pywebview) and macOS-only
+    # import errors would otherwise first surface during a tagged release
+    # build. Install the REAL dependencies and import for real.
+    name: macOS real-deps import
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned runtime deps
+        run: pip install -r requirements.txt
+      - name: Import with real rumps/pyobjc
+        run: |
+          python -c "import datadog_assistant as da; print('app OK, v' + da.__version__)"
+          python -c "import onboarding_app; print('onboarding OK')"
+
   shell:
     name: Shell script checks
     runs-on: ubuntu-latest
