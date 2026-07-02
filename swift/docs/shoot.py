@@ -10,8 +10,8 @@ here = os.path.dirname(os.path.abspath(__file__))
 out = os.path.join(here, "images")
 os.makedirs(out, exist_ok=True)
 
-scenes = ["scene-alerting", "scene-expanded", "scene-changes", "scene-list",
-          "scene-clear", "scene-notify"]
+scenes = ["scene-hero", "scene-alerting", "scene-expanded", "scene-changes",
+          "scene-list", "scene-clear", "scene-notify"]
 
 with sync_playwright() as p:
     # CI/agent environments pre-install Chromium outside playwright's registry;

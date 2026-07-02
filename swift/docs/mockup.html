@@ -157,6 +157,48 @@
   .group-h{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--ink-2);padding-left:2px;margin-top:6px}
   .group-h .dot{width:7px;height:7px;border-radius:50%}
 
+  /* hero alert card */
+  .hero{
+    display:flex;flex-direction:column;gap:12px;padding:14px;border-radius:14px;
+    background:rgba(255,89,102,0.09);
+    box-shadow:inset 0 0 0 1px rgba(255,89,102,0.40),
+               0 4px 26px rgba(255,89,102,0.22);
+  }
+  .hero .top{display:flex;align-items:center;gap:8px}
+  .hero .live{width:8px;height:8px;border-radius:50%;background:var(--alert);
+    box-shadow:0 0 8px rgba(255,89,102,0.9)}
+  .hero .tag{font-size:10px;font-weight:800;letter-spacing:0.8px;color:var(--alert)}
+  .hero .dur{margin-left:auto;font-size:11px;font-weight:600;color:var(--alert);font-variant-numeric:tabular-nums}
+  .hero .name{font-size:15px;font-weight:700;letter-spacing:-0.1px}
+  .hero .valrow{display:flex;align-items:baseline;gap:6px}
+  .hero .bigval{font-size:30px;font-weight:700;color:var(--alert);letter-spacing:-0.5px}
+  .hero .thr{font-size:11px;font-weight:500;color:var(--ink-2)}
+  .hero .valrow .delta{margin-left:auto}
+  .gauge{position:relative;height:6px;border-radius:99px;background:rgba(255,255,255,0.08)}
+  .gauge .fill{position:absolute;inset:0 38% 0 0;border-radius:99px;
+    background:linear-gradient(90deg,var(--warn),var(--alert))}
+  .gauge .tick{position:absolute;top:-2px;bottom:-2px;left:62.5%;width:1.5px;background:rgba(255,255,255,0.7)}
+  .hero .suspect{color:var(--warn);background:rgba(255,199,77,0.12);
+    box-shadow:inset 0 0 0 1px rgba(255,199,77,0.35)}
+  .hero .hactions{display:flex;gap:8px}
+  .hbtn{
+    flex:1;display:flex;align-items:center;justify-content:center;gap:5px;
+    min-height:28px;border-radius:99px;font-size:11px;font-weight:700;
+    color:var(--ink);background:rgba(255,255,255,0.10);
+    box-shadow:inset 0 0 0 1px var(--stroke);
+  }
+  .hbtn.prominent{color:rgba(0,0,0,0.85);background:var(--alert);box-shadow:none}
+
+  /* response strip */
+  .stats{display:flex;gap:8px}
+  .stat{
+    flex:1;display:flex;align-items:center;justify-content:center;gap:6px;
+    padding:8px 4px;border-radius:10px;
+    background:var(--panel);box-shadow:inset 0 0 0 1px var(--stroke);
+  }
+  .stat .v{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums}
+  .stat .l{font-size:10px;font-weight:500;color:var(--ink-3)}
+
   /* sections */
   .sect-label{font-size:11px;font-weight:500;color:var(--ink-2);padding-left:2px;display:flex;align-items:center;gap:4px}
   .divider{height:1px;background:var(--stroke)}
@@ -262,6 +304,118 @@
 </style>
 </head>
 <body>
+
+<!-- ============ SCENE 0: hero incident card (exec demo centerpiece) ============ -->
+<div class="stage" id="scene-hero">
+  <div class="menubar">
+    <span class="item active-app"><svg width="15" height="15" class="paw"></svg><span class="badge-count">2</span></span>
+    <span class="item"><svg width="15" height="12" class="i-wifi"></svg></span>
+    <span class="item"><svg width="20" height="11" class="i-batt"></svg></span>
+    <span class="item">Tue Jul 1&nbsp;&nbsp;2:13 PM</span>
+  </div>
+
+  <div class="panel">
+    <div class="hdr">
+      <div class="appicon"><svg width="26" height="26" class="paw"></svg></div>
+      <div>
+        <h1>Datadog Assistant</h1>
+        <div class="pills"><span class="pill ok"><span class="dot"></span>acme-prod</span></div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab sel"><svg width="16" height="16" class="i-cpu"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">2</span></div>
+      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
+    </div>
+
+    <div class="clusters">
+      <span class="cluster"><svg width="10" height="10" class="i-stack"></svg>payments<span class="n">2 firing</span></span>
+    </div>
+
+    <div class="hero">
+      <div class="top">
+        <span class="live"></span>
+        <span class="tag">P1 · ALERTING</span>
+        <span class="dur">firing 12m 34s</span>
+      </div>
+      <div class="name">payments-api · p99 latency</div>
+      <div class="valrow">
+        <span class="bigval">842</span>
+        <span class="thr">/ 500 threshold</span>
+        <span class="delta alert">×3.2 vs last week</span>
+      </div>
+      <div class="gauge"><div class="fill"></div><div class="tick"></div></div>
+      <svg class="spark" style="height:34px" data-series="pay" data-color="alert" data-threshold="0.55" data-markers="0.57"></svg>
+      <div class="suspect">
+        <svg width="12" height="12" class="i-pr"></svg>
+        <span class="txt">
+          <span class="t1">PR #482 · raise cache TTL · 26m ago</span>
+        </span>
+        <svg width="9" height="9" class="go i-arrow"></svg>
+      </div>
+      <div class="hactions">
+        <span class="hbtn"><svg width="11" height="11" class="i-mute"></svg>Mute 1h</span>
+        <span class="hbtn prominent"><svg width="11" height="11" class="i-ext"></svg>Open in Datadog</span>
+      </div>
+    </div>
+
+    <div>
+      <div class="sect-label">Alert state</div>
+      <div class="cards" style="margin-top:10px">
+        <div class="card"><div class="t"><svg width="12" height="12" class="i-oct"></svg>Alerting</div><div class="v alert">2</div></div>
+        <div class="card"><div class="t"><svg width="12" height="12" class="i-tri"></svg>Warning</div><div class="v warn">2</div></div>
+        <div class="card"><div class="t"><svg width="12" height="12" class="i-seal"></svg>Healthy</div><div class="v ok">14</div></div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><svg width="10" height="12" class="i-bolt" style="color:var(--info)"></svg><span class="v">9s</span><span class="l">to detect</span></div>
+      <div class="stat"><svg width="11" height="11" class="i-bell" style="color:var(--warn)"></svg><span class="v">4</span><span class="l">alerts today</span></div>
+      <div class="stat"><svg width="11" height="11" class="i-undo" style="color:var(--ok)"></svg><span class="v">18m</span><span class="l">median recovery</span></div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div>
+      <div class="sect-label">Also firing</div>
+      <div class="rows" style="margin-top:8px">
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio alert">P2</span><span class="mname">checkout · 5xx rate</span>
+            <span class="delta alert">×4.8</span>
+            <span class="mval alert">4.1</span>
+          </div>
+          <svg class="spark" data-series="chk" data-color="alert" data-threshold="0.30" data-markers="0.57"></svg>
+        </div>
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio warn">P3</span><span class="mname">kafka · consumer lag</span>
+            <span class="mval warn">12.4k</span>
+          </div>
+          <svg class="spark" data-series="kfk" data-color="warn" data-threshold="0.85"></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="fresh" style="margin-top:2px">
+      <svg width="10" height="10" class="i-clock"></svg>
+      checked 4s ago · every 15s
+      <span class="right">⌥⌘D</span>
+    </div>
+
+    <div class="footer">
+      <div class="fbtn"><svg width="13" height="13" class="i-gear"></svg>Settings</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-list"></svg>List</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-power"></svg>Quit</div>
+    </div>
+  </div>
+</div>
 
 <!-- ============ SCENE 1: alerting (hero) ============ -->
 <div class="stage" id="scene-alerting">
@@ -798,6 +952,8 @@ const ICONS = {
   'i-ci-fail': `<g><circle cx="6.5" cy="6.5" r="5.8" fill="#ff5966" opacity="0.92"/><path d="M4.6 4.6 8.4 8.4M8.4 4.6 4.6 8.4" stroke="#12161f" stroke-width="1.6" stroke-linecap="round"/></g>`,
   'i-ci-run': `<g stroke="#ffc74d" stroke-width="1.6" fill="none" stroke-linecap="round"><circle cx="6.5" cy="6.5" r="5.3" stroke-dasharray="2.4 2.6"/><circle cx="6.5" cy="6.5" r="1.6" fill="#ffc74d" stroke="none"/></g>`,
   'i-mag': `<g stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"><circle cx="5" cy="5" r="3.6"/><line x1="7.8" y1="7.8" x2="10.8" y2="10.8"/></g>`,
+  'i-bell': `<path d="M5.5 1a3.4 3.4 0 0 1 3.4 3.4c0 2 .6 2.9 1.2 3.6H.9c.6-.7 1.2-1.6 1.2-3.6A3.4 3.4 0 0 1 5.5 1zM4.3 9.2a1.3 1.3 0 0 0 2.4 0z" fill="currentColor"/>`,
+  'i-undo': `<g stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M2.4 4.4h5a2.8 2.8 0 1 1 0 5.6H4"/><path d="M4.4 2.2 2.2 4.4l2.2 2.2"/></g>`,
 };
 document.querySelectorAll('svg[class]').forEach(el => {
   const key = [...el.classList].find(c => ICONS[c]);
@@ -810,7 +966,8 @@ document.querySelectorAll('svg[class]').forEach(el => {
     'i-gear':'0 0 13 13','i-list':'0 0 13 13','i-power':'0 0 13 13',
     'i-branch':'0 0 16 16','i-stack':'0 0 10 10','i-pr':'0 0 12 12',
     'i-box':'0 0 12 12','i-arrow':'0 0 9 9','i-ci-ok':'0 0 13 13',
-    'i-ci-fail':'0 0 13 13','i-ci-run':'0 0 13 13','i-mag':'0 0 12 12' }[key] || '0 0 16 16';
+    'i-ci-fail':'0 0 13 13','i-ci-run':'0 0 13 13','i-mag':'0 0 12 12',
+    'i-bell':'0 0 11 11','i-undo':'0 0 11 12' }[key] || '0 0 16 16';
   el.setAttribute('viewBox', vb);
   el.innerHTML = ICONS[key];
 });
