@@ -163,12 +163,21 @@ enum LastPass {
 /// by `install.sh` (`DD_LASTPASS_ENTRY` and friends).
 struct LastPassConfig: Equatable {
     var entry: String
+    /// Unique `lpass` ID for the entry, when known. Preferred over the name for
+    /// look-ups because it's immune to spaces in group/note names and to
+    /// duplicate names.
+    var entryID: String = ""
     var apiKeyField: String = "datadogAPIKey"
     var appKeyField: String = "datadogAPPKey"
     var gitHubTokenField: String = "githubToken"
     var siteField: String = ""   // optional — read the org's site from the note too
 
+    /// The reference passed to `lpass show` — the ID when we have it, else the
+    /// entry name.
+    var lookupRef: String { entryID.isEmpty ? entry : entryID }
+
     private static let entryKey = "lastpassEntry"
+    private static let entryIDKey = "lastpassEntryID"
     private static let apiFieldKey = "lastpassAPIKeyField"
     private static let appFieldKey = "lastpassAPPKeyField"
     private static let gitHubFieldKey = "lastpassGitHubTokenField"
@@ -181,6 +190,7 @@ struct LastPassConfig: Equatable {
               !entry.isEmpty else { return nil }
         return LastPassConfig(
             entry: entry,
+            entryID: env["DD_LASTPASS_ENTRY_ID"] ?? defaults.string(forKey: entryIDKey) ?? "",
             apiKeyField: env["DD_LASTPASS_API_FIELD"]
                 ?? defaults.string(forKey: apiFieldKey) ?? "datadogAPIKey",
             appKeyField: env["DD_LASTPASS_APP_FIELD"]
@@ -194,6 +204,7 @@ struct LastPassConfig: Equatable {
     func save() {
         let defaults = UserDefaults.standard
         defaults.set(entry, forKey: Self.entryKey)
+        defaults.set(entryID, forKey: Self.entryIDKey)
         defaults.set(apiKeyField, forKey: Self.apiFieldKey)
         defaults.set(appKeyField, forKey: Self.appFieldKey)
         defaults.set(gitHubTokenField, forKey: Self.gitHubFieldKey)
@@ -202,7 +213,7 @@ struct LastPassConfig: Equatable {
 
     static func clear() {
         let defaults = UserDefaults.standard
-        for key in [entryKey, apiFieldKey, appFieldKey, gitHubFieldKey, siteFieldKey] {
+        for key in [entryKey, entryIDKey, apiFieldKey, appFieldKey, gitHubFieldKey, siteFieldKey] {
             defaults.removeObject(forKey: key)
         }
     }
@@ -210,20 +221,20 @@ struct LastPassConfig: Equatable {
     /// The Datadog API + Application keys from the vault, or nil unless both
     /// are present.
     func datadogKeys() -> (api: String, app: String)? {
-        guard let api = LastPass.get(entry: entry, field: apiKeyField),
-              let app = LastPass.get(entry: entry, field: appKeyField) else { return nil }
+        guard let api = LastPass.get(entry: lookupRef, field: apiKeyField),
+              let app = LastPass.get(entry: lookupRef, field: appKeyField) else { return nil }
         return (api, app)
     }
 
     /// The GitHub token from the vault, if a field name is configured.
     func gitHubToken() -> String? {
         guard !gitHubTokenField.isEmpty else { return nil }
-        return LastPass.get(entry: entry, field: gitHubTokenField)
+        return LastPass.get(entry: lookupRef, field: gitHubTokenField)
     }
 
     /// The Datadog site from the vault, if a field name is configured.
     func site() -> String? {
         guard !siteField.isEmpty else { return nil }
-        return LastPass.get(entry: entry, field: siteField)
+        return LastPass.get(entry: lookupRef, field: siteField)
     }
 }

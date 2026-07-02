@@ -17,7 +17,7 @@ struct LastPassSetupView: View {
     @State private var otp = ""
     @State private var needsOTP = false
     @State private var entry = ""
-    @State private var entries: [String] = []
+    @State private var entries: [LastPassEntry] = []
     @State private var apiField = "datadogAPIKey"
     @State private var appField = "datadogAPPKey"
     @State private var site = Credentials.currentSite()
@@ -87,7 +87,7 @@ struct LastPassSetupView: View {
                     HStack {
                         Picker("Note / folder", selection: $entry) {
                             Text(entries.isEmpty ? "No entries loaded" : "Select a note…").tag("")
-                            ForEach(entries, id: \.self) { Text($0).tag($0) }
+                            ForEach(entries, id: \.self) { Text($0.name).tag($0.name) }
                         }
                         Button("Refresh") { loadEntries() }.disabled(busy || !loggedIn)
                     }
@@ -236,11 +236,11 @@ struct LastPassSetupView: View {
         let chosen = entry.trimmingCharacters(in: .whitespaces)
         guard !chosen.isEmpty else { fail("Pick or type an entry."); return }
         busy = true; status = nil; log = []; testReport = ""
-        let api = apiField, app = appField, site = self.site
+        let api = apiField, app = appField, site = self.site, ref = currentRef()
         Task.detached {
-            let result = LastPassSetup.diagnostics(entry: chosen, apiField: api, appField: app, site: site)
+            let result = LastPassSetup.diagnostics(entry: ref, apiField: api, appField: app, site: site)
             // On failure, surface the note's fields so the user can remap.
-            let fields = result.ok ? [] : LastPassSetup.availableFields(entry: chosen)
+            let fields = result.ok ? [] : LastPassSetup.availableFields(entry: ref)
             await MainActor.run {
                 busy = false
                 testReport = result.report
@@ -259,16 +259,17 @@ struct LastPassSetupView: View {
         let chosen = entry.trimmingCharacters(in: .whitespaces)
         guard !chosen.isEmpty else { fail("Pick or type an entry."); return }
         busy = true; status = nil
-        let api = apiField, app = appField
+        let api = apiField, app = appField, site = self.site, ref = currentRef()
         Task.detached {
-            let result = LastPassSetup.validate(entry: chosen, apiField: api, appField: app)
+            let result = LastPassSetup.validate(entry: ref, apiField: api, appField: app)
             // On failure, read the note's actual fields so the user can map them.
-            let fields = result.ok ? [] : LastPassSetup.availableFields(entry: chosen)
+            let fields = result.ok ? [] : LastPassSetup.availableFields(entry: ref)
             await MainActor.run {
                 busy = false
                 if result.ok {
                     Credentials.setSite(site)
                     var config = LastPassConfig(entry: chosen)
+                    config.entryID = (ref != chosen) ? ref : ""
                     config.apiKeyField = api
                     config.appKeyField = app
                     onComplete(config)
@@ -312,6 +313,17 @@ struct LastPassSetupView: View {
             ?? fields.first(where: { let l = $0.lowercased(); return l.contains("app") && !l.contains("api") }) {
             appField = match
         }
+    }
+
+    /// The reference to hand to `lpass` for the selected entry: its unique ID
+    /// when the entry came from the dropdown (immune to spaces / duplicate
+    /// names), else the typed name.
+    private func currentRef() -> String {
+        let name = entry.trimmingCharacters(in: .whitespaces)
+        if let match = entries.first(where: { $0.name == name }), !match.id.isEmpty {
+            return match.id
+        }
+        return name
     }
 
     private func fail(_ message: String) { status = message; isError = true }

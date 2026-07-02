@@ -8,6 +8,16 @@ enum LastPassLoginResult: Equatable {
     case failed(String)        // human-readable reason (secrets redacted)
 }
 
+/// A LastPass entry: its display name and unique `lpass` ID. Look-ups use the
+/// ID when present (`id` is non-empty), which avoids name-matching problems
+/// with spaces or duplicate names.
+struct LastPassEntry: Hashable {
+    let name: String
+    let id: String
+    /// What to pass to `lpass show` — the ID when known, else the name.
+    var ref: String { id.isEmpty ? name : id }
+}
+
 /// Guided, in-app setup for the LastPass CLI — the macOS-native counterpart to
 /// the Python onboarding app's LastPass flow. It installs the `lpass` CLI via
 /// Homebrew, drives `lpass login` (handling the master-password and
@@ -201,17 +211,27 @@ enum LastPassSetup {
         LastPass.statusLoggedIn()
     }
 
-    /// `lpass ls` → entry names (best-effort, empty on failure). Strips the
-    /// trailing `[id: ...]` some builds print.
-    static func listEntries() -> [String] {
+    /// `lpass ls` → entries with their unique IDs (best-effort, empty on
+    /// failure). Lines look like "Group/Name [id: 1234]". The ID is what we
+    /// pass back to `lpass show`, since it's immune to spaces in group/note
+    /// names and to duplicate names that would otherwise be ambiguous.
+    static func listEntries() -> [LastPassEntry] {
         guard let lpass = LastPass.locate(),
               let result = capture(URL(fileURLWithPath: lpass), ["ls"], timeout: 45),
               result.status == 0 else { return [] }
-        var seen = Set<String>(), entries: [String] = []
-        for line in result.output.split(separator: "\n") {
-            let name = line.components(separatedBy: " [id:").first?
-                .trimmingCharacters(in: .whitespaces) ?? ""
-            if !name.isEmpty, !seen.contains(name) { seen.insert(name); entries.append(name) }
+        var seen = Set<String>(), entries: [LastPassEntry] = []
+        for rawLine in result.output.split(separator: "\n") {
+            let line = String(rawLine)
+            var name = line, id = ""
+            if let range = line.range(of: " [id: ") {
+                name = String(line[..<range.lowerBound])
+                id = String(line[range.upperBound...].prefix { $0 != "]" })
+            }
+            name = name.trimmingCharacters(in: .whitespaces)
+            if !name.isEmpty, !seen.contains(name) {
+                seen.insert(name)
+                entries.append(LastPassEntry(name: name, id: id))
+            }
         }
         return entries
     }
@@ -291,11 +311,12 @@ enum LastPassSetup {
             return (false, lines.joined(separator: "\n"))
         }
         lines.append("lpass binary: \(lpass)")
+        lines.append("looking up entry: \(entry)")
 
         func run(_ args: [String]) -> (status: Int32, output: String) {
             let result = capture(URL(fileURLWithPath: lpass), args, timeout: 30)
             lines.append("")
-            lines.append("$ lpass \(args.joined(separator: " "))")
+            lines.append("$ lpass \(shellJoin(args))")
             lines.append("exit: \(result.map { String($0.status) } ?? "no result (couldn't launch)")")
             return (result?.status ?? -1, result?.output ?? "")
         }
@@ -376,7 +397,7 @@ enum LastPassSetup {
         let fieldResult = capture(URL(fileURLWithPath: lpass),
                                   ["show", "--field", field, entry], timeout: 30)
         lines.append("")
-        lines.append("$ lpass show --field \(field) \(entry)")
+        lines.append("$ lpass \(shellJoin(["show", "--field", field, entry]))")
         lines.append("exit: \(fieldResult.map { String($0.status) } ?? "no result")")
         let fieldValue = fieldResult?.status == 0
             ? (fieldResult?.output.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") : ""
@@ -390,7 +411,7 @@ enum LastPassSetup {
 
         let notes = capture(URL(fileURLWithPath: lpass), ["show", "--notes", entry], timeout: 30)
         lines.append("")
-        lines.append("$ lpass show --notes \(entry)")
+        lines.append("$ lpass \(shellJoin(["show", "--notes", entry]))")
         lines.append("exit: \(notes.map { String($0.status) } ?? "no result")")
         guard notes?.status == 0, let body = notes?.output else {
             if let err = notes?.output.trimmingCharacters(in: .whitespacesAndNewlines), !err.isEmpty {
@@ -431,6 +452,13 @@ enum LastPassSetup {
     }
 
     // MARK: Process helper
+
+    /// Render args the way a shell would need them (quoting anything with a
+    /// space), so a transcript line is copy-pasteable. This is display-only —
+    /// the actual calls pass each arg discretely, never through a shell.
+    private static func shellJoin(_ args: [String]) -> String {
+        args.map { $0.contains(" ") ? "\"\($0)\"" : $0 }.joined(separator: " ")
+    }
 
     private static func capture(_ url: URL, _ args: [String], timeout: TimeInterval,
                                 stdin: String? = nil, extraEnv: [String: String]? = nil)
