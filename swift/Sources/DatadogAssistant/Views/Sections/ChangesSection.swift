@@ -8,6 +8,18 @@ struct ChangesSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if !snapshot.ciRuns.isEmpty {
+                Text("CI · latest runs")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.textSecondary)
+                    .padding(.leading, 2)
+                VStack(spacing: 4) {
+                    ForEach(snapshot.ciRuns.prefix(4)) { CIRunRow(run: $0) }
+                }
+                Divider().background(Theme.panelStroke)
+                    .padding(.vertical, 4)
+            }
+
             Text("Recent changes")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(Theme.textSecondary)
@@ -36,6 +48,66 @@ struct ChangesSection: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 6)
+    }
+}
+
+struct CIRunRow: View {
+    let run: CIRun
+
+    private var tint: Color {
+        switch run.state {
+        case .success: return Theme.ok
+        case .failure: return Theme.alert
+        case .running: return Theme.warn
+        case .other:   return Theme.muted
+        }
+    }
+
+    private var symbol: String {
+        switch run.state {
+        case .success: return "checkmark.circle.fill"
+        case .failure: return "xmark.circle.fill"
+        case .running: return "circle.dotted"
+        case .other:   return "minus.circle"
+        }
+    }
+
+    var body: some View {
+        Button {
+            if let url = run.url { NSWorkspace.shared.open(url) }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: symbol)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(tint)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(run.workflow)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(Theme.textPrimary)
+                        .lineLimit(1)
+                    Text(run.repo + (run.branch.map { " · \($0)" } ?? ""))
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.textMuted)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Text(run.relativeTime)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundColor(run.state == .failure ? tint : Theme.textMuted)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(run.state == .failure ? Theme.alert.opacity(0.10) : Theme.panel)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(run.state == .failure ? Theme.alert.opacity(0.40) : Theme.panelStroke,
+                                    lineWidth: 1)
+                    )
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

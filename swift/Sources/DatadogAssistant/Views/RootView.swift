@@ -7,6 +7,7 @@ struct RootView: View {
     var body: some View {
         let snapshot = store.snapshot
         let suspectCount = snapshot.deploys.filter { !$0.suspectFor.isEmpty }.count
+            + snapshot.ciRuns.filter { $0.state == .failure }.count
         VStack(spacing: 16) {
             HeaderView(snapshot: snapshot)
             TabStrip(selected: $tab, badges: [.changes: suspectCount])
@@ -29,6 +30,8 @@ struct RootView: View {
                         SnoozeSection()
                     case .tools:
                         ToolsSection()
+                    case .list:
+                        MonitorListSection(snapshot: snapshot)
                     }
                 }
                 .padding(.vertical, 4)
@@ -38,7 +41,7 @@ struct RootView: View {
                 errorBar(error)
             }
             FreshnessBar()
-            FooterView()
+            FooterView(tab: $tab)
         }
         .padding(16)
         .frame(width: 380)

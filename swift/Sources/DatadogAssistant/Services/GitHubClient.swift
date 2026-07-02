@@ -89,6 +89,81 @@ final class GitHubClient {
         return all.sorted { $0.occurredAt > $1.occurredAt }
     }
 
+    // MARK: - Actions runs
+
+    private struct RunsDTO: Decodable {
+        struct Run: Decodable {
+            let id: Int
+            let name: String?
+            let status: String?        // queued | in_progress | completed
+            let conclusion: String?    // success | failure | cancelled | …
+            let head_branch: String?
+            let html_url: String?
+            let run_started_at: String?
+        }
+        let workflow_runs: [Run]?
+    }
+
+    /// Latest run per workflow per watched repo (runs come newest-first, so
+    /// the first run seen per workflow name wins). Failures sort first.
+    func latestRuns(maxPerRepo: Int = 3) async -> [CIRun] {
+        var all: [CIRun] = []
+        await withTaskGroup(of: [CIRun].self) { group in
+            for repo in config.repos {
+                group.addTask { [self] in
+                    await runs(in: repo, limit: maxPerRepo)
+                }
+            }
+            for await runs in group { all.append(contentsOf: runs) }
+        }
+        return all.sorted { lhs, rhs in
+            if (lhs.state == .failure) != (rhs.state == .failure) {
+                return lhs.state == .failure
+            }
+            return lhs.startedAt > rhs.startedAt
+        }
+    }
+
+    private func runs(in repo: GitHubConfig.Repo, limit: Int) async -> [CIRun] {
+        var request = URLRequest(url: URL(string:
+            "https://api.github.com/repos/\(repo.fullName)/actions/runs?per_page=15")!)
+        request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let decoded = try? JSONDecoder().decode(RunsDTO.self, from: data),
+              let runs = decoded.workflow_runs else { return [] }
+
+        let iso = ISO8601DateFormatter()
+        var seenWorkflows = Set<String>()
+        var out: [CIRun] = []
+        for run in runs {
+            let workflow = run.name ?? "workflow"
+            guard !seenWorkflows.contains(workflow) else { continue }
+            seenWorkflows.insert(workflow)
+
+            let state: CIRun.State
+            switch (run.status, run.conclusion) {
+            case (_, "success"):                       state = .success
+            case (_, "failure"), (_, "timed_out"):     state = .failure
+            case ("in_progress", _), ("queued", _):    state = .running
+            default:                                   state = .other
+            }
+            out.append(CIRun(
+                id: "run-\(repo.fullName)-\(run.id)",
+                repo: repo.fullName,
+                workflow: workflow,
+                state: state,
+                branch: run.head_branch,
+                startedAt: run.run_started_at.flatMap(iso.date(from:)) ?? Date(),
+                url: run.html_url.flatMap(URL.init(string:))
+            ))
+            if out.count >= limit { break }
+        }
+        return out
+    }
+
     private func merges(in repo: GitHubConfig.Repo, since cutoff: Date) async -> [DeployEvent] {
         var request = URLRequest(url: URL(string:
             "https://api.github.com/repos/\(repo.fullName)/pulls?state=closed&sort=updated&direction=desc&per_page=20")!)

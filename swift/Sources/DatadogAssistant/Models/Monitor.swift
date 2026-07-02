@@ -27,6 +27,10 @@ enum Priority: Int, Codable, Comparable {
 }
 
 struct Monitor: Identifiable, Hashable, Codable {
+    /// Time span every sparkline covers; shared by the client (fetch range)
+    /// and the store (mapping deploy timestamps to marker positions).
+    static let sparklineWindow: TimeInterval = 3600
+
     let id: Int
     let name: String
     let state: MonitorState
@@ -50,6 +54,10 @@ struct Monitor: Identifiable, Hashable, Codable {
     /// The critical threshold mapped into the sparkline's normalized 0…1 y-space,
     /// so views can draw the guide line without knowing the raw scale.
     var thresholdPosition: Double? = nil
+    /// Deploys that landed inside the sparkline window, as 0…1 x positions —
+    /// "the line went vertical right after that tick" is the fastest possible
+    /// change correlation. Filled by SnapshotStore.
+    var deployMarkers: [Double] = []
 
     var firingDuration: String? {
         guard let since = firingSince else { return nil }

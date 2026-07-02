@@ -24,7 +24,8 @@ struct MonitorRow: View {
 
             if !monitor.sparkline.isEmpty {
                 Sparkline(points: monitor.sparkline, color: tint,
-                          threshold: monitor.thresholdPosition)
+                          threshold: monitor.thresholdPosition,
+                          markers: monitor.deployMarkers)
                     .frame(height: 26)
             }
 

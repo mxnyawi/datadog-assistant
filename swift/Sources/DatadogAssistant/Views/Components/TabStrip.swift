@@ -1,7 +1,12 @@
 import SwiftUI
 
-enum Tab: CaseIterable, Hashable {
+enum Tab: Hashable {
     case monitors, changes, snooze, tools
+    /// Full searchable list; reached via the footer button, not the strip.
+    case list
+
+    /// Tabs shown in the strip, in order.
+    static let strip: [Tab] = [.monitors, .changes, .snooze, .tools]
 
     var symbol: String {
         switch self {
@@ -9,6 +14,7 @@ enum Tab: CaseIterable, Hashable {
         case .changes:  return "arrow.triangle.branch"
         case .snooze:   return "moon.zzz.fill"
         case .tools:    return "wrench.and.screwdriver.fill"
+        case .list:     return "list.bullet"
         }
     }
 
@@ -18,6 +24,7 @@ enum Tab: CaseIterable, Hashable {
         case .changes:  return "Changes"
         case .snooze:   return "Snooze"
         case .tools:    return "Tools"
+        case .list:     return "All monitors"
         }
     }
 }
@@ -29,7 +36,7 @@ struct TabStrip: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(Tab.allCases, id: \.self) { tab in
+            ForEach(Tab.strip, id: \.self) { tab in
                 Button {
                     selected = tab
                 } label: {

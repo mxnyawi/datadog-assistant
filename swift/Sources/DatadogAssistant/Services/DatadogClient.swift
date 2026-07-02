@@ -9,7 +9,7 @@ final class DatadogClient: DataSource {
 
     /// Sparklines are one metrics query per firing monitor — cap the fan-out.
     private static let maxSparklines = 8
-    private static let sparklineWindow: TimeInterval = 3600
+    private static let sparklineWindow = Monitor.sparklineWindow
 
     var sourceName: String { credentials.site }
 
@@ -40,6 +40,7 @@ final class DatadogClient: DataSource {
             monitors: monitors,
             incidents: incidents,
             deploys: deploys,
+            ciRuns: [],                           // store fills from GitHub
             activity: previous?.activity ?? [],   // store owns this series
             lastRefresh: Date(),
             orgName: credentials.site,

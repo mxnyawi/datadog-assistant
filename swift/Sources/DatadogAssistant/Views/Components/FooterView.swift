@@ -2,11 +2,15 @@ import SwiftUI
 import AppKit
 
 struct FooterView: View {
+    @Binding var tab: Tab
+
     var body: some View {
         HStack(spacing: 0) {
             footerButton(icon: "gearshape", label: "Settings", action: openSettings)
             Divider().frame(height: 22).background(Theme.panelStroke)
-            footerButton(icon: "list.bullet", label: "List", action: openList)
+            footerButton(icon: "list.bullet",
+                         label: tab == .list ? "Back" : "List",
+                         action: toggleList)
             Divider().frame(height: 22).background(Theme.panelStroke)
             footerButton(icon: "power", label: "Quit", action: quit)
         }
@@ -31,9 +35,10 @@ struct FooterView: View {
         NotificationCenter.default.post(name: .openSettingsWindow, object: nil)
     }
 
-    // Full monitor list stays in Datadog until the in-panel list view lands.
-    private func openList() {
-        NSWorkspace.shared.open(URL(string: "https://app.datadoghq.com/monitors/manage")!)
+    private func toggleList() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            tab = tab == .list ? .monitors : .list
+        }
     }
 
     private func quit() { NSApp.terminate(nil) }

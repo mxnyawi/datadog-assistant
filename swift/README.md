@@ -55,6 +55,13 @@ install carries over automatically.
   chips ("payments · 3 firing") above the monitor list.
 - **Snooze** — org-wide Datadog downtime (scope `*`) for 30m/1h/4h/rest of
   day from the Snooze tab; notifications pause, the panel stays live.
+- **Deploy markers** — changes that landed inside the sparkline's 1h window
+  are drawn as vertical ticks on the line itself: deploy tick, then the line
+  goes vertical — cause and effect on one axis.
+- **CI status** — latest GitHub Actions run per workflow per watched repo at
+  the top of the Changes tab, failures first and counted in the tab badge.
+- **Full monitor list** — footer "List" flips the panel to a searchable view
+  (name or service, grouped by state, same inline mute/open actions).
 
 ## How it stays fast
 

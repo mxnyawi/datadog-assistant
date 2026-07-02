@@ -9,6 +9,7 @@ final class MockDataSource: DataSource {
     private var monitors: [Monitor]
     private var incidents: [Incident]
     private var deploys: [DeployEvent]
+    private var ciRuns: [CIRun]
 
     var sourceName: String { "Sample data" }
 
@@ -103,6 +104,23 @@ final class MockDataSource: DataSource {
                         url: URL(string: "https://github.com/acme/platform/pull/479"),
                         service: nil),
         ]
+        self.ciRuns = [
+            CIRun(id: "run-acme/payments-api-1",
+                  repo: "acme/payments-api", workflow: "deploy-prod",
+                  state: .failure, branch: "main",
+                  startedAt: now.addingTimeInterval(-18 * 60),
+                  url: URL(string: "https://github.com/acme/payments-api/actions")),
+            CIRun(id: "run-acme/payments-api-2",
+                  repo: "acme/payments-api", workflow: "tests",
+                  state: .success, branch: "main",
+                  startedAt: now.addingTimeInterval(-42 * 60),
+                  url: URL(string: "https://github.com/acme/payments-api/actions")),
+            CIRun(id: "run-acme/platform-3",
+                  repo: "acme/platform", workflow: "ci",
+                  state: .running, branch: "main",
+                  startedAt: now.addingTimeInterval(-4 * 60),
+                  url: URL(string: "https://github.com/acme/platform/actions")),
+        ]
     }
 
     func fetchSnapshot(previous: Snapshot?) async throws -> Snapshot {
@@ -116,6 +134,7 @@ final class MockDataSource: DataSource {
             monitors: monitors,
             incidents: incidents,
             deploys: deploys,
+            ciRuns: ciRuns,
             activity: previous?.activity ?? [],
             lastRefresh: Date(),
             orgName: sourceName,

@@ -5,6 +5,8 @@ struct Snapshot: Equatable, Codable {
     var incidents: [Incident]
     /// Recent changes (GitHub merges + Datadog deploy events), newest first.
     var deploys: [DeployEvent]
+    /// Latest GitHub Actions run per workflow per watched repo, failures first.
+    var ciRuns: [CIRun]
     /// Rolling 0…1 series of overall alert pressure; maintained by SnapshotStore.
     var activity: [Double]
     var lastRefresh: Date
@@ -44,7 +46,7 @@ struct Snapshot: Equatable, Codable {
     }
 
     static let empty = Snapshot(
-        monitors: [], incidents: [], deploys: [], activity: [],
+        monitors: [], incidents: [], deploys: [], ciRuns: [], activity: [],
         lastRefresh: .distantPast, orgName: "—",
         connected: false, sampleData: false
     )

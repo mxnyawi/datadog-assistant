@@ -8,6 +8,9 @@ struct Sparkline: View {
     /// Critical threshold in the same normalized 0…1 y-space; drawn as a
     /// dashed guide so "how far past the line are we?" is visible at a glance.
     var threshold: Double? = nil
+    /// Deploy timestamps as 0…1 x positions; drawn as vertical ticks so a
+    /// deploy sitting right before an inflection is visually undeniable.
+    var markers: [Double] = []
 
     var body: some View {
         GeometryReader { geo in
@@ -27,6 +30,18 @@ struct Sparkline: View {
                     }
                     .stroke(Color.white.opacity(0.35),
                             style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                }
+                ForEach(Array(markers.enumerated()), id: \.offset) { _, position in
+                    let x = geo.size.width * CGFloat(max(0.0, min(1.0, position)))
+                    Path { p in
+                        p.move(to: CGPoint(x: x, y: 0))
+                        p.addLine(to: CGPoint(x: x, y: geo.size.height))
+                    }
+                    .stroke(Theme.info.opacity(0.55), lineWidth: 1)
+                    Circle()
+                        .fill(Theme.info)
+                        .frame(width: 3.5, height: 3.5)
+                        .position(x: x, y: 2)
                 }
                 path.stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
             }

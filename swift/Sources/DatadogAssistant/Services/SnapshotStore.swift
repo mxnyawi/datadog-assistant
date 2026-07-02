@@ -102,6 +102,7 @@ final class SnapshotStore: ObservableObject {
             if let gitHub {
                 let merges = await gitHub.recentMerges(within: Self.deployLookback)
                 next.deploys += merges
+                next.ciRuns = await gitHub.latestRuns()
             }
             next.deploys = Array(
                 next.deploys
@@ -109,6 +110,7 @@ final class SnapshotStore: ObservableObject {
                     .prefix(Self.maxDeploys)
             )
             Self.markSuspects(in: &next)
+            Self.attachDeployMarkers(in: &next)
 
             let transitions = Self.diff(old: snapshot, new: next)
             if transitions.contains(where: { $0.kind == .recovered }) {
@@ -148,6 +150,25 @@ final class SnapshotStore: ObservableObject {
     /// The suspect change for one monitor, if any (newest wins).
     func suspectDeploy(for monitor: Monitor) -> DeployEvent? {
         snapshot.deploys.first { $0.suspectFor.contains(monitor.id) }
+    }
+
+    /// Deploys that fall inside a monitor's sparkline window become vertical
+    /// ticks on that sparkline (0…1 x positions, service-matched).
+    private static func attachDeployMarkers(in snapshot: inout Snapshot) {
+        let window = Monitor.sparklineWindow
+        let now = snapshot.lastRefresh
+        for index in snapshot.monitors.indices {
+            guard !snapshot.monitors[index].sparkline.isEmpty else { continue }
+            let monitor = snapshot.monitors[index]
+            snapshot.monitors[index].deployMarkers = snapshot.deploys.compactMap { deploy in
+                let age = now.timeIntervalSince(deploy.occurredAt)
+                guard age >= 0, age <= window else { return nil }
+                let serviceMatches = deploy.service == nil
+                    || monitor.service == nil
+                    || deploy.service == monitor.service
+                return serviceMatches ? 1.0 - age / window : nil
+            }
+        }
     }
 
     // MARK: - Snooze
