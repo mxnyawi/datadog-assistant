@@ -63,6 +63,14 @@ final class DatadogClient: DataSource {
         try Self.checkHTTP(response)
     }
 
+    func unmute(monitorID: Int) async throws {
+        var request = authedRequest(
+            url: credentials.apiBaseURL.appendingPathComponent("/api/v1/monitor/\(monitorID)/unmute"))
+        request.httpMethod = "POST"
+        let (_, response) = try await session.data(for: request)
+        try Self.checkHTTP(response)
+    }
+
     // MARK: - Monitors
 
     private struct MonitorDTO: Decodable {
@@ -113,17 +121,49 @@ final class DatadogClient: DataSource {
         }
     }
 
+    /// Paginated fetch (200/page) so one giant response can't stall on large
+    /// orgs; hard page cap mirrors the Python app's runaway-loop guard.
     private func fetchMonitorsPage(tag: String, name: String) async throws -> [MonitorDTO] {
-        var queryItems = [URLQueryItem(name: "group_states", value: "alert,warn")]
+        var queryItems = [
+            URLQueryItem(name: "group_states", value: "alert,warn"),
+            URLQueryItem(name: "page_size", value: "200"),
+        ]
         if !tag.isEmpty { queryItems.append(URLQueryItem(name: "monitor_tags", value: tag)) }
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         if !trimmedName.isEmpty { queryItems.append(URLQueryItem(name: "name", value: trimmedName)) }
-        let url = credentials.apiBaseURL
-            .appendingPathComponent("/api/v1/monitor")
-            .appending(queryItems: queryItems)
-        let (data, response) = try await session.data(for: authedRequest(url: url))
-        try Self.checkHTTP(response)
-        return try JSONDecoder().decode([MonitorDTO].self, from: data)
+
+        var all: [MonitorDTO] = []
+        var page = 0
+        while page < 500 {
+            let url = credentials.apiBaseURL
+                .appendingPathComponent("/api/v1/monitor")
+                .appending(queryItems: queryItems + [URLQueryItem(name: "page", value: String(page))])
+            let data = try await requestWithRetry(url: url)
+            let batch = try JSONDecoder().decode([MonitorDTO].self, from: data)
+            all += batch
+            if batch.count < 200 { break }
+            page += 1
+        }
+        return all
+    }
+
+    /// Transient network errors (timeout, connection reset) get 3 tries with
+    /// a short growing backoff; HTTP errors surface immediately.
+    private func requestWithRetry(url: URL) async throws -> Data {
+        var lastError: Error = APIError.http(0)
+        for attempt in 0..<3 {
+            do {
+                let (data, response) = try await session.data(for: authedRequest(url: url))
+                try Self.checkHTTP(response)
+                return data
+            } catch let error as APIError {
+                throw error   // real HTTP status — retrying won't help
+            } catch {
+                lastError = error
+                try? await Task.sleep(nanoseconds: UInt64(attempt + 1) * 1_000_000_000)
+            }
+        }
+        throw lastError
     }
 
     private static func monitor(from dto: MonitorDTO) -> Monitor {
@@ -158,7 +198,7 @@ final class DatadogClient: DataSource {
             id: dto.id,
             name: dto.name ?? "monitor \(dto.id)",
             state: state,
-            priority: Priority(rawValue: dto.priority ?? 3) ?? .p3,
+            priority: Self.priority(of: dto),
             firingSince: firingSince,
             triggeredHosts: hosts,
             sparkline: [],
@@ -168,6 +208,23 @@ final class DatadogClient: DataSource {
             service: service,
             tags: dto.tags ?? []
         )
+    }
+
+    /// Priority: the monitor's priority field, else a priority:pN / priority:N
+    /// tag, else "[PN]" in the name — same detection ladder as the Python app.
+    private static func priority(of dto: MonitorDTO) -> Priority {
+        if let raw = dto.priority, let priority = Priority(rawValue: raw) { return priority }
+        for tag in dto.tags ?? [] where tag.lowercased().hasPrefix("priority:") {
+            let value = tag.dropFirst("priority:".count).lowercased()
+            let digits = value.hasPrefix("p") ? value.dropFirst() : value[...]
+            if let n = Int(digits), let priority = Priority(rawValue: n) { return priority }
+        }
+        if let name = dto.name?.uppercased() {
+            for n in 1...5 where name.contains("[P\(n)]") {
+                if let priority = Priority(rawValue: n) { return priority }
+            }
+        }
+        return .p3
     }
 
     // MARK: - Sparklines

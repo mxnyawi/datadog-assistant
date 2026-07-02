@@ -284,6 +284,15 @@ final class SnapshotStore: ObservableObject {
         }
     }
 
+    func unmute(_ monitor: Monitor) async {
+        do {
+            try await source.unmute(monitorID: monitor.id)
+            await refresh()
+        } catch {
+            lastError = "Unmute failed: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Diffing
 
     private static func diff(old: Snapshot, new: Snapshot) -> [Transition] {

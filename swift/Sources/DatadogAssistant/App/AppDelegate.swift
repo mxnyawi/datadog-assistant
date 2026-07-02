@@ -7,8 +7,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var store: SnapshotStore!
     private var hotKey: HotKey?
     private var settingsController: SettingsWindowController?
+    /// Held for the app's lifetime so App Nap doesn't throttle the poll loop.
+    private var activityToken: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        activityToken = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep],
+            reason: "Polling Datadog monitors")
+
         let source: DataSource = Credentials.load()
             .map { DatadogClient(credentials: $0) } ?? MockDataSource()
         store = SnapshotStore(source: source)

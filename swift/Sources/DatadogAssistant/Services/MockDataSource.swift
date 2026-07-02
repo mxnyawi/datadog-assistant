@@ -155,10 +155,18 @@ final class MockDataSource: DataSource {
     }
 
     func mute(monitorID: Int, until: Date?) async throws {
+        setState(.muted, forMonitor: monitorID)
+    }
+
+    func unmute(monitorID: Int) async throws {
+        setState(.ok, forMonitor: monitorID)
+    }
+
+    private func setState(_ state: MonitorState, forMonitor monitorID: Int) {
         monitors = monitors.map { m in
             guard m.id == monitorID else { return m }
             return Monitor(
-                id: m.id, name: m.name, state: .muted, priority: m.priority,
+                id: m.id, name: m.name, state: state, priority: m.priority,
                 firingSince: nil, triggeredHosts: m.triggeredHosts,
                 sparkline: m.sparkline, value: m.value, threshold: m.threshold,
                 url: m.url, service: m.service, tags: m.tags, delta: m.delta,

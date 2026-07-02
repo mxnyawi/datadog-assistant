@@ -92,9 +92,7 @@ struct MonitorRow: View {
                 suspectRow(suspect)
             }
             HStack(spacing: 8) {
-                actionButton("Mute 1h", icon: "speaker.slash.fill") {
-                    Task { await store.mute(monitor, for: 3600) }
-                }
+                muteMenu
                 actionButton("Open in Datadog", icon: "arrow.up.forward.square") {
                     if let url = monitor.url { LinkOpener.open(url) }
                 }
@@ -120,6 +118,37 @@ struct MonitorRow: View {
             }
         }
         .padding(.leading, 17)
+    }
+
+    /// Mute durations (1 h / 4 h / 24 h / forever) or Unmute, depending on the
+    /// monitor's state — same options as the Python app's per-monitor menu.
+    private var muteMenu: some View {
+        Menu {
+            if monitor.state == .muted {
+                Button("Unmute") { Task { await store.unmute(monitor) } }
+            } else {
+                Button("Mute 1 hour") { Task { await store.mute(monitor, for: 3600) } }
+                Button("Mute 4 hours") { Task { await store.mute(monitor, for: 4 * 3600) } }
+                Button("Mute 24 hours") { Task { await store.mute(monitor, for: 24 * 3600) } }
+                Button("Mute forever") { Task { await store.mute(monitor, for: nil) } }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: monitor.state == .muted ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(monitor.state == .muted ? "Unmute" : "Mute")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundColor(Theme.textPrimary)
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(
+                Capsule().fill(Color.white.opacity(0.08))
+                    .overlay(Capsule().stroke(Theme.panelStroke, lineWidth: 1))
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
     }
 
     /// Fire the Jira ticket and jump straight to it — the browser tab is the

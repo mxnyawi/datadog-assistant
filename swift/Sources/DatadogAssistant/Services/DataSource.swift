@@ -14,6 +14,9 @@ protocol DataSource: AnyObject {
     /// Mute a monitor until `until` (nil = forever).
     func mute(monitorID: Int, until: Date?) async throws
 
+    /// Lift a monitor's mute.
+    func unmute(monitorID: Int) async throws
+
     /// Org-wide snooze (Datadog downtime with scope "*"). Returns an opaque
     /// handle used to cancel; nil means the source only snoozes locally.
     func snoozeAll(until: Date) async throws -> String?
