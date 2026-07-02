@@ -35,6 +35,18 @@ through Settings go to the macOS Keychain under the same service names the
 Python app uses (`datadog-assistant-api-key` / `-app-key`), so an existing
 install carries over automatically.
 
+**Shared team vault (LastPass).** Instead of storing keys on each machine,
+point the app at a LastPass secure note and the keys are fetched at runtime
+via the `lpass` CLI — the same integration the Python app uses, reading the
+same note. Set it up via right-click → Settings… → *Use LastPass* (enter the
+entry name, e.g. `Shared-SRE/datadog-assistant`), or export
+`DD_LASTPASS_ENTRY` before launching. The note holds `key=value` lines (or
+custom fields) named `datadogAPIKey` / `datadogAPPKey` by default (override
+with `DD_LASTPASS_API_FIELD` / `_APP_FIELD`); an optional `githubToken` field
+supplies the GitHub token for change correlation. Requires `lpass login` to
+have unlocked the vault (Homebrew: `brew install lastpass-cli`). Credential
+precedence is env vars → LastPass → Keychain.
+
 `swift run` also works for a fast dev loop, but notifications require a real
 `.app` bundle, so they're disabled in that mode.
 
@@ -123,6 +135,7 @@ swift/
       MockDataSource.swift        # sample data, no keys needed
       SnapshotStore.swift         # adaptive poll loop, disk cache, alert diffing
       Credentials.swift           # Keychain (shared with Python app) + env vars
+      LastPass.swift              # shared-vault keys via the lpass CLI
       NotificationManager.swift   # actionable banners, recovery notices
       HotKey.swift                # Carbon global hotkey (⌥⌘D)
     Views/                        # RootView + Theme + Components/ + Sections/
@@ -173,6 +186,6 @@ Design mockups for review live in `docs/` (rendered with
 
 - Jira ticketing (create per alert, auto-create P1/P2, dedupe)
 - DLQ grouping, No-Data triage, local rename
-- OAuth + LastPass credential modes (Keychain + env work today)
+- OAuth credential mode (Keychain, env, and LastPass work today)
 - Snooze-all, re-notify nag loop, daily digest
 - Monitor create/delete

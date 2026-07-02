@@ -32,10 +32,18 @@ struct GitHubConfig: Equatable {
 
     static func load() -> GitHubConfig? {
         let env = ProcessInfo.processInfo.environment
-        let token = env["GITHUB_TOKEN"] ?? Keychain.read(service: tokenService)
+        // Repos aren't secret, so they come from env/UserDefaults regardless of
+        // credential mode; without any there's nothing to watch.
         let specs = env["GITHUB_REPOS"].map { $0.split(separator: ",").map(String.init) }
             ?? UserDefaults.standard.stringArray(forKey: reposDefaultsKey)
-        guard let token, !token.isEmpty, let specs, !specs.isEmpty else { return nil }
+        guard let specs, !specs.isEmpty else { return nil }
+        // Env wins (dev loop), then the shared LastPass vault, then Keychain.
+        var token = env["GITHUB_TOKEN"]
+        if token?.isEmpty ?? true, let lastPass = LastPassConfig.load(), LastPass.isLoggedIn() {
+            token = lastPass.gitHubToken()
+        }
+        if token?.isEmpty ?? true { token = Keychain.read(service: tokenService) }
+        guard let token, !token.isEmpty else { return nil }
         let config = GitHubConfig(token: token, repoSpecs: specs)
         return config.repos.isEmpty ? nil : config
     }

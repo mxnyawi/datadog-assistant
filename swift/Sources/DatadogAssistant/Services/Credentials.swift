@@ -21,11 +21,20 @@ struct Credentials: Equatable {
     private static let appService = "datadog-assistant-app-key"
     private static let siteDefaultsKey = "datadogSite"
 
-    /// Env vars win (dev loop), then Keychain.
+    /// Env vars win (dev loop), then the shared LastPass vault (fetched at
+    /// runtime via the `lpass` CLI), then the Keychain.
     static func load() -> Credentials? {
         let env = ProcessInfo.processInfo.environment
         if let api = env["DD_API_KEY"], let app = env["DD_APP_KEY"], !api.isEmpty, !app.isEmpty {
             return Credentials(apiKey: api, appKey: app, site: env["DD_SITE"] ?? "datadoghq.com")
+        }
+        // Shared-vault mode: pull the team's keys from LastPass at runtime so
+        // nothing has to be provisioned onto (or stored on) this machine.
+        if let lastPass = LastPassConfig.load(), LastPass.isLoggedIn(),
+           let keys = lastPass.datadogKeys() {
+            let site = lastPass.site()
+                ?? UserDefaults.standard.string(forKey: siteDefaultsKey) ?? "datadoghq.com"
+            return Credentials(apiKey: keys.api, appKey: keys.app, site: site)
         }
         guard let api = Keychain.read(service: apiService),
               let app = Keychain.read(service: appService) else { return nil }

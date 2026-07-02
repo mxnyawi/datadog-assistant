@@ -40,6 +40,9 @@ struct SettingsView: View {
     @State private var error: String?
     @State private var hasExistingKeys = Credentials.load() != nil
     @State private var hasGitHub = GitHubConfig.load() != nil
+    @State private var lastPassEntry = ""
+    @State private var hasLastPass = LastPassConfig.load() != nil
+    @State private var lastPassLoggedIn = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -76,6 +79,35 @@ struct SettingsView: View {
                 TextField("Repos (payments=acme/pay-api, acme/platform)", text: $gitHubRepos)
             }
 
+            Divider()
+
+            Text("LastPass (optional) — shared team vault")
+                .font(.headline)
+            Text(hasLastPass
+                 ? "Keys are fetched from this entry at runtime via the lpass CLI — \(lastPassLoggedIn ? "logged in ✓" : "run `lpass login` to unlock the vault.")"
+                 : "Fetch the team's Datadog keys (and GitHub token) from a LastPass secure note instead of storing them locally. Needs the lpass CLI and an active `lpass login`; note fields default to datadogAPIKey / datadogAPPKey / githubToken.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Form {
+                TextField("Entry (e.g. Shared-SRE/datadog-assistant)", text: $lastPassEntry)
+            }
+
+            HStack {
+                if hasLastPass {
+                    Button("Disable LastPass", role: .destructive) {
+                        LastPassConfig.clear()
+                        hasLastPass = false
+                        lastPassEntry = ""
+                        onSave()
+                    }
+                }
+                Spacer()
+                Button("Use LastPass") { saveLastPass() }
+                    .disabled(lastPassEntry.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+
             if let error {
                 Text(error)
                     .font(.caption)
@@ -102,7 +134,21 @@ struct SettingsView: View {
         .frame(width: 440)
         .onAppear {
             if let existing = Credentials.load() { site = existing.site }
+            if let lastPass = LastPassConfig.load() {
+                lastPassEntry = lastPass.entry
+                lastPassLoggedIn = LastPass.isLoggedIn()
+            }
         }
+    }
+
+    private func saveLastPass() {
+        var config = LastPassConfig.load() ?? LastPassConfig(entry: "")
+        config.entry = lastPassEntry.trimmingCharacters(in: .whitespaces)
+        guard !config.entry.isEmpty else { return }
+        config.save()
+        hasLastPass = true
+        lastPassLoggedIn = LastPass.isLoggedIn()
+        onSave()
     }
 
     private func save() {
