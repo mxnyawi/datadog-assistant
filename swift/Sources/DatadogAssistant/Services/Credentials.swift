@@ -113,8 +113,13 @@ struct Credentials: Equatable {
                                site: lastPass.site() ?? storedSite(),
                                subdomain: storedSubdomain())
         case .keychain:
-            guard let api = Keychain.read(service: apiService),
-                  let app = Keychain.read(service: appService) else { return nil }
+            // Password-manager commands win when configured (lpass/op/bw/
+            // vault — stdout is the secret), then the Keychain.
+            let cmdAPI = SecretCommand.run(UserDefaults.standard.string(forKey: "apiKeyCmd") ?? "")
+            let cmdApp = SecretCommand.run(UserDefaults.standard.string(forKey: "appKeyCmd") ?? "")
+            let api = cmdAPI ?? Keychain.read(service: apiService)
+            let app = cmdApp ?? Keychain.read(service: appService)
+            guard let api, let app else { return nil }
             return Credentials(apiKey: api, appKey: app, site: storedSite(),
                                subdomain: storedSubdomain())
         }
@@ -132,6 +137,49 @@ struct Credentials: Equatable {
         Keychain.delete(service: appService)
         UserDefaults.standard.removeObject(forKey: siteDefaultsKey)
         if AuthMode.current == .keychain { AuthMode.set(.sample) }
+    }
+}
+
+/// Pull a secret from any password-manager CLI (lpass, op, bw, vault…) — the
+/// command's stdout is the secret. Companies centralize rotation this way
+/// instead of provisioning keys onto every machine. Successful lookups cache
+/// for 15 minutes so the vault isn't hit on every poll; failures don't cache
+/// and retry next time.
+enum SecretCommand {
+    private static let lock = NSLock()
+    private static var cache: [String: (value: String, at: Date)] = [:]
+    private static let ttl: TimeInterval = 900
+
+    static func run(_ command: String) -> String? {
+        let command = command.trimmingCharacters(in: .whitespaces)
+        guard !command.isEmpty else { return nil }
+        lock.lock()
+        if let hit = cache[command], Date().timeIntervalSince(hit.at) < ttl {
+            lock.unlock()
+            return hit.value
+        }
+        lock.unlock()
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let killer = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 30, execute: killer)
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        killer.cancel()
+        guard process.terminationStatus == 0 else { return nil }
+        let value = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        lock.lock()
+        cache[command] = (value, Date())
+        lock.unlock()
+        return value
     }
 }
 

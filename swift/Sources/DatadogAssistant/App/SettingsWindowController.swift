@@ -69,6 +69,8 @@ private struct SourceSettingsTab: View {
     @State private var authMode = AuthMode.current
     @State private var subdomain = Credentials.currentSubdomain()
     @State private var browser = LinkOpener.currentBrowser()
+    @State private var apiKeyCmd = UserDefaults.standard.string(forKey: "apiKeyCmd") ?? ""
+    @State private var appKeyCmd = UserDefaults.standard.string(forKey: "appKeyCmd") ?? ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -146,6 +148,10 @@ private struct SourceSettingsTab: View {
                 Picker("Site", selection: $site) {
                     ForEach(Credentials.knownSites, id: \.self) { Text($0) }
                 }
+                TextField("API key command (optional, e.g. op read op://…)", text: $apiKeyCmd)
+                    .onSubmit { saveCommands() }
+                TextField("App key command (optional)", text: $appKeyCmd)
+                    .onSubmit { saveCommands() }
             }
             HStack {
                 if hasExistingKeys {
@@ -239,6 +245,12 @@ private struct SourceSettingsTab: View {
     private func setMode(_ mode: AuthMode) {
         authMode = mode
         AuthMode.set(mode)
+        onSave()
+    }
+
+    private func saveCommands() {
+        UserDefaults.standard.set(apiKeyCmd, forKey: "apiKeyCmd")
+        UserDefaults.standard.set(appKeyCmd, forKey: "appKeyCmd")
         onSave()
     }
 

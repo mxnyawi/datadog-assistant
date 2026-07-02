@@ -11,10 +11,10 @@ in this Swift app, and how the missing ones should be implemented. Legend:
 | API + App keys (Keychain, same service names) | ✅ | `Credentials.swift`; env `DD_API_KEY`/`DD_APP_KEY` win |
 | LastPass CLI mode (shared secure note) | ✅ | Same note format/fields as Python; guided install/login/entry setup with Test diagnostics; entry looked up by lpass ID |
 | Explicit auth-source selection | ✅ | `AuthMode` (sample/keychain/lastpass) — no silent Keychain fallback (Python infers from config instead) |
-| `api_key_cmd`/`app_key_cmd` (any password-manager CLI) | ❌ | Add two optional "command" fields to Settings → Source; run via `Process`, stdout = secret, cache 15 min (port of `secret_from_cmd`) |
+| `api_key_cmd`/`app_key_cmd` (any password-manager CLI) | ✅ | SecretCommand (sh -c, stdout = secret, 15-min cache); fields in Settings → Source (Keychain mode) |
 | Datadog OAuth (authorization-code + PKCE) | ❌ | Biggest auth gap. Port of `_datadog_oauth_browser_flow`: local callback server on 127.0.0.1:8918 (`NWListener` or `SwiftNIO`-free raw socket), S256 challenge, scopes list, region auto-detect from the redirect's `domain` param, refresh-token rotation in Keychain `datadog-assistant-oauth` |
 | Connection test (mode, site, monitor count, incident scope) | 🟡 | LastPass Test button validates keys via `/api/v1/validate`; add a general "Test connection" to Settings → Source reporting monitor count + incidents scope |
-| Single-instance lock | ❌ | `flock` on a lock file in Application Support at launch; quit if held |
+| Single-instance lock | ✅ | flock on Application Support/DatadogAssistant/app.lock at launch |
 
 ## Datadog data & links
 
@@ -23,11 +23,11 @@ in this Swift app, and how the missing ones should be implemented. Legend:
 | Site picker (com/eu/us3/us5/ap1/gov) | ✅ | Settings → Source + LastPass setup sheet |
 | **Org subdomain (`app_subdomain`)** | ✅ | Settings → Source; all browser links use `<subdomain>.<site>` so vanity-subdomain orgs keep their session (env `DD_APP_SUBDOMAIN`) |
 | Subdomain guess from org name (GET /org) | ❌ | Nice-to-have: fetch `/api/v1/org`, sanitize the name, offer it as the field's placeholder |
-| Browser choice (open links in Chrome etc.) | ❌ | Add a Settings picker listing browsers (`NSWorkspace.urlsForApplications(toOpen:)`); open via `NSWorkspace.open(_:withApplicationAt:)` |
-| Monitor fetch: pagination (200/page, cap) | ❌ | Current fetch is single-request. Add `page`/`page_size` loop in `fetchMonitorsPage` with a hard page cap — needed for very large orgs |
+| Browser choice (open links in Chrome etc.) | ✅ | LinkOpener + Settings → Source dropdown of installed browsers; all link opens routed through it |
+| Monitor fetch: pagination (200/page, cap) | ✅ | 200/page loop, 500-page cap |
 | Tag filter (OR semantics, server-side) | ✅ | FilterBar dropdown grouped by tag key + Settings → Filters; per-tag fetch + dedupe |
 | Name filter (substring, server-side) | ✅ | Settings → Filters (panel List tab also has ad-hoc search) |
-| Retry with backoff on transient network errors | ❌ | Wrap `session.data(for:)` in a 3-attempt retry (1/2/3 s) for timeout/connection-reset |
+| Retry with backoff on transient network errors | ✅ | 3 attempts, growing backoff; HTTP errors surface immediately |
 | Gzip, 30 s timeouts | ✅ | URLSession defaults cover it |
 
 ## Monitors UI
@@ -37,11 +37,11 @@ in this Swift app, and how the missing ones should be implemented. Legend:
 | State grouping (alert/warn/no-data/ok/muted), worst first | ✅ | StateSection + MonitorListSection groups |
 | Group order / max-per-group / hide-OK config | ❌ | Low value in the panel UI (scrolls); add "Show OK monitors" toggle if requested |
 | Per-monitor: open in Datadog, mute 1 h | ✅ | Row actions |
-| Mute 4 h / 24 h / forever + **unmute** | ❌ | Replace the "Mute 1h" button with a small Menu (1 h/4 h/24 h/forever/Unmute); `mute` API already takes any end, add POST `/monitor/{id}/unmute` to DataSource |
-| Local rename (aliases) + reset | ❌ | `aliases: [Int: String]` in UserDefaults; rename field in the expanded row; use display name everywhere incl. notifications |
+| Mute 4 h / 24 h / forever + **unmute** | ✅ | Mute dropdown on every row; Unmute for muted monitors (/unmute endpoint) |
+| Local rename (aliases) + reset | ✅ | Inline editor in the expanded row; alias applied after every fetch (rows, notifications, Jira); one-tap reset |
 | Monitor create (name/query/message) | ❌ | Rarely used from a menu bar; if wanted: small form window POSTing `/api/v1/monitor` with `created_by:datadog-assistant` tag |
 | Monitor delete (type DELETE to confirm) | ❌ | Destructive; add to expanded row behind a confirmation sheet requiring typed DELETE |
-| Priority detection from tags / "[P1]" in name | 🟡 | Swift reads the `priority` field only; extend to `priority:pN` tag and `[PN]` name prefix (port `parse_priority`) |
+| Priority detection from tags / "[P1]" in name | ✅ | Field → priority:pN tag → [PN] in name |
 | Duplicate-name disambiguation | ✅ | SwiftUI lists key by monitor id, not title (rumps workaround not needed) |
 | Sparklines with threshold line + deploy markers | ✅ | Richer than Python's unicode sparklines |
 | "×N vs last week" delta | ✅ | Swift-only bonus (week_before query) |
@@ -56,19 +56,19 @@ in this Swift app, and how the missing ones should be implemented. Legend:
 | Sound on/off + system-sound dropdown w/ preview | ✅ | NSSound for named sounds (UNNotificationSound can't reach /System/Library/Sounds) |
 | Re-notify while still alerting (interval dropdown) | ✅ | Per-poll nag, silent while snoozed |
 | Actionable banners (Mute 1 h / Open) | ✅ | Swift-only bonus (UNNotification actions) |
-| Modal style (unmissable NSAlert popup) | ❌ | Add style picker (banner/modal/both); modal = `NSAlert` on a floating panel with Open/Dismiss, auto-dismiss ~5 min |
-| Per-priority severity rules (style/renotify/icon per P1..P5) | ❌ | Add `severityRules` to NotificationSettings (P1/P2/P3 rows with style + renotify overrides); merge before delivering |
-| No-data notifications (gated by triage) | ❌ | Depends on No-Data triage (below) |
+| Modal style (unmissable popup) | ✅ | Floating always-on-top alert window, Open/Dismiss, 5-min auto-dismiss; style picker banner/modal/both |
+| Per-priority severity rules (style/renotify per P1..P3) | ✅ | Same defaults as Python (P1 both/10m, P2 both/30m, P3 banner/60m); editable in Settings |
+| No-data notifications (gated by triage) | ✅ | Broken-No-Data transitions notify with the triage reason; toggle in Settings |
 | Notify when mute lifts and still firing | ❌ | Track muted→unmuted transitions in the store diff |
-| Daily digest (morning summary banner) | ❌ | `digestHour: Int?` setting; on poll, if past the hour and not yet sent today (persisted date), post summary notification |
-| Test notification menu item | ❌ | One button in Settings → Notifications firing a sample banner |
+| Daily digest (morning summary banner) | ✅ | Hour picker in Settings; once/day summary |
+| Test notification menu item | ✅ | Settings → Notifications button (banner + modal per style) |
 
 ## Triage & grouping intelligence
 
 | Feature | Status | Notes / implementation plan |
 |---|---|---|
-| No-Data triage (broken vs quiet) | ❌ | Port `_triage_no_data`: quiet if `on_missing_data` resolves/OK, event-stream monitor types, stale > 48 h, or metric probe silent; broken if probe shows data-then-stop. Needs `options.notify_no_data`, `on_missing_data`, `type` decoded from the monitor DTO + a capped probe via `/api/v1/query` |
-| DLQ grouping (dead-letter monitors, own section) | ❌ | Name/query/tag substring match against configurable patterns; dedicated panel section listing urgent DLQ monitors first (exclusive mode removes them from normal groups) |
+| No-Data triage (broken vs quiet) | ✅ | Full ladder incl. live metric probe (6/poll, cached); quiet group in the list, reasons in rows and notifications |
+| DLQ grouping (dead-letter monitors, own section) | ✅ | Pattern match on name/tags/query; 💀 section (firing rows + healthy count), exclusive mode |
 | Service clusters ("payments has 3 firing") | ✅ | ClusterChips (Swift-only equivalent of blast-radius insight) |
 | Service context (repo/runbook/docs/on-call links via Software Catalog, message links, version/commit) | ❌ | Large port: GET `/api/v2/services/definitions` hourly, parse links per schema version; merge with links scraped from monitor message; render in expanded row. Worth doing as its own milestone |
 | Deploy correlation ("shipped X min before this alert") | ✅ | Suspect-deploy callout on rows + Changes tab (GitHub merges + Datadog deploy events) — equivalent of Python's deploy correlation |
@@ -79,14 +79,14 @@ in this Swift app, and how the missing ones should be implemented. Legend:
 
 | Feature | Status | Notes / implementation plan |
 |---|---|---|
-| API-token auth (email + token, Basic) | ✅ | Settings → Jira; token env → **LastPass note `jiraToken` field** → Keychain |
+| API-token auth (email + token, Basic) | ✅ | Legacy fallback mode (OAuth is the default) |
 | Create ticket per monitor (manual) | ✅ | Row action; summary `[P1] name`, description with state/duration/hosts/deep-link, `datadog-assistant` label |
 | **Ticket↔monitor mapping ("Open PROJ-123")** | ✅ | Persisted map; row shows Open instead of re-creating |
 | **Auto-create on alert (P1 / P1+P2) + dedupe** | ✅ | Settings picker; fires on transition, announces with a notification that opens the ticket |
-| Dedupe via JQL search (`dd-monitor-<id>` label, status != Done) | 🟡 | Swift dedupes locally (persisted map). Add the JQL check so tickets created elsewhere / reopened states are respected: GET `/rest/api/3/search/jql?jql=labels="dd-monitor-<id>" AND statusCategory != Done`; also add the `dd-monitor-<id>` label on create |
-| Auto-labels from monitor tags | ❌ | Map each tag to `datadog-alert-<tag>` (sanitized) when creating; honor tag filter |
-| Jira OAuth (3LO via auth.atlassian.com, cloud_id) | ❌ | Only needed for orgs that forbid API tokens: callback server on 8917, client id+secret (LastPass `jiraClientID`/`jiraClientSecret` fields), accessible-resources → cloud_id, Bearer against api.atlassian.com |
-| Jira connection test (whoami, visible projects, project access) | ❌ | Button in Settings → Jira calling `/rest/api/3/myself` + `/project/search`, reporting in-window |
+| Dedupe via JQL search (`dd-monitor-<id>` label, status != Done) | ✅ | createIssue adopts open tickets found via JQL before creating; dd-monitor-<id> label on create |
+| Auto-labels from monitor tags | ✅ | datadog-alert-<tag> (sanitized) per tag |
+| Jira OAuth (3LO via auth.atlassian.com, cloud_id) | ✅ | **Default auth mode.** Client ID/secret from LastPass note (jiraClientID/jiraClientSecret) or manual; callback on 8917; refresh-token rotation; Bearer via api.atlassian.com/ex/jira/<cloudID> |
+| Jira connection test (whoami, visible projects, project access) | ✅ | Test button in Settings → Jira |
 
 ## App shell & misc
 
@@ -94,22 +94,26 @@ in this Swift app, and how the missing ones should be implemented. Legend:
 |---|---|---|
 | Menu-bar icon states (error/snoozed/alert-with-count/warn/ok) | ✅ | MenuBarController badge (SF-symbol style rather than emoji) |
 | Snooze all (30 m/1 h/4 h/rest of day) + wake | ✅ | Snooze tab (API downtime — stronger than Python's local-only snooze) |
-| Quick links + custom links + auto dashboard links | ❌ | Tools tab has Open Datadog; add: configurable quick-links list, and a "My dashboards" section fetched hourly from `/api/v1/dashboard` (cap 8) |
+| Quick links + auto dashboard links | ✅ | Tools tab: 6 standard links + My dashboards (hourly fetch, cap 8). Custom links list not yet exposed in UI |
 | Refresh interval setting | 🟡 | Swift uses adaptive 15 s/60 s cadence (better than fixed); add an override picker only if requested |
 | Refresh now | ✅ | Tools tab + header |
 | Disk cache for instant render on launch | ✅ | Swift-only bonus |
-| App Nap prevention | ❌ | `ProcessInfo.beginActivity(.userInitiated)` held for app lifetime so the poll timer isn't throttled |
+| App Nap prevention | ✅ | ProcessInfo activity token held for app lifetime |
 | Startup log for bundle diagnostics | 🟡 | LastPass has transcript logging; add a general `~/.datadog-assistant/startup.log` appender if launch issues appear |
 | Open config file | n/a | Swift persists via UserDefaults; expose `defaults export` hint or a JSON export if needed |
 | Onboarding GUI (first-run wizard) | 🟡 | Python has a pywebview onboarding app; Swift's Settings + LastPass setup sheet covers it — a first-launch "welcome" sheet pointing at Settings would close the gap |
 | Daily digest / demo mode / dog-themed copy | 🟡 | Demo mode exists in MockDataSource; digest missing (see Notifications) |
 
-## Suggested next milestones (in value order)
+## Remaining gaps (in value order)
 
-1. **Mute menu (4 h/24 h/forever/unmute)** — small, high daily value.
-2. **No-Data triage** — kills the noisiest false-positive class.
-3. **Jira JQL dedupe + auto-labels + connection test** — completes the ticket loop.
-4. **Modal notification style + per-priority severity rules** — the "unmissable P1" behavior.
-5. **Quick links + my dashboards** — one-tap navigation.
-6. **Service context (Software Catalog links)** — biggest remaining port, own milestone.
-7. **Datadog OAuth PKCE** — only if key-less orgs need it.
+1. **Service context** (Software Catalog repo/runbook/on-call links, message
+   links, version/commit) — the biggest remaining port; own milestone.
+2. **Datadog OAuth PKCE** — only needed for key-less orgs (LastPass/keys
+   cover today's use).
+3. **Notify when a mute lifts and the monitor is still firing** — small store
+   diff addition.
+4. **Monitor create / delete** — rarely used from a menu bar; delete needs a
+   typed-DELETE confirmation.
+5. Cosmetics/config nits: subdomain guess from GET /org, custom quick-links
+   list UI, group order / max-per-group / hide-OK settings, general Datadog
+   connection test button.
