@@ -328,7 +328,9 @@ struct LastPassSetupView: View {
 
     private func fail(_ message: String) { status = message; isError = true }
 
-    private func appendLog(_ line: String) {
+    /// Called from the detached-task log callbacks (nonisolated context);
+    /// hops to the main actor itself, so callers don't have to.
+    nonisolated private func appendLog(_ line: String) {
         Task { @MainActor in log.append(line) }
     }
 }

@@ -265,9 +265,8 @@ enum JiraClient {
         let host = config.browseHost
 
         // Server-side dedupe first (best-effort — a search failure shouldn't
-        // block ticket creation).
-        if let existing = try? await findOpenIssue(monitorID: monitor.id, config: config),
-           let existingKey = existing {
+        // block ticket creation). `try?` flattens the String?? to String?.
+        if let existingKey = try? await findOpenIssue(monitorID: monitor.id, config: config) {
             let url = URL(string: "https://\(host)/browse/\(existingKey)")!
             JiraTicketStore.record(ticketKey: existingKey, url: url, for: monitor.id)
             return (existingKey, url)

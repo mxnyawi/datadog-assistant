@@ -112,7 +112,7 @@ enum JiraOAuth {
         Keychain.delete(service: blobService)
         UserDefaults.standard.removeObject(forKey: cloudIDKey)
         UserDefaults.standard.removeObject(forKey: siteURLKey)
-        lock.lock(); cachedToken = nil; lock.unlock()
+        clearCachedToken()
     }
 
     private static func blob() -> [String: String]? {
@@ -180,9 +180,7 @@ enum JiraOAuth {
         UserDefaults.standard.set(creds.id, forKey: clientIDKey)
         UserDefaults.standard.set(site.id, forKey: cloudIDKey)
         UserDefaults.standard.set(site.url, forKey: siteURLKey)
-        lock.lock()
-        cachedToken = (exchanged.accessToken, Date().addingTimeInterval(exchanged.expiresIn - 60))
-        lock.unlock()
+        storeCachedToken(exchanged.accessToken, expiresIn: exchanged.expiresIn)
         return site.url
     }
 
@@ -191,13 +189,27 @@ enum JiraOAuth {
     private static let lock = NSLock()
     private static var cachedToken: (token: String, expiresAt: Date)?
 
+    /// Lock-scoped synchronous accessors: NSLock can't be held across a
+    /// suspension point, so async code goes through these instead of locking
+    /// directly.
+    private static func validCachedToken() -> String? {
+        lock.lock(); defer { lock.unlock() }
+        guard let cached = cachedToken, cached.expiresAt > Date() else { return nil }
+        return cached.token
+    }
+
+    private static func storeCachedToken(_ token: String, expiresIn: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        cachedToken = (token, Date().addingTimeInterval(expiresIn - 60))
+    }
+
+    private static func clearCachedToken() {
+        lock.lock(); defer { lock.unlock() }
+        cachedToken = nil
+    }
+
     static func accessToken() async throws -> String {
-        lock.lock()
-        if let cached = cachedToken, cached.expiresAt > Date() {
-            lock.unlock()
-            return cached.token
-        }
-        lock.unlock()
+        if let cached = validCachedToken() { return cached }
 
         guard let creds = clientCredentials(),
               let refresh = blob()?["refresh_token"], !refresh.isEmpty else {
@@ -214,9 +226,7 @@ enum JiraOAuth {
         if let rotated = refreshed.refreshToken, !rotated.isEmpty, rotated != refresh {
             try? writeBlob(["client_secret": creds.secret, "refresh_token": rotated])
         }
-        lock.lock()
-        cachedToken = (refreshed.accessToken, Date().addingTimeInterval(refreshed.expiresIn - 60))
-        lock.unlock()
+        storeCachedToken(refreshed.accessToken, expiresIn: refreshed.expiresIn)
         return refreshed.accessToken
     }
 
