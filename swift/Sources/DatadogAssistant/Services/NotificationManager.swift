@@ -69,17 +69,32 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             var wantsSound = false
             switch transition.kind {
             case .fired:
-                content.title = "\(monitor.priority.label) · \(monitor.name)"
-                content.body = monitor.triggeredHosts.isEmpty
+                let title = "\(monitor.priority.label) · \(monitor.name)"
+                let body = monitor.triggeredHosts.isEmpty
                     ? "Alerting"
                     : "Alerting on \(monitor.triggeredHosts.joined(separator: ", "))"
+                // Severity rules decide banner vs modal vs both (P1 defaults
+                // to both — the unmissable popup).
+                let style = settings.effective(for: monitor.priority).style
+                if style.includesModal {
+                    let url = monitor.url
+                    Task { @MainActor in
+                        ModalAlertWindow.shared.show(title: title, body: body, url: url)
+                    }
+                }
+                lastNotified[monitor.id] = Date()
+                guard style.includesBanner else {
+                    Self.playCustomSound(settings)
+                    continue
+                }
+                content.title = title
+                content.body = body
                 content.categoryIdentifier = Self.alertCategory
                 content.sound = Self.sound(settings, critical: monitor.priority <= .p2)
                 if #available(macOS 12.0, *) {
                     content.interruptionLevel = monitor.priority <= .p2 ? .timeSensitive : .active
                 }
                 wantsSound = true
-                lastNotified[monitor.id] = Date()
             case .warned:
                 guard settings.notifyOnWarn else { continue }
                 content.title = "Warning · \(monitor.name)"
@@ -114,11 +129,14 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     func nag(alerting: [Monitor]) {
         guard available else { return }
         let settings = NotificationSettings.load()
-        guard settings.enabled, settings.renotifyMinutes > 0 else { return }
-        let interval = TimeInterval(settings.renotifyMinutes * 60)
+        guard settings.enabled else { return }
         let center = UNUserNotificationCenter.current()
         let now = Date()
         for monitor in alerting {
+            // Per-priority renotify interval (P1 nags fastest).
+            let renotifyMinutes = settings.effective(for: monitor.priority).renotifyMinutes
+            guard renotifyMinutes > 0 else { continue }
+            let interval = TimeInterval(renotifyMinutes * 60)
             let last = lastNotified[monitor.id] ?? monitor.firingSince ?? now
             guard now.timeIntervalSince(last) >= interval else { continue }
             lastNotified[monitor.id] = now
@@ -136,6 +154,53 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 identifier: "monitor-\(monitor.id)-nag-\(Int(now.timeIntervalSince1970))",
                 content: content, trigger: nil))
         }
+    }
+
+    /// Morning digest: once per calendar day at/after the configured hour,
+    /// post a one-line summary of the org's state. Called on every poll.
+    func maybeDigest(snapshot: Snapshot) {
+        guard available else { return }
+        let settings = NotificationSettings.load()
+        guard settings.enabled, settings.digestHour >= 0 else { return }
+        let now = Date()
+        guard Calendar.current.component(.hour, from: now) >= settings.digestHour else { return }
+        let today = ISO8601DateFormatter.string(
+            from: now, timeZone: .current,
+            formatOptions: [.withFullDate])
+        guard UserDefaults.standard.string(forKey: "digestDate") != today else { return }
+        UserDefaults.standard.set(today, forKey: "digestDate")
+
+        let content = UNMutableNotificationContent()
+        content.title = "🌅 Datadog daily digest"
+        content.body = "\(snapshot.alerting.count) alerting · \(snapshot.warning.count) warn · "
+            + "\(snapshot.healthy.count) ok"
+            + (snapshot.incidents.isEmpty ? "" : " · \(snapshot.incidents.count) incidents 🔥")
+        content.sound = nil
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "digest-\(today)", content: content, trigger: nil))
+    }
+
+    /// Settings' "Test notification": a sample banner (and modal, when the
+    /// style includes one) so the user can verify permissions and sound.
+    func sendTest() {
+        let settings = NotificationSettings.load()
+        if settings.style.includesModal {
+            Task { @MainActor in
+                ModalAlertWindow.shared.show(
+                    title: "P1 · payments-api · p99 latency (test)",
+                    body: "This is what an unmissable alert looks like.",
+                    url: Credentials.currentAppBaseURL().appendingPathComponent("/monitors/manage"))
+            }
+        }
+        guard available else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "🐶 Datadog Assistant test"
+        content.body = "Notifications are working."
+        content.sound = Self.sound(settings, critical: false)
+        Self.playCustomSound(settings)
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "test-\(Int(Date().timeIntervalSince1970))",
+            content: content, trigger: nil))
     }
 
     /// Announce an auto-created Jira ticket; tapping opens it in the browser

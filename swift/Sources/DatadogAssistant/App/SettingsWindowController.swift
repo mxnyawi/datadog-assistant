@@ -370,6 +370,12 @@ private struct NotificationSettingsTab: View {
 
             Form {
                 Toggle("Enable notifications", isOn: $settings.enabled)
+                Picker("Style", selection: $settings.style) {
+                    ForEach(NotificationSettings.Style.allCases, id: \.self) {
+                        Text($0.label).tag($0)
+                    }
+                }
+                .disabled(!settings.enabled)
                 Toggle("Notify on warnings", isOn: $settings.notifyOnWarn)
                     .disabled(!settings.enabled)
                 Toggle("Notify on recovery", isOn: $settings.notifyOnRecovery)
@@ -393,11 +399,36 @@ private struct NotificationSettingsTab: View {
                     }
                 }
                 .disabled(!settings.enabled)
+                Picker("Daily digest", selection: $settings.digestHour) {
+                    Text("Off").tag(-1)
+                    ForEach([7, 8, 9, 10, 11], id: \.self) { Text("\($0):00").tag($0) }
+                }
+                .disabled(!settings.enabled)
+            }
+
+            DisclosureGroup("Per-priority overrides") {
+                Form {
+                    ForEach([1, 2, 3], id: \.self) { priority in
+                        severityRow(priority)
+                    }
+                }
+                Text("P1 defaults to Both (unmissable popup) nagging every 10 min; "
+                     + "P3 to banner every hour. “Inherit” uses the base settings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .disabled(!settings.enabled)
+
+            HStack {
+                Spacer()
+                Button("Test notification") { NotificationManager.shared.sendTest() }
+                    .disabled(!settings.enabled)
             }
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(height: 340)
+        .frame(height: 480)
         .onChange(of: settings) { newValue in
             newValue.save()
             // Instant feedback when trying sounds from the dropdown.
@@ -407,6 +438,35 @@ private struct NotificationSettingsTab: View {
                     NSSound(named: newValue.soundName)?.play()
                 }
             }
+        }
+    }
+
+    /// One priority's override row: style + renotify, with "Inherit" tags.
+    private func severityRow(_ priority: Int) -> some View {
+        HStack {
+            Text("P\(priority)")
+                .font(.system(size: 11, weight: .bold))
+                .frame(width: 24, alignment: .leading)
+            Picker("", selection: Binding(
+                get: { settings.severityRules[priority]?.style },
+                set: { settings.severityRules[priority, default: .init()].style = $0 }
+            )) {
+                Text("Inherit").tag(NotificationSettings.Style?.none)
+                ForEach(NotificationSettings.Style.allCases, id: \.self) {
+                    Text($0.label).tag(NotificationSettings.Style?.some($0))
+                }
+            }
+            .labelsHidden()
+            Picker("", selection: Binding(
+                get: { settings.severityRules[priority]?.renotifyMinutes },
+                set: { settings.severityRules[priority, default: .init()].renotifyMinutes = $0 }
+            )) {
+                Text("Inherit").tag(Int?.none)
+                ForEach(NotificationSettings.renotifyChoices, id: \.self) { minutes in
+                    Text(minutes == 0 ? "No re-notify" : "every \(minutes)m").tag(Int?.some(minutes))
+                }
+            }
+            .labelsHidden()
         }
     }
 }

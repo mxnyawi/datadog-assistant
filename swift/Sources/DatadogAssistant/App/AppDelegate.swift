@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         store.onPoll = { snapshot in
             NotificationManager.shared.nag(alerting: snapshot.alerting)
+            NotificationManager.shared.maybeDigest(snapshot: snapshot)
         }
 
         store.start()
