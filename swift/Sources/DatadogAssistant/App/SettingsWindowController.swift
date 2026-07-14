@@ -388,7 +388,15 @@ private struct FilterSettingsTab: View {
 
             Form {
                 TextField("Name contains", text: $filters.name)
+                Toggle("Hide No-Data monitors", isOn: $filters.hideNoData)
+                    .onChange(of: filters.hideNoData) { _ in apply() }
             }
+            Text("No-Data monitors carry no signal, so they're hidden by default "
+                 + "(their triage checks are skipped too). Turn this off to see them, "
+                 + "grouped as likely-broken vs quiet.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             if FilterConfig.knownTags().isEmpty {
                 Text("No tags discovered yet — they appear after the first poll.")
@@ -418,7 +426,7 @@ private struct FilterSettingsTab: View {
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(height: 340)
+        .frame(minHeight: 340)
     }
 
     private var tagPicker: some View {

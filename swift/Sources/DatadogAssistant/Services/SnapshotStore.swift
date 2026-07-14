@@ -138,6 +138,13 @@ final class SnapshotStore: ObservableObject {
             if filters.isActive {
                 next.monitors = next.monitors.filter { filters.matches($0) }
             }
+            // No-Data monitors carry no signal — drop them everywhere (list,
+            // counts, notifications) unless the user opts back in. Safe for
+            // transition diffing: a dropped monitor can't false-recover
+            // (recovery requires it be present and .ok).
+            if filters.hideNoData {
+                next.monitors = next.monitors.filter { $0.state != .noData }
+            }
 
             if let gitHub {
                 let merges = await gitHub.recentMerges(within: Self.deployLookback)

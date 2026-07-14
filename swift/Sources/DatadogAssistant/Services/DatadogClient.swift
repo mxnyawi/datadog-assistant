@@ -127,6 +127,12 @@ final class DatadogClient: DataSource {
         var monitors: [Monitor] = []
         for dto in dtos {
             var monitor = Self.monitor(from: dto)
+            // No-Data monitors carry no signal; when hidden, skip them here so
+            // we don't even pay for the per-monitor triage probes.
+            if monitor.state == .noData, filter.hideNoData {
+                probeCache.removeValue(forKey: dto.id)
+                continue
+            }
             monitor.url = credentials.appBaseURL.appendingPathComponent("/monitors/\(dto.id)")
             monitor.isDLQ = DLQConfig.load().matches(name: monitor.name,
                                                      tags: monitor.tags,
