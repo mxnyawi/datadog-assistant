@@ -13,7 +13,7 @@ struct ChangesSection: View {
                 VStack(spacing: 4) {
                     ForEach(snapshot.ciRuns.prefix(4)) { CIRunRow(run: $0) }
                 }
-                Spacer().frame(height: 6)
+                .padding(.bottom, 6)
             }
 
             SectionHeader(title: "Recent Changes",

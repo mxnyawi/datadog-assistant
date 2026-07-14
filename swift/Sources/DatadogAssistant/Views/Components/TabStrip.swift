@@ -10,7 +10,9 @@ enum Tab: Hashable {
 
     var symbol: String {
         switch self {
-        case .monitors: return "gauge.with.needle"
+        // speedometer: available since SF Symbols 1 — the fancier
+        // gauge.with.needle needs macOS 14 and we target 13.
+        case .monitors: return "speedometer"
         case .changes:  return "arrow.triangle.branch"
         case .snooze:   return "moon.zzz.fill"
         case .tools:    return "wrench.and.screwdriver.fill"

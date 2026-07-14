@@ -16,7 +16,9 @@ struct MonitorListSection: View {
     }
 
     private static let buckets: [Bucket] = [
-        Bucket(label: "Dead Letter Queues", tint: .alert) { $0.isDLQ && $0.state != .ok },
+        // All DLQ monitors, healthy included — every monitor must land in
+        // exactly one bucket or it silently vanishes from this list.
+        Bucket(label: "Dead Letter Queues", tint: .alert) { $0.isDLQ },
         Bucket(label: "Alerting", tint: .alert) { $0.state == .alert && !$0.isDLQ },
         Bucket(label: "Warning", tint: .warn) { $0.state == .warn && !$0.isDLQ },
         Bucket(label: "No Data — Likely Broken", tint: .noData) {

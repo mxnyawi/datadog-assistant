@@ -10,9 +10,11 @@ struct ActiveMonitorsSection: View {
         let dlqExclusive = DLQConfig.load().exclusive
         let active = (snapshot.alerting + snapshot.warning)
             .filter { $0.id != excluding && !(dlqExclusive && $0.isDLQ) }
-            .prefix(4)
+        let shown = active.prefix(4)
 
         VStack(alignment: .leading, spacing: 6) {
+            // Count the real total, not the truncated slice — an on-call
+            // reading "4" while 12 fire is a lie.
             SectionHeader(title: excluding == nil ? "Active Monitors" : "Also Firing",
                           count: active.isEmpty ? nil : active.count)
 
@@ -21,7 +23,13 @@ struct ActiveMonitorsSection: View {
                 if excluding == nil { emptyState }
             } else {
                 InsetCard {
-                    ForEach(Array(active), id: \.id) { MonitorRow(monitor: $0) }
+                    ForEach(Array(shown), id: \.id) { MonitorRow(monitor: $0) }
+                }
+                if active.count > shown.count {
+                    Text("+\(active.count - shown.count) more in All Monitors")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Theme.textMuted)
+                        .padding(.leading, 10)
                 }
             }
         }

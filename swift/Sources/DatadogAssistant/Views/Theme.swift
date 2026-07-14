@@ -57,6 +57,10 @@ struct SectionHeader: View {
     var count: Int? = nil
 
     var body: some View {
+        // No trailing Spacer: callers compose badges right after the title
+        // (DLQ "N firing", Activity pressure chip), and a greedy header would
+        // shove them to the panel edge. Leading alignment comes from the
+        // enclosing VStack.
         HStack(spacing: 5) {
             Text(title)
                 .font(.system(size: 11, weight: .semibold))
@@ -66,7 +70,6 @@ struct SectionHeader: View {
                     .monospacedDigit()
                     .foregroundColor(Theme.textMuted)
             }
-            Spacer()
         }
         .foregroundColor(Theme.textSecondary)
         .padding(.leading, 10)

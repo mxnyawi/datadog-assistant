@@ -10,7 +10,7 @@ struct RootView: View {
             + snapshot.ciRuns.filter { $0.state == .failure }.count
         VStack(spacing: 10) {
             // Pinned: identity + summary stay put; only the content scrolls.
-            HeaderView(snapshot: snapshot)
+            HeaderView()
             TabStrip(selected: $tab, badges: [.changes: suspectCount])
 
             ScrollView(showsIndicators: false) {

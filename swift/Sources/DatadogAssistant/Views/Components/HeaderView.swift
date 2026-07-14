@@ -6,7 +6,8 @@ import SwiftUI
 /// and onboarding windows instead.
 struct HeaderView: View {
     @EnvironmentObject var store: SnapshotStore
-    let snapshot: Snapshot
+
+    private var snapshot: Snapshot { store.snapshot }
 
     var body: some View {
         HStack(spacing: 8) {

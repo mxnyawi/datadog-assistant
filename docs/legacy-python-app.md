@@ -69,7 +69,7 @@ alerts, sparklines, incidents, Jira, snooze and more, no config editing needed.
 
 ### Easiest , download the app (no Terminal) ⭐
 
-1. **[Download the latest installer](https://github.com/mxnyawi/datadog-assistant/releases/latest/download/Datadog-Assistant-Installer.zip)**
+1. **[Download the latest installer](https://github.com/mxnyawi/datadog-assistant/releases/download/v0.3.0/Datadog-Assistant-Installer.zip)**
    (or from the [website](https://datadog-assistant.pages.dev)).
 2. *(Optional but recommended)* **Verify the download.** Each release ships a
    `Datadog-Assistant-Installer.zip.sha256` next to the zip. Since the app is

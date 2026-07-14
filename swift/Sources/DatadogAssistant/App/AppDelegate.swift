@@ -16,7 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             options: [.userInitiatedAllowingIdleSystemSleep],
             reason: "Polling Datadog monitors")
 
-        let source: DataSource = Credentials.load()
+        let credentials = Credentials.load()
+        let source: DataSource = credentials
             .map { DatadogClient(credentials: $0) } ?? MockDataSource()
         store = SnapshotStore(source: source)
 
@@ -50,7 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // First launch with nothing configured: offer LastPass / keys / sample
         // up front instead of silently running on sample data.
-        if OnboardingWindowController.isNeeded {
+        if OnboardingWindowController.isNeeded(hasCredentials: credentials != nil) {
             let onboarding = OnboardingWindowController { [weak self] in
                 self?.reloadCredentials()
                 self?.onboardingController = nil

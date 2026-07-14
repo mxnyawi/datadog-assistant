@@ -32,8 +32,12 @@ no agent, no permissions: just HTTPS to Datadog's API.
 
 ```bash
 brew tap mxnyawi/datadog-assistant https://github.com/mxnyawi/datadog-assistant
-brew install --cask datadog-assistant
+brew install --cask --no-quarantine datadog-assistant
 ```
+
+(`--no-quarantine` skips Gatekeeper's "can't be checked for malicious
+software" block — the app is ad-hoc signed, not notarized yet. Omit it if you
+prefer the right-click → Open ritual.)
 
 **Option C — build from source** (Xcode CLT + Swift 5.9)
 

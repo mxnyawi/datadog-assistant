@@ -104,7 +104,8 @@ data drives, so what execs watch is the actual product logic, not a video.
   `"m, week_before(m)"` query, so every firing monitor knows how it compares
   to the same moment last week (×3.2 chip) at no extra API cost.
 - **Threshold guide** — the monitor's critical threshold is drawn as a dashed
-  line on the sparkline, so "how far past the line?" is visible at a glance.
+  line on the sparkline (shown on the hero card, and on any row once
+  expanded), so "how far past the line?" is one look away.
 - **Blast radius** — firing monitors sharing a `service:` tag cluster into
   chips ("payments · 3 firing") above the monitor list.
 - **Snooze** — org-wide Datadog downtime (scope `*`) for 30m/1h/4h/rest of

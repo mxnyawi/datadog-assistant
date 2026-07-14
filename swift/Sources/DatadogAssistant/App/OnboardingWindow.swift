@@ -7,6 +7,7 @@ import SwiftUI
 @MainActor
 final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
+    private var finished = false
     private let onFinished: () -> Void
 
     init(onFinished: @escaping () -> Void) {
@@ -14,12 +15,16 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 
     /// Has the user already made (or been migrated into) a credential choice?
-    static var isNeeded: Bool {
-        guard UserDefaults.standard.string(forKey: "authMode") == nil else { return false }
+    /// `hasCredentials` is the result of the `Credentials.load()` the caller
+    /// already performed — never re-load here: in inferred-LastPass mode a
+    /// load shells out to `lpass` synchronously, and this runs on the main
+    /// thread during launch.
+    static func isNeeded(hasCredentials: Bool) -> Bool {
+        guard AuthMode.currentIsUnset else { return false }
         guard !UserDefaults.standard.bool(forKey: "onboardingShown") else { return false }
         // Existing installs (keys in the Keychain, LastPass entry configured,
         // or env vars) skip the welcome — they're already set up.
-        return Credentials.load() == nil && LastPassConfig.load() == nil
+        return !hasCredentials && LastPassConfig.load() == nil
     }
 
     func show() {
@@ -42,17 +47,25 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         window?.makeKeyAndOrderFront(nil)
     }
 
+    /// The single completion funnel for every exit (choice made, sample-data
+    /// link, red close button). Teardown is deferred one runloop turn: this
+    /// can be reached from inside AppKit's close machinery or a sheet's
+    /// completion closure, and ordering out / releasing the window
+    /// synchronously there is a use-after-free waiting to happen.
     private func finish() {
+        guard !finished else { return }
+        finished = true
         UserDefaults.standard.set(true, forKey: "onboardingShown")
-        window?.orderOut(nil)
-        onFinished()
+        DispatchQueue.main.async { [self] in
+            window?.orderOut(nil)
+            onFinished()
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
         // Closing the window counts as "explore first" — sample data, no nag.
         if AuthMode.currentIsUnset { AuthMode.set(.sample) }
-        UserDefaults.standard.set(true, forKey: "onboardingShown")
-        onFinished()
+        finish()
     }
 }
 
