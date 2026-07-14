@@ -251,16 +251,21 @@ private struct APIKeyEntryView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
 
-            Text(useAccessToken
-                 ? "Create one under Personal Settings → Access Tokens with scopes: "
-                   + "monitors_read, monitors_downtime, events_read, incident_read, "
-                   + "dashboards_read, timeseries_query. One credential, no key pair."
-                 : "Create keys in Datadog under Organization Settings → API Keys "
-                   + "and Application Keys. The app key needs monitors_read "
-                   + "(plus monitors_write to mute from the app).")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if useAccessToken {
+                Text("One scoped credential, no key pair. Datadog asks you to pick "
+                     + "scopes when creating the token — select exactly these:")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ScopeChecklistView()
+            } else {
+                Text("Create keys in Datadog under Organization Settings → API Keys "
+                     + "and Application Keys. The app key needs monitors_read "
+                     + "(plus monitors_write to mute from the app).")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Form {
                 if useAccessToken {

@@ -368,9 +368,8 @@ enum LastPassSetup {
             return (true, "→ 200 OK — token is valid for site \(site) and can read monitors.")
         case 403:
             return (false, "→ 403 Forbidden — the token was rejected for site \(site). "
-                + "Check the site, that the token hasn't expired, and that it has the "
-                + "monitors_read scope (plus monitors_downtime, events_read, incident_read, "
-                + "dashboards_read, timeseries_query for full features).")
+                + "Check the site, that the token hasn't expired, and that it carries "
+                + "the scopes this app needs: \(DatadogScope.copyList).")
         case 401:
             return (false, "→ 401 Unauthorized — the token is invalid for site \(site).")
         case -1:

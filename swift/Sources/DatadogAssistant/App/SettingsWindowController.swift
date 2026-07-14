@@ -118,7 +118,9 @@ private struct SourceSettingsTab: View {
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(height: 380)
+        // Min, not fixed: the token section's scope checklist expands
+        // past 380pt and must not clip.
+        .frame(minHeight: 380)
         .onAppear {
             if let lastPass = LastPassConfig.load() {
                 lastPassEntry = lastPass.entry
@@ -198,11 +200,15 @@ private struct SourceSettingsTab: View {
                  ? "An access token is stored in the macOS Keychain. Paste a new one to replace it."
                  : "One scoped credential instead of a key pair — create it under "
                    + "Personal Settings → Access Tokens (or on a service account for a "
-                   + "non-expiring token). Scopes needed: monitors_read, monitors_downtime, "
-                   + "events_read, incident_read, dashboards_read, timeseries_query.")
+                   + "non-expiring token).")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            DisclosureGroup("Which scopes does the token need?") {
+                ScopeChecklistView()
+                    .padding(.top, 4)
+            }
+            .font(.caption)
             Form {
                 SecureField("Access token (ddpat_… or ddsat_…)", text: $accessToken)
                 Picker("Site", selection: $site) {
