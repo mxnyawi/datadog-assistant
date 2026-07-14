@@ -109,14 +109,14 @@ enum JiraOAuth {
     }
 
     static func disconnect() {
-        Keychain.delete(service: blobService)
+        SecretStore.delete(blobService)
         UserDefaults.standard.removeObject(forKey: cloudIDKey)
         UserDefaults.standard.removeObject(forKey: siteURLKey)
         clearCachedToken()
     }
 
     private static func blob() -> [String: String]? {
-        guard let raw = Keychain.read(service: blobService),
+        guard let raw = SecretStore.read(blobService),
               let data = raw.data(using: .utf8),
               let dict = try? JSONDecoder().decode([String: String].self, from: data)
         else { return nil }
@@ -125,7 +125,7 @@ enum JiraOAuth {
 
     private static func writeBlob(_ dict: [String: String]) throws {
         let data = try JSONEncoder().encode(dict)
-        try Keychain.write(service: blobService, value: String(decoding: data, as: UTF8.self))
+        try SecretStore.write(blobService, String(decoding: data, as: UTF8.self))
     }
 
     // MARK: Connect flow

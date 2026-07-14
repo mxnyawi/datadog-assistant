@@ -44,7 +44,7 @@ struct GitHubConfig: Equatable {
         if token?.isEmpty ?? true, let lastPass = LastPassConfig.load(), LastPass.isLoggedIn() {
             token = lastPass.gitHubToken()
         }
-        if token?.isEmpty ?? true { token = Keychain.read(service: tokenService) }
+        if token?.isEmpty ?? true { token = SecretStore.read(tokenService) }
         if token?.isEmpty ?? true { token = GitHubCLI.authToken() }
         guard let token, !token.isEmpty else { return nil }
         let config = GitHubConfig(token: token, repoSpecs: specs)
@@ -52,18 +52,18 @@ struct GitHubConfig: Equatable {
     }
 
     func save() throws {
-        try Keychain.write(service: Self.tokenService, value: token)
+        try SecretStore.write(Self.tokenService, token)
         UserDefaults.standard.set(repoSpecs, forKey: Self.reposDefaultsKey)
     }
 
     /// Persist just the repo list — LastPass mode, where the token resolves
-    /// from the shared vault at load time instead of the Keychain.
+    /// from the shared vault at load time instead of the on-device store.
     static func saveRepoSpecsOnly(_ specs: [String]) {
         UserDefaults.standard.set(specs, forKey: reposDefaultsKey)
     }
 
     static func clear() {
-        Keychain.delete(service: tokenService)
+        SecretStore.delete(tokenService)
         UserDefaults.standard.removeObject(forKey: reposDefaultsKey)
     }
 }

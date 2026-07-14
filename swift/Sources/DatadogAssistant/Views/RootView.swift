@@ -5,10 +5,31 @@ struct RootView: View {
     @State private var tab: Tab = .monitors
 
     var body: some View {
+        if store.needsSetup {
+            setupBody
+        } else {
+            dashboardBody
+        }
+    }
+
+    /// The connect prompt, shown when there are no usable credentials.
+    private var setupBody: some View {
+        VStack(spacing: 12) {
+            ConnectPromptView()
+            Spacer(minLength: 0)
+            FooterView(tab: $tab)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 14)
+        .padding(.bottom, 8)
+        .frame(width: 360)
+    }
+
+    private var dashboardBody: some View {
         let snapshot = store.snapshot
         let suspectCount = snapshot.deploys.filter { !$0.suspectFor.isEmpty }.count
             + snapshot.ciRuns.filter { $0.state == .failure }.count
-        VStack(spacing: 10) {
+        return VStack(spacing: 10) {
             // Pinned: identity + summary stay put; only the content scrolls.
             HeaderView()
             TabStrip(selected: $tab, badges: [.changes: suspectCount])

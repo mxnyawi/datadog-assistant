@@ -7,7 +7,7 @@ import Foundation
 ///   with browser consent (see JiraOAuth). Requests go Bearer against
 ///   api.atlassian.com/ex/jira/<cloudID>.
 /// - **token**: legacy email + API token Basic auth against the site host.
-/// Non-secret fields persist in UserDefaults; secrets in Keychain/LastPass.
+/// Non-secret fields persist in UserDefaults; secrets on-device/LastPass.
 struct JiraConfig: Equatable {
     enum Auth: String { case oauth, token }
 
@@ -83,15 +83,15 @@ struct JiraConfig: Equatable {
                     lastPassFieldKey, autoCreateKey] {
             defaults.removeObject(forKey: key)
         }
-        Keychain.delete(service: tokenService)
+        SecretStore.delete(tokenService)
         JiraOAuth.disconnect()
     }
 
     static func saveToken(_ token: String) throws {
-        try Keychain.write(service: tokenService, value: token)
+        try SecretStore.write(tokenService, token)
     }
 
-    /// Token-mode secret: env → LastPass vault → Keychain.
+    /// Token-mode secret: env → LastPass vault → on-device store.
     func resolveToken() -> String? {
         let env = ProcessInfo.processInfo.environment
         if let token = env["JIRA_API_TOKEN"], !token.isEmpty { return token }
@@ -100,7 +100,7 @@ struct JiraConfig: Equatable {
            let token = LastPass.get(entry: lastPass.lookupRef, field: lastPassTokenField) {
             return token
         }
-        return Keychain.read(service: Self.tokenService)
+        return SecretStore.read(Self.tokenService)
     }
 
     /// The site host used for browse links.

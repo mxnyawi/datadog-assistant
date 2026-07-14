@@ -20,6 +20,10 @@ final class SnapshotStore: ObservableObject {
     @Published private(set) var snoozedUntil: Date?
     @Published private(set) var stats = ResponseStats()
     @Published private(set) var filters = FilterConfig.load()
+    /// No usable credentials and the user hasn't chosen sample mode — the
+    /// panel shows a connect prompt instead of sample data. Owned by
+    /// AppDelegate, which is the only thing that knows about credentials.
+    @Published var needsSetup = false
 
     var isSnoozed: Bool {
         guard let until = snoozedUntil else { return false }

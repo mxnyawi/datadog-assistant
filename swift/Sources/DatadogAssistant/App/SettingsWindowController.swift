@@ -71,7 +71,10 @@ private struct SourceSettingsTab: View {
     @State private var browser = LinkOpener.currentBrowser()
     @State private var apiKeyCmd = UserDefaults.standard.string(forKey: "apiKeyCmd") ?? ""
     @State private var appKeyCmd = UserDefaults.standard.string(forKey: "appKeyCmd") ?? ""
-    @State private var useAccessToken = Credentials.hasStoredAccessToken()
+    // Token-first: default to the access-token sub-tab unless a key pair is
+    // what's actually stored.
+    @State private var useAccessToken =
+        Credentials.hasStoredAccessToken() || !Credentials.hasStoredKeyPair()
     @State private var accessToken = ""
     @State private var accessTokenCmd = UserDefaults.standard.string(forKey: "accessTokenCmd") ?? ""
 
@@ -79,10 +82,9 @@ private struct SourceSettingsTab: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Credential source")
                 .font(.headline)
-            // LastPass first — the shared team vault is the recommended path.
             Picker("", selection: Binding(get: { authMode }, set: { setMode($0) })) {
-                Text("LastPass").tag(AuthMode.lastPass)
-                Text("API keys").tag(AuthMode.keychain)
+                Text("This Mac").tag(AuthMode.device)
+                Text("Team LastPass").tag(AuthMode.lastPass)
                 Text("Sample data").tag(AuthMode.sample)
             }
             .pickerStyle(.segmented)
@@ -96,12 +98,12 @@ private struct SourceSettingsTab: View {
 
             switch authMode {
             case .sample:
-                Text("Running on sample data — nothing to configure. Pick LastPass "
-                     + "or API keys above to connect your org.")
+                Text("Running on sample data — nothing to configure. Pick This Mac "
+                     + "or Team LastPass above to connect your org.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            case .keychain:
+            case .device:
                 keychainSection
             case .lastPass:
                 lastPassSection
@@ -143,8 +145,8 @@ private struct SourceSettingsTab: View {
             // Two credential shapes since Datadog's 2026 auth modernization:
             // the classic pair, or one scoped access token.
             Picker("", selection: $useAccessToken) {
-                Text("API + App keys").tag(false)
                 Text("Access token").tag(true)
+                Text("API + App keys").tag(false)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -160,8 +162,8 @@ private struct SourceSettingsTab: View {
     private var keyPairFields: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(hasExistingKeys && !Credentials.hasStoredAccessToken()
-                 ? "Keys are stored in the macOS Keychain. Enter new values to replace them."
-                 : "Stored in the macOS Keychain, never written to disk in plain text. "
+                 ? "Keys are stored securely on this Mac. Enter new values to replace them."
+                 : "Stored securely on this Mac (encrypted on disk, no password prompt). "
                    + "App key needs monitors_read (plus monitors_write for mute, "
                    + "incident_read and metrics_read for full features).")
                 .font(.subheadline)
@@ -197,7 +199,7 @@ private struct SourceSettingsTab: View {
     private var accessTokenFields: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(Credentials.hasStoredAccessToken()
-                 ? "An access token is stored in the macOS Keychain. Paste a new one to replace it."
+                 ? "An access token is stored securely on this Mac. Paste a new one to replace it."
                  : "One scoped credential instead of a key pair — create it under "
                    + "Personal Settings → Access Tokens (or on a service account for a "
                    + "non-expiring token).")
@@ -301,11 +303,11 @@ private struct SourceSettingsTab: View {
     private var authSourceHint: String {
         switch authMode {
         case .sample:
-            return "Running on sample data. Choose Keychain or LastPass to connect real data."
-        case .keychain:
+            return "Running on sample data. Choose This Mac or Team LastPass to connect real data."
+        case .device:
             return Credentials.hasStoredAccessToken()
-                ? "Using an access token stored in the macOS Keychain."
-                : "Using keys stored in the macOS Keychain."
+                ? "Using an access token stored securely on this Mac."
+                : "Using keys stored securely on this Mac."
         case .lastPass:
             return lastPassLoggedIn
                 ? "Using the shared LastPass vault — keys are fetched at runtime, nothing is stored locally."
@@ -333,9 +335,9 @@ private struct SourceSettingsTab: View {
             hasExistingKeys = true
             apiKey = ""
             appKey = ""
-            setMode(.keychain)
+            setMode(.device)
         } catch {
-            self.error = "Keychain write failed: \(error.localizedDescription)"
+            self.error = "Couldn't save: \(error.localizedDescription)"
         }
     }
 
@@ -345,9 +347,9 @@ private struct SourceSettingsTab: View {
                 accessToken.trimmingCharacters(in: .whitespaces), site: site)
             hasExistingKeys = true
             accessToken = ""
-            setMode(.keychain)
+            setMode(.device)
         } catch {
-            self.error = "Keychain write failed: \(error.localizedDescription)"
+            self.error = "Couldn't save: \(error.localizedDescription)"
         }
     }
 
@@ -729,7 +731,7 @@ private struct JiraSettingsTab: View {
                 token = ""
             }
         } catch {
-            status = "Keychain write failed: \(error.localizedDescription)"
+            status = "Couldn't save: \(error.localizedDescription)"
             isError = true
             return
         }
@@ -883,7 +885,7 @@ private struct GitHubSettingsTab: View {
             hasGitHub = true
             onSave()
         } catch {
-            self.error = "Keychain write failed: \(error.localizedDescription)"
+            self.error = "Couldn't save: \(error.localizedDescription)"
         }
     }
 

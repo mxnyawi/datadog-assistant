@@ -147,4 +147,7 @@ final class MenuBarController: NSObject {
 
 extension Notification.Name {
     static let openSettingsWindow = Notification.Name("openSettingsWindow")
+    /// Posted after credentials are saved or sample mode is chosen, so the
+    /// AppDelegate rebuilds the data source and refreshes the setup state.
+    static let reloadCredentials = Notification.Name("reloadCredentials")
 }
