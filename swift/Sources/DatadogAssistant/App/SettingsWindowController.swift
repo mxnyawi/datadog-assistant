@@ -76,10 +76,11 @@ private struct SourceSettingsTab: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Credential source")
                 .font(.headline)
+            // LastPass first — the shared team vault is the recommended path.
             Picker("", selection: Binding(get: { authMode }, set: { setMode($0) })) {
-                Text("Sample data").tag(AuthMode.sample)
-                Text("Keychain").tag(AuthMode.keychain)
                 Text("LastPass").tag(AuthMode.lastPass)
+                Text("API keys").tag(AuthMode.keychain)
+                Text("Sample data").tag(AuthMode.sample)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -92,8 +93,8 @@ private struct SourceSettingsTab: View {
 
             switch authMode {
             case .sample:
-                Text("Running on sample data — nothing to configure. Pick Keychain "
-                     + "or LastPass above to connect your org.")
+                Text("Running on sample data — nothing to configure. Pick LastPass "
+                     + "or API keys above to connect your org.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
