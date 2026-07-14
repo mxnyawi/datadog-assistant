@@ -32,10 +32,11 @@ On a Mac with the GitHub CLI (`gh`) authenticated:
 ./installer/release.sh v0.3.0
 ```
 
-It builds the `.app`, zips it, tags the repo, and publishes a GitHub Release with
-the app attached as `Datadog-Assistant-Installer.zip` (name kept for backwards
-compatibility). The website Download button
-(`releases/latest/download/Datadog-Assistant-Installer.zip`) then resolves.
+It builds the Python `.app`, zips it, tags the repo, and publishes a GitHub
+Release with the app attached as `Datadog-Assistant-Installer.zip`. Note:
+tagged releases via CI now ship the **Swift** app (`Datadog-Assistant.dmg` /
+`.zip`) — this script is only for cutting a legacy Python release by hand,
+and clobbering `latest` with it will break the website's Download button.
 
 ### Build on GitHub instead of your Mac
 
@@ -47,10 +48,11 @@ needed. Trigger it by pushing a tag:
 git tag v0.3.0 && git push origin v0.3.0
 ```
 
-(or run it manually from the Actions tab via `workflow_dispatch`). It attaches
-`Datadog-Assistant-Installer.zip` + its `.sha256`, which is exactly what the
-website's **Download for macOS** button points at. `installer/release.sh`
-remains for cutting a release by hand from a Mac.
+(or run it manually from the Actions tab via `workflow_dispatch`). It builds
+the native Swift app and attaches `Datadog-Assistant.dmg` + `.zip` with
+`.sha256` checksums — what the website's **Download for macOS** button points
+at. `installer/release.sh` remains for cutting a legacy Python release by
+hand from a Mac.
 
 ## Headless / CI install (no GUI)
 

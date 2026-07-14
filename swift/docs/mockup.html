@@ -1,0 +1,1029 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Datadog Assistant — Swift panel mockups</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  /* ---------- tokens (mirror Views/Theme.swift) ---------- */
+  :root{
+    --surface: rgba(18,22,31,0.78);      /* NSVisualEffectView stand-in */
+    --panel:   rgba(255,255,255,0.05);
+    --stroke:  rgba(255,255,255,0.08);
+    --ink:     #ffffff;
+    --ink-2:   rgba(255,255,255,0.60);
+    --ink-3:   rgba(255,255,255,0.40);
+    --alert:   #ff5966;   /* validated ≥4.5:1 on surface */
+    --warn:    #ffc74d;
+    --ok:      #4de680;
+    --info:    #61b8ff;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    font-family:'Inter','Helvetica Neue',system-ui,sans-serif;
+    background:#06080d;color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+    display:flex;flex-direction:column;gap:48px;padding:48px;align-items:flex-start;
+  }
+
+  /* ---------- stage: wallpaper + menu bar ---------- */
+  .stage{
+    position:relative;width:520px;border-radius:14px;overflow:hidden;
+    background:
+      radial-gradient(120% 90% at 85% -10%, #3d3654 0%, transparent 55%),
+      radial-gradient(110% 80% at -15% 30%, #1d2c4e 0%, transparent 60%),
+      radial-gradient(100% 100% at 60% 110%, #232042 0%, transparent 55%),
+      linear-gradient(160deg,#161b2a 0%,#0e1220 45%,#191631 100%);
+    padding:0 0 34px;
+  }
+  .stage::before{ /* wallpaper swoosh */
+    content:"";position:absolute;inset:-40%;pointer-events:none;
+    background:
+      radial-gradient(45% 18% at 55% 52%, rgba(126,140,255,0.14), transparent 70%),
+      radial-gradient(35% 14% at 40% 66%, rgba(84,60,160,0.20), transparent 70%);
+    transform:rotate(-18deg);
+    filter:blur(6px);
+  }
+  .menubar{
+    position:relative;display:flex;align-items:center;justify-content:flex-end;gap:16px;
+    height:30px;padding:0 14px;font-size:12px;font-weight:600;color:rgba(255,255,255,0.85);
+    background:rgba(10,12,20,0.55);backdrop-filter:blur(20px);
+    border-bottom:1px solid rgba(255,255,255,0.06);
+  }
+  .menubar .item{display:flex;align-items:center;gap:5px}
+  .menubar .active-app{
+    background:rgba(255,255,255,0.16);border-radius:6px;padding:2px 8px;
+    display:flex;align-items:center;gap:5px;
+  }
+  .badge-count{color:var(--alert);font-weight:800;font-variant-numeric:tabular-nums}
+
+  /* ---------- the glass panel ---------- */
+  .panel{
+    position:relative;width:380px;margin:14px auto 0;
+    background:var(--surface);
+    backdrop-filter:blur(50px) saturate(140%);
+    border:1px solid rgba(255,255,255,0.10);
+    border-radius:20px;
+    box-shadow:0 24px 70px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.35);
+    padding:16px;display:flex;flex-direction:column;gap:16px;
+  }
+  .panel::before{ /* arrow-less anchor notch highlight */
+    content:"";position:absolute;inset:0;border-radius:20px;pointer-events:none;
+    background:linear-gradient(180deg,rgba(255,255,255,0.06),transparent 30%);
+  }
+
+  /* header */
+  .hdr{display:flex;align-items:center;gap:12px}
+  .hdr .appicon{
+    width:48px;height:48px;border-radius:12px;flex:none;
+    background:rgba(0,0,0,0.55);border:1px solid var(--stroke);
+    display:flex;align-items:center;justify-content:center;
+  }
+  .hdr h1{font-size:18px;font-weight:700;letter-spacing:-0.2px}
+  .pills{display:flex;gap:6px;margin-top:4px}
+  .pill{
+    display:inline-flex;align-items:center;gap:5px;
+    font-size:11px;font-weight:600;padding:3px 8px;border-radius:99px;
+  }
+  .pill .dot{width:7px;height:7px;border-radius:50%}
+  .pill.ok{color:var(--ok);background:rgba(77,230,128,0.15)}
+  .pill.ok .dot{background:var(--ok)}
+  .pill.sample{color:var(--info);background:rgba(97,184,255,0.15);font-size:9px;font-weight:800;letter-spacing:0.5px}
+
+  /* tab strip */
+  .tabs{
+    display:flex;padding:4px;border-radius:14px;
+    background:var(--panel);border:1px solid var(--stroke);
+  }
+  .tab{
+    flex:1;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;gap:5px;
+    color:var(--ink-2);
+  }
+  .tab.sel{color:var(--info);background:rgba(97,184,255,0.18);box-shadow:inset 0 0 0 1px rgba(97,184,255,0.45)}
+  .tbadge{font-size:10px;font-weight:800;color:var(--alert);font-variant-numeric:tabular-nums}
+
+  /* blast-radius cluster chips */
+  .clusters{display:flex;gap:6px;margin-bottom:2px}
+  .cluster{
+    display:inline-flex;align-items:center;gap:5px;
+    font-size:11px;font-weight:600;padding:4px 9px;border-radius:99px;
+    color:var(--alert);background:rgba(255,89,102,0.14);
+    box-shadow:inset 0 0 0 1px rgba(255,89,102,0.35);
+  }
+  .cluster .n{font-weight:500;opacity:0.8}
+
+  /* delta chip */
+  .delta{
+    font-size:9px;font-weight:700;padding:2px 6px;border-radius:99px;flex:none;
+  }
+  .delta.alert{color:var(--alert);background:rgba(255,89,102,0.14)}
+  .delta.warn{color:var(--warn);background:rgba(255,199,77,0.14)}
+
+  /* suspect change callout (expanded row) */
+  .suspect{
+    display:flex;align-items:center;gap:6px;
+    padding:6px 9px;border-radius:8px;color:var(--alert);
+    background:rgba(255,89,102,0.10);
+    box-shadow:inset 0 0 0 1px rgba(255,89,102,0.35);
+  }
+  .suspect .txt{display:flex;flex-direction:column;gap:1px;min-width:0}
+  .suspect .t1{font-size:11px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .suspect .t2{font-size:9px;font-weight:500;opacity:0.75}
+  .suspect .go{margin-left:auto;flex:none}
+
+  /* changes feed */
+  .feed{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+  .dep{
+    display:flex;flex-direction:column;gap:5px;padding:8px 10px;border-radius:10px;
+    background:var(--panel);box-shadow:inset 0 0 0 1px var(--stroke);
+  }
+  .dep.suspected{background:rgba(255,89,102,0.10);box-shadow:inset 0 0 0 1px rgba(255,89,102,0.40)}
+  .dep .line{display:flex;align-items:center;gap:8px}
+  .dep .dtitle{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dep .when{margin-left:auto;font-size:11px;font-weight:500;color:var(--ink-3);flex:none}
+  .dep .flag{display:flex;align-items:center;gap:4px;font-size:10px;font-weight:600;color:var(--alert)}
+  .txt2{display:flex;flex-direction:column;gap:1px;min-width:0}
+  .txt2 .dsub{font-size:10px;color:var(--ink-3)}
+
+  /* monitor list (search + groups) */
+  .search{
+    display:flex;align-items:center;gap:6px;padding:7px 10px;border-radius:10px;
+    background:var(--panel);box-shadow:inset 0 0 0 1px var(--stroke);
+    font-size:12px;color:var(--ink);
+  }
+  .search .ph{color:var(--ink)}
+  .search .caret{display:inline-block;width:1px;height:13px;background:var(--info);margin-left:1px}
+  .group-h{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:var(--ink-2);padding-left:2px;margin-top:6px}
+  .group-h .dot{width:7px;height:7px;border-radius:50%}
+
+  /* hero alert card */
+  .hero{
+    display:flex;flex-direction:column;gap:12px;padding:14px;border-radius:14px;
+    background:rgba(255,89,102,0.09);
+    box-shadow:inset 0 0 0 1px rgba(255,89,102,0.40),
+               0 4px 26px rgba(255,89,102,0.22);
+  }
+  .hero .top{display:flex;align-items:center;gap:8px}
+  .hero .live{width:8px;height:8px;border-radius:50%;background:var(--alert);
+    box-shadow:0 0 8px rgba(255,89,102,0.9)}
+  .hero .tag{font-size:10px;font-weight:800;letter-spacing:0.8px;color:var(--alert)}
+  .hero .dur{margin-left:auto;font-size:11px;font-weight:600;color:var(--alert);font-variant-numeric:tabular-nums}
+  .hero .name{font-size:15px;font-weight:700;letter-spacing:-0.1px}
+  .hero .valrow{display:flex;align-items:baseline;gap:6px}
+  .hero .bigval{font-size:30px;font-weight:700;color:var(--alert);letter-spacing:-0.5px}
+  .hero .thr{font-size:11px;font-weight:500;color:var(--ink-2)}
+  .hero .valrow .delta{margin-left:auto}
+  .gauge{position:relative;height:6px;border-radius:99px;background:rgba(255,255,255,0.08)}
+  .gauge .fill{position:absolute;inset:0 38% 0 0;border-radius:99px;
+    background:linear-gradient(90deg,var(--warn),var(--alert))}
+  .gauge .tick{position:absolute;top:-2px;bottom:-2px;left:62.5%;width:1.5px;background:rgba(255,255,255,0.7)}
+  .hero .suspect{color:var(--warn);background:rgba(255,199,77,0.12);
+    box-shadow:inset 0 0 0 1px rgba(255,199,77,0.35)}
+  .hero .hactions{display:flex;gap:8px}
+  .hbtn{
+    flex:1;display:flex;align-items:center;justify-content:center;gap:5px;
+    min-height:28px;border-radius:99px;font-size:11px;font-weight:700;
+    color:var(--ink);background:rgba(255,255,255,0.10);
+    box-shadow:inset 0 0 0 1px var(--stroke);
+  }
+  .hbtn.prominent{color:rgba(0,0,0,0.85);background:var(--alert);box-shadow:none}
+
+  /* response strip */
+  .stats{display:flex;gap:8px}
+  .stat{
+    flex:1;display:flex;align-items:center;justify-content:center;gap:6px;
+    padding:8px 4px;border-radius:10px;
+    background:var(--panel);box-shadow:inset 0 0 0 1px var(--stroke);
+  }
+  .stat .v{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums}
+  .stat .l{font-size:10px;font-weight:500;color:var(--ink-3)}
+
+  /* sections */
+  .sect-label{font-size:11px;font-weight:500;color:var(--ink-2);padding-left:2px;display:flex;align-items:center;gap:4px}
+  .divider{height:1px;background:var(--stroke)}
+
+  /* state cards */
+  .cards{display:flex;gap:10px}
+  .card{
+    flex:1;padding:12px 14px;border-radius:12px;
+    background:var(--panel);border:1px solid var(--stroke);
+  }
+  .card .t{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:500;color:var(--ink-2)}
+  .card .v{font-size:26px;font-weight:600;margin-top:8px;letter-spacing:-0.5px}
+  .v.alert{color:var(--alert)} .v.warn{color:var(--warn)} .v.ok{color:var(--ok)}
+
+  /* monitor rows */
+  .rows{display:flex;flex-direction:column;gap:2px}
+  .mrow{padding:4px 0;display:flex;flex-direction:column;gap:6px}
+  .mrow .line{display:flex;align-items:center;gap:8px}
+  .chev{color:var(--ink-3);flex:none;transition:transform .2s}
+  .chev.open{transform:rotate(90deg)}
+  .prio{
+    font-size:10px;font-weight:700;padding:2px 5px;border-radius:4px;flex:none;
+  }
+  .prio.alert{color:var(--alert);background:rgba(255,89,102,0.15)}
+  .prio.warn{color:var(--warn);background:rgba(255,199,77,0.15)}
+  .mname{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mval{margin-left:auto;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;flex:none}
+  .mval.alert{color:var(--alert)} .mval.warn{color:var(--warn)}
+  .spark{height:26px;width:100%;display:block}
+  .spark-lg{height:40px;width:100%;display:block}
+
+  /* expanded row details */
+  .details{padding-left:17px;display:flex;flex-direction:column;gap:8px}
+  .drow{display:flex;gap:12px}
+  .ditem{display:flex;align-items:center;gap:4px;font-size:11px;font-weight:500;color:var(--ink-2)}
+  .actions{display:flex;gap:8px;padding-top:2px}
+  .abtn{
+    display:inline-flex;align-items:center;gap:5px;
+    font-size:11px;font-weight:600;color:var(--ink);
+    padding:5px 10px;border-radius:99px;
+    background:rgba(255,255,255,0.08);box-shadow:inset 0 0 0 1px var(--stroke);
+  }
+
+  /* incidents */
+  .incidents{display:flex;gap:8px}
+  .inc{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;max-width:88px}
+  .inc .sq{
+    width:48px;height:48px;border-radius:12px;display:flex;align-items:center;justify-content:center;
+    font-size:16px;font-weight:800;
+  }
+  .inc.sev2 .sq{background:rgba(255,89,102,0.18);color:var(--alert)}
+  .inc.sev3 .sq{background:rgba(255,199,77,0.18);color:var(--warn)}
+  .inc .id{font-size:11px;font-weight:600}
+  .inc .dur{font-size:11px;font-weight:500}
+  .inc.sev2 .dur{color:var(--alert)} .inc.sev3 .dur{color:var(--warn)}
+  .none{font-size:12px;color:var(--ink-3);padding:6px 2px}
+
+  /* activity */
+  .act-head{display:flex;align-items:center;gap:10px;padding-left:2px}
+  .chip{
+    display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;
+    padding:3px 8px;border-radius:99px;
+  }
+  .chip .dot{width:7px;height:7px;border-radius:50%}
+  .chip.crit{color:var(--alert);background:rgba(255,89,102,0.15)}
+  .chip.crit .dot{background:var(--alert)}
+  .chip.norm{color:var(--ok);background:rgba(77,230,128,0.15)}
+  .chip.norm .dot{background:var(--ok)}
+  .act-head .right{margin-left:auto;font-size:11px;font-weight:500;color:var(--ink-2)}
+
+  /* empty state */
+  .allclear{display:flex;align-items:center;gap:8px;padding:8px 2px;font-size:12px;font-weight:500;color:var(--ink-2)}
+
+  /* freshness + footer */
+  .fresh{display:flex;align-items:center;gap:4px;font-size:10px;font-weight:500;color:var(--ink-3)}
+  .fresh .right{margin-left:auto}
+  .footer{display:flex;align-items:center;padding-top:6px}
+  .fbtn{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;font-size:12px;font-weight:500;color:var(--ink-2);height:30px}
+  .fsep{width:1px;height:22px;background:var(--stroke)}
+
+  /* ---------- notification scene ---------- */
+  .notif-stage{width:460px;padding:26px;display:flex;flex-direction:column;gap:12px;align-items:flex-end}
+  .notif{
+    width:380px;border-radius:18px;padding:12px 14px;
+    background:var(--surface);backdrop-filter:blur(50px) saturate(140%);
+    border:1px solid rgba(255,255,255,0.10);
+    box-shadow:0 18px 50px rgba(0,0,0,0.5);
+    display:flex;flex-direction:column;gap:10px;
+  }
+  .notif .top{display:flex;gap:10px;align-items:flex-start}
+  .notif .icon{
+    width:38px;height:38px;border-radius:9px;flex:none;
+    background:rgba(0,0,0,0.55);border:1px solid var(--stroke);
+    display:flex;align-items:center;justify-content:center;
+  }
+  .notif .title{font-size:13px;font-weight:700;line-height:1.25}
+  .notif .body{font-size:12px;color:var(--ink-2);margin-top:2px}
+  .notif .when{margin-left:auto;font-size:11px;color:var(--ink-3);flex:none}
+  .notif .actions{padding-left:48px}
+
+  .caption{font-size:12px;color:#5b6272;margin-top:10px;font-weight:500}
+  svg{display:block}
+</style>
+</head>
+<body>
+
+<!-- ============ SCENE 0: hero incident card (exec demo centerpiece) ============ -->
+<div class="stage" id="scene-hero">
+  <div class="menubar">
+    <span class="item active-app"><svg width="15" height="15" class="paw"></svg><span class="badge-count">2</span></span>
+    <span class="item"><svg width="15" height="12" class="i-wifi"></svg></span>
+    <span class="item"><svg width="20" height="11" class="i-batt"></svg></span>
+    <span class="item">Tue Jul 1&nbsp;&nbsp;2:13 PM</span>
+  </div>
+
+  <div class="panel">
+    <div class="hdr">
+      <div class="appicon"><svg width="26" height="26" class="paw"></svg></div>
+      <div>
+        <h1>Datadog Assistant</h1>
+        <div class="pills"><span class="pill ok"><span class="dot"></span>acme-prod</span></div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab sel"><svg width="16" height="16" class="i-cpu"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">2</span></div>
+      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
+    </div>
+
+    <div class="clusters">
+      <span class="cluster"><svg width="10" height="10" class="i-stack"></svg>payments<span class="n">2 firing</span></span>
+    </div>
+
+    <div class="hero">
+      <div class="top">
+        <span class="live"></span>
+        <span class="tag">P1 · ALERTING</span>
+        <span class="dur">firing 12m 34s</span>
+      </div>
+      <div class="name">payments-api · p99 latency</div>
+      <div class="valrow">
+        <span class="bigval">842</span>
+        <span class="thr">/ 500 threshold</span>
+        <span class="delta alert">×3.2 vs last week</span>
+      </div>
+      <div class="gauge"><div class="fill"></div><div class="tick"></div></div>
+      <svg class="spark" style="height:34px" data-series="pay" data-color="alert" data-threshold="0.55" data-markers="0.57"></svg>
+      <div class="suspect">
+        <svg width="12" height="12" class="i-pr"></svg>
+        <span class="txt">
+          <span class="t1">PR #482 · raise cache TTL · 26m ago</span>
+        </span>
+        <svg width="9" height="9" class="go i-arrow"></svg>
+      </div>
+      <div class="hactions">
+        <span class="hbtn"><svg width="11" height="11" class="i-mute"></svg>Mute 1h</span>
+        <span class="hbtn prominent"><svg width="11" height="11" class="i-ext"></svg>Open in Datadog</span>
+      </div>
+    </div>
+
+    <div>
+      <div class="sect-label">Alert state</div>
+      <div class="cards" style="margin-top:10px">
+        <div class="card"><div class="t"><svg width="12" height="12" class="i-oct"></svg>Alerting</div><div class="v alert">2</div></div>
+        <div class="card"><div class="t"><svg width="12" height="12" class="i-tri"></svg>Warning</div><div class="v warn">2</div></div>
+        <div class="card"><div class="t"><svg width="12" height="12" class="i-seal"></svg>Healthy</div><div class="v ok">14</div></div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><svg width="10" height="12" class="i-bolt" style="color:var(--info)"></svg><span class="v">9s</span><span class="l">to detect</span></div>
+      <div class="stat"><svg width="11" height="11" class="i-bell" style="color:var(--warn)"></svg><span class="v">4</span><span class="l">alerts today</span></div>
+      <div class="stat"><svg width="11" height="11" class="i-undo" style="color:var(--ok)"></svg><span class="v">18m</span><span class="l">median recovery</span></div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div>
+      <div class="sect-label">Also firing</div>
+      <div class="rows" style="margin-top:8px">
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio alert">P2</span><span class="mname">checkout · 5xx rate</span>
+            <span class="delta alert">×4.8</span>
+            <span class="mval alert">4.1</span>
+          </div>
+          <svg class="spark" data-series="chk" data-color="alert" data-threshold="0.30" data-markers="0.57"></svg>
+        </div>
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio warn">P3</span><span class="mname">kafka · consumer lag</span>
+            <span class="mval warn">12.4k</span>
+          </div>
+          <svg class="spark" data-series="kfk" data-color="warn" data-threshold="0.85"></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="fresh" style="margin-top:2px">
+      <svg width="10" height="10" class="i-clock"></svg>
+      checked 4s ago · every 15s
+      <span class="right">⌥⌘D</span>
+    </div>
+
+    <div class="footer">
+      <div class="fbtn"><svg width="13" height="13" class="i-gear"></svg>Settings</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-list"></svg>List</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-power"></svg>Quit</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SCENE 1: alerting (hero) ============ -->
+<div class="stage" id="scene-alerting">
+  <div class="menubar">
+    <span class="item active-app"><svg width="15" height="15" class="paw"></svg><span class="badge-count">2</span></span>
+    <span class="item"><svg width="15" height="12" class="i-wifi"></svg></span>
+    <span class="item"><svg width="20" height="11" class="i-batt"></svg></span>
+    <span class="item">Tue Jul 1&nbsp;&nbsp;2:13 PM</span>
+  </div>
+
+  <div class="panel">
+    <div class="hdr">
+      <div class="appicon"><svg width="26" height="26" class="paw"></svg></div>
+      <div>
+        <h1>Datadog Assistant</h1>
+        <div class="pills"><span class="pill ok"><span class="dot"></span>acme-prod</span></div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab sel"><svg width="16" height="16" class="i-cpu"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">2</span></div>
+      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
+    </div>
+
+    <div class="clusters">
+      <span class="cluster"><svg width="10" height="10" class="i-stack"></svg>payments<span class="n">2 firing</span></span>
+    </div>
+
+    <div>
+      <div class="sect-label">Alert state</div>
+      <div class="cards" style="margin-top:10px">
+        <div class="card"><div class="t"><svg width="12" height="12" class="i-oct"></svg>Alerting</div><div class="v alert">2</div></div>
+        <div class="card"><div class="t"><svg width="12" height="12" class="i-tri"></svg>Warning</div><div class="v warn">2</div></div>
+        <div class="card"><div class="t"><svg width="12" height="12" class="i-seal"></svg>Healthy</div><div class="v ok">14</div></div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div>
+      <div class="sect-label">Active monitors</div>
+      <div class="rows" style="margin-top:8px">
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio alert">P1</span><span class="mname">payments-api · p99 latency</span>
+            <span class="delta alert">×3.2 vs last wk</span>
+            <span class="mval alert">842</span>
+          </div>
+          <svg class="spark" data-series="pay" data-color="alert" data-threshold="0.55" data-markers="0.57"></svg>
+        </div>
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio alert">P2</span><span class="mname">checkout · 5xx rate</span>
+            <span class="delta alert">×4.8</span>
+            <span class="mval alert">4.1</span>
+          </div>
+          <svg class="spark" data-series="chk" data-color="alert" data-threshold="0.30" data-markers="0.57"></svg>
+        </div>
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio warn">P3</span><span class="mname">kafka · consumer lag</span>
+            <span class="mval warn">12.4k</span>
+          </div>
+          <svg class="spark" data-series="kfk" data-color="warn" data-threshold="0.85"></svg>
+        </div>
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio warn">P3</span><span class="mname">auth-svc · CPU</span>
+            <span class="mval warn">78</span>
+          </div>
+          <svg class="spark" data-series="auth" data-color="warn" data-threshold="0.80"></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div>
+      <div class="sect-label"><svg width="10" height="12" class="i-flame"></svg>Active incidents</div>
+      <div class="incidents" style="margin-top:10px">
+        <div class="inc sev2"><div class="sq">2</div><div class="id">IR-482</div><div class="dur">31m</div></div>
+        <div class="inc sev3"><div class="sq">3</div><div class="id">IR-481</div><div class="dur">1h</div></div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div>
+      <div class="act-head">
+        <span class="sect-label" style="padding:0">Activity</span>
+        <span class="chip crit"><span class="dot"></span>Critical</span>
+        <span class="right">4 firing</span>
+      </div>
+      <svg class="spark-lg" data-series="act-hot" data-color="alert" style="margin-top:8px"></svg>
+    </div>
+
+    <div class="fresh">
+      <svg width="10" height="10" class="i-clock"></svg>
+      checked 4s ago · every 15s
+      <span class="right">⌥⌘D</span>
+    </div>
+
+    <div class="footer">
+      <div class="fbtn"><svg width="13" height="13" class="i-gear"></svg>Settings</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-list"></svg>List</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-power"></svg>Quit</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SCENE 2: expanded row ============ -->
+<div class="stage" id="scene-expanded">
+  <div class="menubar">
+    <span class="item active-app"><svg width="15" height="15" class="paw"></svg><span class="badge-count">2</span></span>
+    <span class="item"><svg width="15" height="12" class="i-wifi"></svg></span>
+    <span class="item"><svg width="20" height="11" class="i-batt"></svg></span>
+    <span class="item">Tue Jul 1&nbsp;&nbsp;2:13 PM</span>
+  </div>
+
+  <div class="panel">
+    <div class="hdr">
+      <div class="appicon"><svg width="26" height="26" class="paw"></svg></div>
+      <div>
+        <h1>Datadog Assistant</h1>
+        <div class="pills"><span class="pill ok"><span class="dot"></span>acme-prod</span></div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab sel"><svg width="16" height="16" class="i-cpu"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">2</span></div>
+      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
+    </div>
+
+    <div>
+      <div class="sect-label">Active monitors</div>
+      <div class="rows" style="margin-top:8px">
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev open i-chev"></svg>
+            <span class="prio alert">P1</span><span class="mname">payments-api · p99 latency</span>
+            <span class="delta alert">×3.2 vs last wk</span>
+            <span class="mval alert">842</span>
+          </div>
+          <svg class="spark" data-series="pay" data-color="alert" data-threshold="0.55" data-markers="0.57"></svg>
+          <div class="details">
+            <div class="drow">
+              <span class="ditem"><svg width="11" height="11" class="i-timer"></svg>firing 12m</span>
+              <span class="ditem"><svg width="11" height="11" class="i-ruler"></svg>threshold 500</span>
+            </div>
+            <div class="drow">
+              <span class="ditem"><svg width="11" height="11" class="i-server"></svg>prod-pay-7, prod-pay-9</span>
+            </div>
+            <div class="suspect">
+              <svg width="12" height="12" class="i-pr"></svg>
+              <span class="txt">
+                <span class="t1">PR #482 · raise cache TTL for quotes</span>
+                <span class="t2">landed 14m before this alert</span>
+              </span>
+              <svg width="9" height="9" class="go i-arrow"></svg>
+            </div>
+            <div class="actions">
+              <span class="abtn"><svg width="11" height="11" class="i-mute"></svg>Mute 1h</span>
+              <span class="abtn"><svg width="11" height="11" class="i-ext"></svg>Open in Datadog</span>
+            </div>
+          </div>
+        </div>
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio alert">P2</span><span class="mname">checkout · 5xx rate</span>
+            <span class="delta alert">×4.8</span>
+            <span class="mval alert">4.1</span>
+          </div>
+          <svg class="spark" data-series="chk" data-color="alert" data-threshold="0.30" data-markers="0.57"></svg>
+        </div>
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio warn">P3</span><span class="mname">kafka · consumer lag</span>
+            <span class="mval warn">12.4k</span>
+          </div>
+          <svg class="spark" data-series="kfk" data-color="warn" data-threshold="0.85"></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="fresh" style="margin-top:2px">
+      <svg width="10" height="10" class="i-clock"></svg>
+      checked 2s ago · every 15s
+      <span class="right">⌥⌘D</span>
+    </div>
+
+    <div class="footer">
+      <div class="fbtn"><svg width="13" height="13" class="i-gear"></svg>Settings</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-list"></svg>List</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-power"></svg>Quit</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SCENE 2.5: changes tab ============ -->
+<div class="stage" id="scene-changes">
+  <div class="menubar">
+    <span class="item active-app"><svg width="15" height="15" class="paw"></svg><span class="badge-count">2</span></span>
+    <span class="item"><svg width="15" height="12" class="i-wifi"></svg></span>
+    <span class="item"><svg width="20" height="11" class="i-batt"></svg></span>
+    <span class="item">Tue Jul 1&nbsp;&nbsp;2:13 PM</span>
+  </div>
+
+  <div class="panel">
+    <div class="hdr">
+      <div class="appicon"><svg width="26" height="26" class="paw"></svg></div>
+      <div>
+        <h1>Datadog Assistant</h1>
+        <div class="pills"><span class="pill ok"><span class="dot"></span>acme-prod</span></div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab"><svg width="16" height="16" class="i-cpu"></svg></div>
+      <div class="tab sel"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">2</span></div>
+      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
+    </div>
+
+    <div>
+      <div class="sect-label">CI · latest runs</div>
+      <div class="feed">
+        <div class="dep suspected">
+          <div class="line">
+            <svg width="13" height="13" class="i-ci-fail"></svg>
+            <span class="txt2"><span class="dtitle">deploy-prod</span><span class="dsub">acme/payments-api · main</span></span>
+            <span class="when" style="color:var(--alert)">18m ago</span>
+          </div>
+        </div>
+        <div class="dep">
+          <div class="line">
+            <svg width="13" height="13" class="i-ci-ok"></svg>
+            <span class="txt2"><span class="dtitle">tests</span><span class="dsub">acme/payments-api · main</span></span>
+            <span class="when">42m ago</span>
+          </div>
+        </div>
+        <div class="dep">
+          <div class="line">
+            <svg width="13" height="13" class="i-ci-run"></svg>
+            <span class="txt2"><span class="dtitle">ci</span><span class="dsub">acme/platform · main</span></span>
+            <span class="when">4m ago</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div>
+      <div class="sect-label">Recent changes</div>
+      <div class="feed">
+        <div class="dep suspected">
+          <div class="line">
+            <svg width="12" height="12" class="i-pr" style="color:var(--alert)"></svg>
+            <span class="dtitle">PR #482 · raise cache TTL for quotes</span>
+            <span class="when">26m ago</span>
+          </div>
+          <div class="flag">
+            <svg width="10" height="10" class="i-tri" style="color:var(--alert)"></svg>
+            landed before: payments-api · p99 latency
+          </div>
+        </div>
+        <div class="dep">
+          <div class="line">
+            <svg width="12" height="12" class="i-box" style="color:rgba(255,255,255,0.6)"></svg>
+            <span class="dtitle">Deploy checkout v2025.06.30-2</span>
+            <span class="when">3h ago</span>
+          </div>
+        </div>
+        <div class="dep">
+          <div class="line">
+            <svg width="12" height="12" class="i-pr" style="color:rgba(255,255,255,0.6)"></svg>
+            <span class="dtitle">PR #479 · bump base image to bookworm</span>
+            <span class="when">5h ago</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="fresh" style="margin-top:2px">
+      <svg width="10" height="10" class="i-clock"></svg>
+      checked 6s ago · every 15s
+      <span class="right">⌥⌘D</span>
+    </div>
+
+    <div class="footer">
+      <div class="fbtn"><svg width="13" height="13" class="i-gear"></svg>Settings</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-list"></svg>List</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-power"></svg>Quit</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SCENE 2.75: searchable list ============ -->
+<div class="stage" id="scene-list">
+  <div class="menubar">
+    <span class="item active-app"><svg width="15" height="15" class="paw"></svg><span class="badge-count">2</span></span>
+    <span class="item"><svg width="15" height="12" class="i-wifi"></svg></span>
+    <span class="item"><svg width="20" height="11" class="i-batt"></svg></span>
+    <span class="item">Tue Jul 1&nbsp;&nbsp;2:13 PM</span>
+  </div>
+
+  <div class="panel">
+    <div class="hdr">
+      <div class="appicon"><svg width="26" height="26" class="paw"></svg></div>
+      <div>
+        <h1>Datadog Assistant</h1>
+        <div class="pills"><span class="pill ok"><span class="dot"></span>acme-prod</span></div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab"><svg width="16" height="16" class="i-cpu"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-branch"></svg><span class="tbadge">2</span></div>
+      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
+    </div>
+
+    <div class="search">
+      <svg width="12" height="12" class="i-mag"></svg>
+      <span class="ph">pay</span><span class="caret"></span>
+    </div>
+
+    <div>
+      <div class="group-h"><span class="dot" style="background:var(--alert)"></span>Alerting · 2</div>
+      <div class="rows" style="margin-top:6px">
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio alert">P1</span><span class="mname">payments-api · p99 latency</span>
+            <span class="delta alert">×3.2 vs last wk</span>
+            <span class="mval alert">842</span>
+          </div>
+          <svg class="spark" data-series="pay" data-color="alert" data-threshold="0.55" data-markers="0.57"></svg>
+        </div>
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio alert">P2</span><span class="mname">checkout · 5xx rate</span>
+            <span class="delta alert">×4.8</span>
+            <span class="mval alert">4.1</span>
+          </div>
+          <svg class="spark" data-series="chk" data-color="alert" data-threshold="0.30" data-markers="0.57"></svg>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="group-h"><span class="dot" style="background:var(--ok)"></span>Healthy · 1</div>
+      <div class="rows" style="margin-top:6px">
+        <div class="mrow">
+          <div class="line">
+            <svg width="9" height="9" class="chev i-chev"></svg>
+            <span class="prio" style="color:var(--ok);background:rgba(77,230,128,0.15)">P4</span>
+            <span class="mname">payments · settlement job duration</span>
+            <span class="mval" style="color:var(--ok)">Healthy</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="fresh" style="margin-top:2px">
+      <svg width="10" height="10" class="i-clock"></svg>
+      checked 3s ago · every 15s
+      <span class="right">⌥⌘D</span>
+    </div>
+
+    <div class="footer">
+      <div class="fbtn"><svg width="13" height="13" class="i-gear"></svg>Settings</div>
+      <div class="fsep"></div>
+      <div class="fbtn" style="color:var(--info)"><svg width="13" height="13" class="i-list"></svg>Back</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-power"></svg>Quit</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SCENE 3: all clear ============ -->
+<div class="stage" id="scene-clear">
+  <div class="menubar">
+    <span class="item active-app"><svg width="15" height="15" class="paw"></svg></span>
+    <span class="item"><svg width="15" height="12" class="i-wifi"></svg></span>
+    <span class="item"><svg width="20" height="11" class="i-batt"></svg></span>
+    <span class="item">Tue Jul 1&nbsp;&nbsp;2:13 PM</span>
+  </div>
+
+  <div class="panel">
+    <div class="hdr">
+      <div class="appicon"><svg width="26" height="26" class="paw"></svg></div>
+      <div>
+        <h1>Datadog Assistant</h1>
+        <div class="pills"><span class="pill ok"><span class="dot"></span>acme-prod</span></div>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab sel"><svg width="16" height="16" class="i-cpu"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-branch"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-moon"></svg></div>
+      <div class="tab"><svg width="16" height="16" class="i-wrench"></svg></div>
+    </div>
+
+    <div>
+      <div class="sect-label">Alert state</div>
+      <div class="cards" style="margin-top:10px">
+        <div class="card"><div class="t"><svg width="12" height="12" class="i-oct"></svg>Alerting</div><div class="v alert" style="color:var(--ink-3)">0</div></div>
+        <div class="card"><div class="t"><svg width="12" height="12" class="i-tri"></svg>Warning</div><div class="v warn" style="color:var(--ink-3)">0</div></div>
+        <div class="card"><div class="t"><svg width="12" height="12" class="i-seal"></svg>Healthy</div><div class="v ok">18</div></div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div>
+      <div class="sect-label">Active monitors</div>
+      <div class="allclear"><svg width="14" height="14" class="i-seal" style="color:var(--ok)"></svg>Nothing firing.</div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div>
+      <div class="sect-label"><svg width="10" height="12" class="i-flame"></svg>Active incidents</div>
+      <div class="none">None open.</div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div>
+      <div class="act-head">
+        <span class="sect-label" style="padding:0">Activity</span>
+        <span class="chip norm"><span class="dot"></span>Normal</span>
+        <span class="right">0 firing</span>
+      </div>
+      <svg class="spark-lg" data-series="act-calm" data-color="ok" style="margin-top:8px"></svg>
+    </div>
+
+    <div class="fresh">
+      <svg width="10" height="10" class="i-clock"></svg>
+      checked 12s ago · every 60s
+      <span class="right">⌥⌘D</span>
+    </div>
+
+    <div class="footer">
+      <div class="fbtn"><svg width="13" height="13" class="i-gear"></svg>Settings</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-list"></svg>List</div>
+      <div class="fsep"></div>
+      <div class="fbtn"><svg width="13" height="13" class="i-power"></svg>Quit</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SCENE 4: actionable notifications ============ -->
+<div class="stage notif-stage" id="scene-notify">
+  <div class="notif">
+    <div class="top">
+      <div class="icon"><svg width="20" height="20" class="paw"></svg></div>
+      <div>
+        <div class="title">P1 · payments-api · p99 latency</div>
+        <div class="body">Alerting on prod-pay-7, prod-pay-9</div>
+      </div>
+      <span class="when">now</span>
+    </div>
+    <div class="actions">
+      <span class="abtn"><svg width="11" height="11" class="i-ext"></svg>Open in Datadog</span>
+      <span class="abtn"><svg width="11" height="11" class="i-mute"></svg>Mute 1h</span>
+    </div>
+  </div>
+
+  <div class="notif" style="opacity:0.92">
+    <div class="top">
+      <div class="icon"><svg width="20" height="20" class="paw"></svg></div>
+      <div>
+        <div class="title" style="color:var(--ok)">Recovered · checkout · 5xx rate</div>
+        <div class="body">Back to OK</div>
+      </div>
+      <span class="when">2m</span>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- icons (SF-Symbol stand-ins, stroke = currentColor) ---------- */
+const ICONS = {
+  paw: `<g fill="#fff"><ellipse cx="12" cy="15.2" rx="5.6" ry="4.6"/><circle cx="5.2" cy="9.6" r="2.5"/><circle cx="9.6" cy="6.4" r="2.6"/><circle cx="14.4" cy="6.4" r="2.6"/><circle cx="18.8" cy="9.6" r="2.5"/></g>`,
+  'i-wifi': `<g stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round"><path d="M2 5.2a9.5 9.5 0 0 1 11 0"/><path d="M4.4 7.8a6 6 0 0 1 6.2 0"/><circle cx="7.5" cy="10.3" r="1.2" fill="currentColor" stroke="none"/></g>`,
+  'i-batt': `<g><rect x="0.8" y="1" width="15.5" height="9" rx="2.4" stroke="currentColor" fill="none" stroke-width="1.3"/><rect x="2.6" y="2.8" width="9.5" height="5.4" rx="1.2" fill="currentColor"/><rect x="17.4" y="3.6" width="2" height="3.8" rx="1" fill="currentColor" opacity="0.6"/></g>`,
+  'i-moon': `<path d="M13.2 10.4A6 6 0 0 1 5.6 2.8 6.4 6.4 0 1 0 13.2 10.4z" fill="currentColor"/>`,
+  'i-sliders': `<g stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="2" y1="4" x2="14" y2="4"/><line x1="2" y1="8" x2="14" y2="8"/><line x1="2" y1="12" x2="14" y2="12"/><circle cx="10.5" cy="4" r="1.8" fill="currentColor" stroke="none"/><circle cx="5.5" cy="8" r="1.8" fill="currentColor" stroke="none"/><circle cx="11.5" cy="12" r="1.8" fill="currentColor" stroke="none"/></g>`,
+  'i-cpu': `<g stroke="currentColor" stroke-width="1.5" fill="none"><rect x="3.2" y="3.2" width="9.6" height="9.6" rx="2"/><rect x="6" y="6" width="4" height="4" rx="0.8" fill="currentColor" stroke="none"/><g stroke-linecap="round"><line x1="5.5" y1="0.8" x2="5.5" y2="2.6"/><line x1="10.5" y1="0.8" x2="10.5" y2="2.6"/><line x1="5.5" y1="13.4" x2="5.5" y2="15.2"/><line x1="10.5" y1="13.4" x2="10.5" y2="15.2"/><line x1="0.8" y1="5.5" x2="2.6" y2="5.5"/><line x1="0.8" y1="10.5" x2="2.6" y2="10.5"/><line x1="13.4" y1="5.5" x2="15.2" y2="5.5"/><line x1="13.4" y1="10.5" x2="15.2" y2="10.5"/></g></g>`,
+  'i-globe': `<g stroke="currentColor" stroke-width="1.4" fill="none"><circle cx="8" cy="8" r="6.4"/><ellipse cx="8" cy="8" rx="2.9" ry="6.4"/><line x1="1.6" y1="8" x2="14.4" y2="8"/></g>`,
+  'i-bolt': `<path d="M9 1 3.4 9h3.4L7 15l5.6-8H9.2L9 1z" fill="currentColor"/>`,
+  'i-wrench': `<path d="M14.8 4.2a4.2 4.2 0 0 1-5.6 5.2L4 14.6a1.7 1.7 0 0 1-2.4-2.4l5.2-5.2a4.2 4.2 0 0 1 5.2-5.6L9.6 3.8l2.6 2.6 2.6-2.2z" fill="currentColor"/>`,
+  'i-oct': `<g><path d="M4 1h4l3 3v4l-3 3H4L1 8V4z" fill="currentColor" opacity="0.9"/><rect x="5.4" y="3" width="1.2" height="4" rx="0.6" fill="#12161f"/><circle cx="6" cy="8.6" r="0.8" fill="#12161f"/></g>`,
+  'i-tri': `<g><path d="M6 1.2 11.4 10.4H0.6z" fill="currentColor" opacity="0.9"/><rect x="5.4" y="4" width="1.2" height="3.4" rx="0.6" fill="#12161f"/><circle cx="6" cy="8.8" r="0.8" fill="#12161f"/></g>`,
+  'i-seal': `<g><circle cx="6" cy="6" r="5.4" fill="currentColor" opacity="0.9"/><path d="M3.6 6.1 5.3 7.8 8.6 4.4" stroke="#12161f" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>`,
+  'i-flame': `<path d="M5 0.8c2.6 1.9 4.4 4.2 4.4 6.7A4.4 4.4 0 0 1 0.6 7.5c0-1.4 0.7-2.4 1.5-3.4 0.4 0.7 0.9 1.1 1.5 1.3C3.2 3.7 3.8 2.1 5 0.8z" fill="currentColor"/>`,
+  'i-chev': `<path d="M2.5 1 7 4.5 2.5 8" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`,
+  'i-clock': `<g stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"><circle cx="5" cy="5" r="4.2"/><path d="M5 2.8V5l1.6 1.2"/></g>`,
+  'i-timer': `<g stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"><circle cx="5.5" cy="6.2" r="4.2"/><path d="M5.5 4v2.2l1.4 1"/><line x1="4" y1="0.8" x2="7" y2="0.8"/></g>`,
+  'i-ruler': `<g stroke="currentColor" stroke-width="1.2" fill="none"><rect x="0.8" y="3.6" width="9.4" height="3.8" rx="1"/><line x1="3.4" y1="3.6" x2="3.4" y2="5.4"/><line x1="5.5" y1="3.6" x2="5.5" y2="5.4"/><line x1="7.6" y1="3.6" x2="7.6" y2="5.4"/></g>`,
+  'i-server': `<g stroke="currentColor" stroke-width="1.2" fill="none"><rect x="1" y="1.4" width="9" height="3.4" rx="1"/><rect x="1" y="6.2" width="9" height="3.4" rx="1"/><circle cx="3" cy="3.1" r="0.6" fill="currentColor" stroke="none"/><circle cx="3" cy="7.9" r="0.6" fill="currentColor" stroke="none"/></g>`,
+  'i-mute': `<g fill="currentColor"><path d="M1 4.2h2.2L6.4 1.6v7.8L3.2 6.8H1z"/><line x1="8" y1="3.2" x2="10.6" y2="7.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></g>`,
+  'i-ext': `<g stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="2.6" width="7.4" height="7.4" rx="1.4"/><path d="M6.6 1h3.4v3.4M10 1 5.8 5.2"/></g>`,
+  'i-gear': `<g fill="currentColor"><circle cx="6.5" cy="6.5" r="2" fill="none" stroke="currentColor" stroke-width="1.3"/><g stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><line x1="6.5" y1="0.8" x2="6.5" y2="2.4"/><line x1="6.5" y1="10.6" x2="6.5" y2="12.2"/><line x1="0.8" y1="6.5" x2="2.4" y2="6.5"/><line x1="10.6" y1="6.5" x2="12.2" y2="6.5"/><line x1="2.4" y1="2.4" x2="3.6" y2="3.6"/><line x1="9.4" y1="9.4" x2="10.6" y2="10.6"/><line x1="2.4" y1="10.6" x2="3.6" y2="9.4"/><line x1="9.4" y1="3.6" x2="10.6" y2="2.4"/></g></g>`,
+  'i-list': `<g stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><line x1="4.4" y1="2.6" x2="12" y2="2.6"/><line x1="4.4" y1="6.5" x2="12" y2="6.5"/><line x1="4.4" y1="10.4" x2="12" y2="10.4"/><circle cx="1.6" cy="2.6" r="0.9" fill="currentColor" stroke="none"/><circle cx="1.6" cy="6.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="1.6" cy="10.4" r="0.9" fill="currentColor" stroke="none"/></g>`,
+  'i-power': `<g stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"><path d="M3.3 3.5a5 5 0 1 0 6.4 0"/><line x1="6.5" y1="0.8" x2="6.5" y2="5.6"/></g>`,
+  'i-branch': `<g stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"><line x1="5" y1="3.4" x2="5" y2="12.6"/><path d="M5 8.2c3.2 0 6-1.4 6-4.2"/><circle cx="5" cy="2.6" r="1.7" fill="currentColor" stroke="none"/><circle cx="5" cy="13.4" r="1.7" fill="currentColor" stroke="none"/><circle cx="11" cy="2.6" r="1.7" fill="currentColor" stroke="none"/></g>`,
+  'i-stack': `<g fill="currentColor"><path d="M5 0.8 9.6 3 5 5.2 0.4 3z"/><path d="M0.4 5.4 5 7.6 9.6 5.4 5 9.2z" opacity="0.7"/></g>`,
+  'i-pr': `<g stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"><circle cx="3" cy="3" r="1.6"/><circle cx="3" cy="9" r="1.6"/><circle cx="9.4" cy="9" r="1.6"/><line x1="3" y1="4.6" x2="3" y2="7.4"/><path d="M5.4 2.6h2.2a1.8 1.8 0 0 1 1.8 1.8v3"/></g>`,
+  'i-box': `<g stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"><path d="M1.2 3.6 6 1.2l4.8 2.4v4.8L6 10.8 1.2 8.4z"/><path d="M1.2 3.6 6 6l4.8-2.4M6 6v4.8"/></g>`,
+  'i-arrow': `<path d="M2 7 7 2M3.4 2H7v3.6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`,
+  'i-ci-ok': `<g><circle cx="6.5" cy="6.5" r="5.8" fill="#4de680" opacity="0.92"/><path d="M4 6.7 5.9 8.5 9.2 4.8" stroke="#12161f" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>`,
+  'i-ci-fail': `<g><circle cx="6.5" cy="6.5" r="5.8" fill="#ff5966" opacity="0.92"/><path d="M4.6 4.6 8.4 8.4M8.4 4.6 4.6 8.4" stroke="#12161f" stroke-width="1.6" stroke-linecap="round"/></g>`,
+  'i-ci-run': `<g stroke="#ffc74d" stroke-width="1.6" fill="none" stroke-linecap="round"><circle cx="6.5" cy="6.5" r="5.3" stroke-dasharray="2.4 2.6"/><circle cx="6.5" cy="6.5" r="1.6" fill="#ffc74d" stroke="none"/></g>`,
+  'i-mag': `<g stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"><circle cx="5" cy="5" r="3.6"/><line x1="7.8" y1="7.8" x2="10.8" y2="10.8"/></g>`,
+  'i-bell': `<path d="M5.5 1a3.4 3.4 0 0 1 3.4 3.4c0 2 .6 2.9 1.2 3.6H.9c.6-.7 1.2-1.6 1.2-3.6A3.4 3.4 0 0 1 5.5 1zM4.3 9.2a1.3 1.3 0 0 0 2.4 0z" fill="currentColor"/>`,
+  'i-undo': `<g stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M2.4 4.4h5a2.8 2.8 0 1 1 0 5.6H4"/><path d="M4.4 2.2 2.2 4.4l2.2 2.2"/></g>`,
+};
+document.querySelectorAll('svg[class]').forEach(el => {
+  const key = [...el.classList].find(c => ICONS[c]);
+  if (!key) return;
+  const w = el.getAttribute('width') || 16, h = el.getAttribute('height') || 16;
+  const vb = { paw:'0 0 24 24', 'i-wifi':'0 0 15 12', 'i-batt':'0 0 20 11',
+    'i-oct':'0 0 12 12','i-tri':'0 0 12 12','i-seal':'0 0 12 12','i-flame':'0 0 10 12',
+    'i-chev':'0 0 9 9','i-clock':'0 0 10 10','i-timer':'0 0 11 12','i-ruler':'0 0 11 11',
+    'i-server':'0 0 11 11','i-mute':'0 0 11 11','i-ext':'0 0 11 11',
+    'i-gear':'0 0 13 13','i-list':'0 0 13 13','i-power':'0 0 13 13',
+    'i-branch':'0 0 16 16','i-stack':'0 0 10 10','i-pr':'0 0 12 12',
+    'i-box':'0 0 12 12','i-arrow':'0 0 9 9','i-ci-ok':'0 0 13 13',
+    'i-ci-fail':'0 0 13 13','i-ci-run':'0 0 13 13','i-mag':'0 0 12 12',
+    'i-bell':'0 0 11 11','i-undo':'0 0 11 12' }[key] || '0 0 16 16';
+  el.setAttribute('viewBox', vb);
+  el.innerHTML = ICONS[key];
+});
+
+/* ---------- sparklines: 2px stroke, gradient fill, deterministic ---------- */
+const COLORS = { alert:'#ff5966', warn:'#ffc74d', ok:'#4de680', info:'#61b8ff' };
+function rng(seed){ let s = seed >>> 0; return () => { s ^= s<<13; s ^= s>>>7; s ^= s<<17; return ((s>>>0) % 1000)/1000; }; }
+function walk(seed, n, start, drift, spikeEvery=0, spikeAmp=0){
+  const r = rng(seed); const out = []; let v = start;
+  for (let i=0;i<n;i++){
+    v = Math.max(0.06, Math.min(0.94, v + (r()-0.5)*drift));
+    let y = v;
+    if (spikeEvery && i % spikeEvery === Math.floor(spikeEvery/2)) y = Math.min(0.94, v + spikeAmp*r());
+    out.push(y);
+  }
+  return out;
+}
+const SERIES = {
+  pay:      walk(0xC0FFEE, 48, 0.35, 0.10, 7, 0.45).map((v,i,a)=> i>a.length*0.7 ? Math.min(0.94, v+0.35) : v),
+  chk:      walk(0xBEEF01, 48, 0.45, 0.16, 9, 0.30),
+  kfk:      walk(0x5EED02, 48, 0.45, 0.12, 6, 0.25),
+  auth:     walk(0xFACE03, 48, 0.50, 0.09),
+  'act-hot': walk(0xACE704, 96, 0.30, 0.07).map((v,i,a)=> i>a.length*0.6 ? Math.min(0.9, v+0.30) : v),
+  'act-calm': walk(0xCA1105, 96, 0.18, 0.05),
+};
+document.querySelectorAll('.spark, .spark-lg').forEach(el => {
+  const pts = SERIES[el.dataset.series]; const color = COLORS[el.dataset.color];
+  const W = 100, H = 100;
+  el.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  el.setAttribute('preserveAspectRatio', 'none');
+  const gid = 'g' + el.dataset.series + Math.floor(Math.random()*1e6);
+  const line = pts.map((v,i)=> `${(i/(pts.length-1)*W).toFixed(2)},${((1-v)*H).toFixed(2)}`).join(' ');
+  const t = parseFloat(el.dataset.threshold);
+  const guide = Number.isFinite(t)
+    ? `<line x1="0" y1="${((1-t)*H).toFixed(2)}" x2="${W}" y2="${((1-t)*H).toFixed(2)}"
+        stroke="rgba(255,255,255,0.35)" stroke-width="1" stroke-dasharray="3 3"
+        vector-effect="non-scaling-stroke"/>`
+    : '';
+  const markers = (el.dataset.markers || '').split(',').map(parseFloat).filter(Number.isFinite)
+    .map(m => {
+      const x = (m*W).toFixed(2);
+      return `<line x1="${x}" y1="0" x2="${x}" y2="${H}" stroke="rgba(97,184,255,0.55)"
+          stroke-width="1" vector-effect="non-scaling-stroke"/>
+        <line x1="${x}" y1="6" x2="${x}" y2="6.01" stroke="#61b8ff" stroke-width="6"
+          stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
+    }).join('');
+  el.innerHTML = `
+    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${color}" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="${color}" stop-opacity="0"/>
+    </linearGradient></defs>
+    <polygon points="0,${H} ${line} ${W},${H}" fill="url(#${gid})"/>
+    ${guide}${markers}
+    <polyline points="${line}" fill="none" stroke="${color}" stroke-width="2"
+      stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
+});
+</script>
+</body>
+</html>

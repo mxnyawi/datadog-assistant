@@ -1,0 +1,826 @@
+import AppKit
+import SwiftUI
+
+@MainActor
+final class SettingsWindowController: NSObject, NSWindowDelegate {
+    private var window: NSWindow?
+    private let onSave: () -> Void
+
+    init(onSave: @escaping () -> Void) {
+        self.onSave = onSave
+    }
+
+    func show() {
+        if window == nil {
+            let host = NSHostingController(rootView: SettingsView(onSave: { [weak self] in
+                self?.onSave()
+            }))
+            let window = NSWindow(contentViewController: host)
+            window.title = "Datadog Assistant Settings"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            window.center()
+            self.window = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+    }
+}
+
+/// Tabbed settings: each concern gets its own pane instead of one long
+/// scroll. Changes that affect polling call onSave (which reloads the source);
+/// pickers and toggles persist immediately — no hidden "unsaved" state.
+struct SettingsView: View {
+    let onSave: () -> Void
+
+    var body: some View {
+        TabView {
+            SourceSettingsTab(onSave: onSave)
+                .tabItem { Label("Source", systemImage: "key.fill") }
+            FilterSettingsTab(onSave: onSave)
+                .tabItem { Label("Filters", systemImage: "line.3.horizontal.decrease.circle") }
+            NotificationSettingsTab()
+                .tabItem { Label("Notifications", systemImage: "bell.badge.fill") }
+            JiraSettingsTab()
+                .tabItem { Label("Jira", systemImage: "ticket.fill") }
+            GitHubSettingsTab(onSave: onSave)
+                .tabItem { Label("GitHub", systemImage: "arrow.triangle.pull") }
+        }
+        .frame(width: 470)
+        .padding(12)
+    }
+}
+
+// MARK: - Source (credentials)
+
+private struct SourceSettingsTab: View {
+    let onSave: () -> Void
+
+    @State private var apiKey = ""
+    @State private var appKey = ""
+    @State private var site = Credentials.currentSite()
+    @State private var error: String?
+    @State private var hasExistingKeys = Credentials.load() != nil
+    @State private var lastPassEntry = ""
+    @State private var hasLastPass = LastPassConfig.load() != nil
+    @State private var lastPassLoggedIn = false
+    @State private var showLastPassSetup = false
+    @State private var authMode = AuthMode.current
+    @State private var subdomain = Credentials.currentSubdomain()
+    @State private var browser = LinkOpener.currentBrowser()
+    @State private var apiKeyCmd = UserDefaults.standard.string(forKey: "apiKeyCmd") ?? ""
+    @State private var appKeyCmd = UserDefaults.standard.string(forKey: "appKeyCmd") ?? ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Credential source")
+                .font(.headline)
+            // LastPass first — the shared team vault is the recommended path.
+            Picker("", selection: Binding(get: { authMode }, set: { setMode($0) })) {
+                Text("LastPass").tag(AuthMode.lastPass)
+                Text("API keys").tag(AuthMode.keychain)
+                Text("Sample data").tag(AuthMode.sample)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            Text(authSourceHint)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            switch authMode {
+            case .sample:
+                Text("Running on sample data — nothing to configure. Pick LastPass "
+                     + "or API keys above to connect your org.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .keychain:
+                keychainSection
+            case .lastPass:
+                lastPassSection
+            }
+
+            if authMode != .sample {
+                Divider()
+                linksSection
+            }
+
+            if let error {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(height: 380)
+        .onAppear {
+            if let lastPass = LastPassConfig.load() {
+                lastPassEntry = lastPass.entry
+                lastPassLoggedIn = LastPass.isLoggedIn()
+            }
+        }
+        .sheet(isPresented: $showLastPassSetup) {
+            LastPassSetupView { config in
+                config.save()
+                lastPassEntry = config.entry
+                hasLastPass = true
+                lastPassLoggedIn = LastPass.isLoggedIn()
+                setMode(.lastPass)
+            }
+        }
+    }
+
+    private var keychainSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(hasExistingKeys
+                 ? "Keys are stored in the macOS Keychain. Enter new values to replace them."
+                 : "Stored in the macOS Keychain, never written to disk in plain text. "
+                   + "App key needs monitors_read (plus monitors_write for mute, "
+                   + "incident_read and metrics_read for full features).")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Form {
+                SecureField("API key", text: $apiKey)
+                SecureField("Application key", text: $appKey)
+                Picker("Site", selection: $site) {
+                    ForEach(Credentials.knownSites, id: \.self) { Text($0) }
+                }
+                TextField("API key command (optional, e.g. op read op://…)", text: $apiKeyCmd)
+                    .onSubmit { saveCommands() }
+                TextField("App key command (optional)", text: $appKeyCmd)
+                    .onSubmit { saveCommands() }
+            }
+            HStack {
+                if hasExistingKeys {
+                    Button("Remove keys", role: .destructive) {
+                        Credentials.clear()
+                        hasExistingKeys = false
+                        setMode(.sample)
+                    }
+                }
+                Spacer()
+                Button("Save keys") { saveKeys() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(apiKey.isEmpty || appKey.isEmpty)
+            }
+        }
+    }
+
+    private var lastPassSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(hasLastPass
+                 ? "Keys are fetched from this entry at runtime via the lpass CLI — "
+                   + (lastPassLoggedIn ? "logged in ✓" : "run Set up… to unlock the vault.")
+                 : "Fetch the team's Datadog keys (and GitHub / Jira tokens) from a "
+                   + "LastPass secure note instead of storing them locally. Set up… "
+                   + "installs the lpass CLI and logs you in.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Form {
+                TextField("Entry (e.g. Shared-SRE/datadog-assistant)", text: $lastPassEntry)
+            }
+            HStack {
+                if hasLastPass {
+                    Button("Disable LastPass", role: .destructive) {
+                        LastPassConfig.clear()
+                        hasLastPass = false
+                        lastPassEntry = ""
+                        setMode(.sample)
+                    }
+                }
+                Spacer()
+                Button("Set up…") { showLastPassSetup = true }
+                Button("Use LastPass") { saveLastPass() }
+                    .disabled(lastPassEntry.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+    }
+
+    /// Org subdomain for browser links. With the generic app.* host, orgs
+    /// that use a vanity subdomain get bounced to a login page on every link.
+    private var linksSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Form {
+                TextField("Org subdomain (yourorg → yourorg.\(Credentials.currentSite()))",
+                          text: $subdomain)
+                    .onSubmit { onSave() }   // rebuild monitor links now
+                Picker("Open links in", selection: $browser) {
+                    Text("System default").tag("")
+                    ForEach(LinkOpener.installedBrowsers(), id: \.self) { Text($0).tag($0) }
+                }
+            }
+            Text("Browser links open at \(subdomain.isEmpty ? "app" : subdomain)"
+                 + ".\(Credentials.currentSite()) — set your org's subdomain so "
+                 + "Datadog doesn't re-ask you to log in.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onChange(of: subdomain) { newValue in
+            Credentials.setSubdomain(newValue)
+        }
+        .onChange(of: browser) { newValue in
+            LinkOpener.setBrowser(newValue)
+        }
+    }
+
+    private var authSourceHint: String {
+        switch authMode {
+        case .sample:
+            return "Running on sample data. Choose Keychain or LastPass to connect real data."
+        case .keychain:
+            return "Using keys stored in the macOS Keychain."
+        case .lastPass:
+            return lastPassLoggedIn
+                ? "Using the shared LastPass vault — keys are fetched at runtime, nothing is stored locally."
+                : "LastPass selected. Run Set up… (or `lpass login`) to unlock the vault."
+        }
+    }
+
+    /// Persist the chosen source, keep the control in sync, and reload.
+    private func setMode(_ mode: AuthMode) {
+        authMode = mode
+        AuthMode.set(mode)
+        onSave()
+    }
+
+    private func saveCommands() {
+        UserDefaults.standard.set(apiKeyCmd, forKey: "apiKeyCmd")
+        UserDefaults.standard.set(appKeyCmd, forKey: "appKeyCmd")
+        onSave()
+    }
+
+    private func saveKeys() {
+        do {
+            try Credentials(apiKey: apiKey, appKey: appKey, site: site).save()
+            hasExistingKeys = true
+            apiKey = ""
+            appKey = ""
+            setMode(.keychain)
+        } catch {
+            self.error = "Keychain write failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func saveLastPass() {
+        var config = LastPassConfig.load() ?? LastPassConfig(entry: "")
+        config.entry = lastPassEntry.trimmingCharacters(in: .whitespaces)
+        guard !config.entry.isEmpty else { return }
+        config.save()
+        hasLastPass = true
+        lastPassLoggedIn = LastPass.isLoggedIn()
+        setMode(.lastPass)
+    }
+}
+
+// MARK: - Filters
+
+private struct FilterSettingsTab: View {
+    let onSave: () -> Void
+
+    @State private var filters = FilterConfig.load()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Monitor filters")
+                .font(.headline)
+            Text("Only monitors matching these filters are fetched and shown — "
+                 + "same as the Python app's tag/name filter. Tags are OR'd; the "
+                 + "quickest way to pick them is the Filter dropdown in the panel.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Form {
+                TextField("Name contains", text: $filters.name)
+            }
+
+            if FilterConfig.knownTags().isEmpty {
+                Text("No tags discovered yet — they appear after the first poll.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                tagPicker
+            }
+
+            if !filters.tags.isEmpty {
+                Text("Active tags: \(filters.tags.joined(separator: ", "))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Button("Clear all filters") {
+                    filters = FilterConfig()
+                    apply()
+                }
+                .disabled(!filters.isActive)
+                Spacer()
+                Button("Apply") { apply() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(height: 340)
+    }
+
+    private var tagPicker: some View {
+        Menu {
+            ForEach(FilterConfig.knownTagsByKey(), id: \.key) { group in
+                Menu(group.key) {
+                    ForEach(group.tags, id: \.self) { tag in
+                        Button {
+                            if let index = filters.tags.firstIndex(of: tag) {
+                                filters.tags.remove(at: index)
+                            } else {
+                                filters.tags.append(tag)
+                            }
+                        } label: {
+                            if filters.tags.contains(tag) {
+                                Label(tag, systemImage: "checkmark")
+                            } else {
+                                Text(tag)
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label(filters.tags.isEmpty ? "Choose tags…" : "\(filters.tags.count) tag(s) selected",
+                  systemImage: "tag.fill")
+        }
+        .fixedSize()
+    }
+
+    private func apply() {
+        filters.save()
+        onSave()
+    }
+}
+
+// MARK: - Notifications
+
+private struct NotificationSettingsTab: View {
+    @State private var settings = NotificationSettings.load()
+    @State private var lastPreviewedSound = NotificationSettings.load().soundName
+
+    private let sounds = NotificationSettings.availableSounds()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Notifications")
+                .font(.headline)
+            Text("Changes apply immediately.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Form {
+                Toggle("Enable notifications", isOn: $settings.enabled)
+                Picker("Style", selection: $settings.style) {
+                    ForEach(NotificationSettings.Style.allCases, id: \.self) {
+                        Text($0.label).tag($0)
+                    }
+                }
+                .disabled(!settings.enabled)
+                Toggle("Notify on warnings", isOn: $settings.notifyOnWarn)
+                    .disabled(!settings.enabled)
+                Toggle("Notify on No Data (likely broken only)", isOn: $settings.notifyOnNoData)
+                    .disabled(!settings.enabled)
+                Toggle("Notify on recovery", isOn: $settings.notifyOnRecovery)
+                    .disabled(!settings.enabled)
+
+                Divider()
+
+                Toggle("Play sound", isOn: $settings.soundEnabled)
+                    .disabled(!settings.enabled)
+                Picker("Alert sound", selection: $settings.soundName) {
+                    Text("System default").tag("")
+                    ForEach(sounds, id: \.self) { Text($0).tag($0) }
+                }
+                .disabled(!settings.enabled || !settings.soundEnabled)
+
+                Divider()
+
+                Picker("Re-notify while still alerting", selection: $settings.renotifyMinutes) {
+                    ForEach(NotificationSettings.renotifyChoices, id: \.self) { minutes in
+                        Text(minutes == 0 ? "Off" : "every \(minutes) min").tag(minutes)
+                    }
+                }
+                .disabled(!settings.enabled)
+                Picker("Daily digest", selection: $settings.digestHour) {
+                    Text("Off").tag(-1)
+                    ForEach([7, 8, 9, 10, 11], id: \.self) { Text("\($0):00").tag($0) }
+                }
+                .disabled(!settings.enabled)
+            }
+
+            DisclosureGroup("Per-priority overrides") {
+                Form {
+                    ForEach([1, 2, 3], id: \.self) { priority in
+                        severityRow(priority)
+                    }
+                }
+                Text("P1 defaults to Both (unmissable popup) nagging every 10 min; "
+                     + "P3 to banner every hour. “Inherit” uses the base settings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .disabled(!settings.enabled)
+
+            HStack {
+                Spacer()
+                Button("Test notification") { NotificationManager.shared.sendTest() }
+                    .disabled(!settings.enabled)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(height: 480)
+        .onChange(of: settings) { newValue in
+            newValue.save()
+            // Instant feedback when trying sounds from the dropdown.
+            if newValue.soundName != lastPreviewedSound {
+                lastPreviewedSound = newValue.soundName
+                if !newValue.soundName.isEmpty, newValue.soundEnabled {
+                    NSSound(named: newValue.soundName)?.play()
+                }
+            }
+        }
+    }
+
+    /// One priority's override row: style + renotify, with "Inherit" tags.
+    private func severityRow(_ priority: Int) -> some View {
+        HStack {
+            Text("P\(priority)")
+                .font(.system(size: 11, weight: .bold))
+                .frame(width: 24, alignment: .leading)
+            Picker("", selection: Binding(
+                get: { settings.severityRules[priority]?.style },
+                set: { settings.severityRules[priority, default: .init()].style = $0 }
+            )) {
+                Text("Inherit").tag(NotificationSettings.Style?.none)
+                ForEach(NotificationSettings.Style.allCases, id: \.self) {
+                    Text($0.label).tag(NotificationSettings.Style?.some($0))
+                }
+            }
+            .labelsHidden()
+            Picker("", selection: Binding(
+                get: { settings.severityRules[priority]?.renotifyMinutes },
+                set: { settings.severityRules[priority, default: .init()].renotifyMinutes = $0 }
+            )) {
+                Text("Inherit").tag(Int?.none)
+                ForEach(NotificationSettings.renotifyChoices, id: \.self) { minutes in
+                    Text(minutes == 0 ? "No re-notify" : "every \(minutes)m").tag(Int?.some(minutes))
+                }
+            }
+            .labelsHidden()
+        }
+    }
+}
+
+// MARK: - Jira
+
+private struct JiraSettingsTab: View {
+    @State private var authMode: JiraConfig.Auth = .oauth
+    @State private var baseURL = ""
+    @State private var email = ""
+    @State private var projectKey = ""
+    @State private var issueType = "Task"
+    @State private var autoCreate = 0
+    @State private var token = ""
+    @State private var clientID = ""
+    @State private var clientSecret = ""
+    @State private var connected = JiraOAuth.isConnected
+    @State private var busy = false
+    @State private var status: String?
+    @State private var isError = false
+
+    private var hasLastPassCreds: Bool {
+        AuthMode.current == .lastPass
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Jira ticketing")
+                .font(.headline)
+
+            Picker("", selection: $authMode) {
+                Text("OAuth (client ID + secret)").tag(JiraConfig.Auth.oauth)
+                Text("API token").tag(JiraConfig.Auth.token)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            if authMode == .oauth {
+                oauthSection
+            } else {
+                tokenSection
+            }
+
+            Form {
+                TextField("Project key (e.g. OPS)", text: $projectKey)
+                Picker("Issue type", selection: $issueType) {
+                    ForEach(JiraConfig.issueTypes, id: \.self) { Text($0) }
+                }
+                Picker("Auto-create on alert", selection: $autoCreate) {
+                    Text("Off").tag(0)
+                    Text("P1 only").tag(1)
+                    Text("P1 + P2").tag(2)
+                }
+            }
+
+            if let status {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(isError ? .red : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Button("Disable Jira", role: .destructive) {
+                    JiraConfig.clear()
+                    connected = false
+                    baseURL = ""; email = ""; projectKey = ""; token = ""
+                    clientID = ""; clientSecret = ""
+                    status = nil
+                }
+                if busy { ProgressView().controlSize(.small) }
+                Spacer()
+                Button("Test") { testConnection() }
+                    .disabled(busy || projectKey.isEmpty)
+                Button("Save") { save() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(busy || projectKey.isEmpty
+                              || (authMode == .token && (baseURL.isEmpty || email.isEmpty)))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(height: 420)
+        .onAppear { loadStored() }
+    }
+
+    private var oauthSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(connected
+                 ? "Connected ✓ — tickets are created via OAuth"
+                   + (JiraOAuth.siteURL().map { " at \($0)" } ?? "") + "."
+                 : hasLastPassCreds
+                   ? "Client ID and secret come from the LastPass note's jiraClientID / "
+                     + "jiraClientSecret fields — leave the fields blank and hit Connect."
+                   : "Enter your Atlassian OAuth app's client ID and secret (redirect URL "
+                     + "must be http://localhost:8917/callback), then Connect.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Form {
+                TextField(hasLastPassCreds ? "Client ID (blank = LastPass jiraClientID)"
+                                           : "Client ID", text: $clientID)
+                SecureField(hasLastPassCreds ? "Client secret (blank = LastPass jiraClientSecret)"
+                                             : "Client secret", text: $clientSecret)
+                TextField("Site (yourorg.atlassian.net — picks the right org)", text: $baseURL)
+            }
+            HStack {
+                Spacer()
+                Button(connected ? "Reconnect…" : "Connect Jira…") { connect() }
+                    .disabled(busy)
+            }
+        }
+    }
+
+    private var tokenSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Legacy mode: email + API token Basic auth. In LastPass mode the token "
+                 + "can come from the note's jiraToken field.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Form {
+                TextField("Site (yourorg.atlassian.net)", text: $baseURL)
+                TextField("Account email", text: $email)
+                SecureField(hasLastPassCreds ? "API token (blank = LastPass jiraToken field)"
+                                             : "API token", text: $token)
+            }
+        }
+    }
+
+    private func loadStored() {
+        let config = JiraConfig.loadStored()
+        authMode = config.auth
+        baseURL = config.baseURL
+        email = config.email
+        projectKey = config.projectKey
+        issueType = config.issueType
+        autoCreate = config.autoCreatePriority
+        clientID = JiraOAuth.storedClientID()
+    }
+
+    private func currentConfig() -> JiraConfig {
+        var config = JiraConfig(baseURL: baseURL, projectKey: projectKey)
+        config.auth = authMode
+        config.email = email
+        config.issueType = issueType
+        config.autoCreatePriority = autoCreate
+        return config
+    }
+
+    private func save() {
+        let config = currentConfig()
+        config.save()
+        do {
+            if authMode == .oauth, !clientID.isEmpty {
+                try JiraOAuth.saveClientCredentials(id: clientID, secret: clientSecret)
+                clientSecret = ""
+            }
+            if authMode == .token, !token.isEmpty {
+                try JiraConfig.saveToken(token)
+                token = ""
+            }
+        } catch {
+            status = "Keychain write failed: \(error.localizedDescription)"
+            isError = true
+            return
+        }
+        status = authMode == .oauth && !connected
+            ? "Saved — now hit Connect to authorize." : "Saved."
+        isError = false
+    }
+
+    /// Save first (so credentials are in place), then run the browser flow.
+    private func connect() {
+        save()
+        guard !isError else { return }
+        busy = true; status = "Opening browser for Atlassian consent…"; isError = false
+        let host = baseURL
+        Task {
+            do {
+                let site = try await JiraOAuth.connect(preferredHost: host)
+                connected = true
+                if baseURL.isEmpty {
+                    baseURL = site.replacingOccurrences(of: "https://", with: "")
+                }
+                currentConfig().save()
+                status = "Connected ✓ (\(site))"
+                isError = false
+            } catch {
+                status = error.localizedDescription
+                isError = true
+            }
+            busy = false
+        }
+    }
+
+    private func testConnection() {
+        save()
+        guard !isError else { return }
+        busy = true; status = "Testing…"; isError = false
+        let config = currentConfig()
+        Task {
+            let report = await JiraClient.connectionTest(config: config)
+            status = report
+            isError = report.lowercased().contains("failed")
+            busy = false
+        }
+    }
+}
+
+// MARK: - GitHub
+
+private struct GitHubSettingsTab: View {
+    let onSave: () -> Void
+
+    @State private var gitHubToken = ""
+    @State private var gitHubRepos = ""
+    @State private var hasGitHub = GitHubConfig.load() != nil
+    @State private var ghAvailable = false
+    @State private var ghToken = false
+    @State private var suggestedRepos: [String] = []
+    @State private var error: String?
+
+    /// Repos-only saves are fine whenever a token resolves elsewhere: the
+    /// LastPass note or the gh CLI.
+    private var tokenOptional: Bool { AuthMode.current == .lastPass || ghToken }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("GitHub — change correlation & CI")
+                .font(.headline)
+            Text(hasGitHub
+                 ? "Configured — merges and CI pipeline runs feed the Changes tab. "
+                   + "Enter new values to replace."
+                 : "Repos to watch for merges and CI runs. Map a repo to a service with "
+                   + "service=owner/repo; bare owner/repo entries apply org-wide. "
+                   + "Comma-separated.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // gh CLI status: when it's logged in, no token is needed at all.
+            HStack(spacing: 6) {
+                Image(systemName: ghToken ? "checkmark.circle.fill"
+                      : ghAvailable ? "exclamationmark.circle" : "circle.dashed")
+                    .foregroundStyle(ghToken ? .green : .secondary)
+                Text(ghToken
+                     ? "gh CLI detected and logged in — token field is optional."
+                     : ghAvailable
+                       ? "gh CLI found but not logged in — run `gh auth login`, or paste a token."
+                       : "No gh CLI — paste a fine-grained token (or add githubToken to the "
+                         + "LastPass note).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Form {
+                SecureField(tokenOptional ? "GitHub token (optional)" : "GitHub token",
+                            text: $gitHubToken)
+                TextField("Repos (payments=acme/pay-api, acme/platform)", text: $gitHubRepos)
+            }
+
+            if !suggestedRepos.isEmpty {
+                Menu {
+                    ForEach(suggestedRepos, id: \.self) { repo in
+                        Button(repo) { appendRepo(repo) }
+                    }
+                } label: {
+                    Label("Add from your gh repos…", systemImage: "plus.circle")
+                        .font(.caption)
+                }
+                .fixedSize()
+            }
+
+            if let error {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+
+            HStack {
+                if hasGitHub {
+                    Button("Disable GitHub", role: .destructive) {
+                        GitHubConfig.clear()
+                        hasGitHub = false
+                        onSave()
+                    }
+                }
+                Spacer()
+                Button("Save") { save() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(gitHubRepos.isEmpty || (gitHubToken.isEmpty && !tokenOptional))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(height: 360)
+        .onAppear { probeGH() }
+    }
+
+    private func save() {
+        let repoSpecs = gitHubRepos
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !repoSpecs.isEmpty else { return }
+        do {
+            // Blank token in LastPass mode: repos persist, the token resolves
+            // from the vault's githubToken field at load time.
+            if gitHubToken.isEmpty {
+                GitHubConfig.saveRepoSpecsOnly(repoSpecs)
+            } else {
+                try GitHubConfig(token: gitHubToken, repoSpecs: repoSpecs).save()
+                gitHubToken = ""
+            }
+            hasGitHub = true
+            onSave()
+        } catch {
+            self.error = "Keychain write failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Detect the gh CLI + login state and fetch repo suggestions, off the
+    /// main thread (each is a subprocess).
+    private func probeGH() {
+        Task.detached {
+            let available = GitHubCLI.isInstalled
+            let token = available && GitHubCLI.authToken() != nil
+            let repos = token ? GitHubCLI.listRepos() : []
+            await MainActor.run {
+                ghAvailable = available
+                ghToken = token
+                suggestedRepos = repos
+            }
+        }
+    }
+
+    private func appendRepo(_ repo: String) {
+        let existing = gitHubRepos.trimmingCharacters(in: .whitespaces)
+        guard !existing.contains(repo) else { return }
+        gitHubRepos = existing.isEmpty ? repo : "\(existing), \(repo)"
+    }
+}

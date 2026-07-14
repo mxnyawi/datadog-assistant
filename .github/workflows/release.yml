@@ -1,9 +1,13 @@
 name: Release
 
-# Build "Datadog Assistant.app" on a macOS runner and publish it to a GitHub
-# Release, so users can download + double-click without a local Mac build.
-# Triggers on a v* tag (or manually). The asset name matches the website's
-# download button: releases/latest/download/Datadog-Assistant-Installer.zip
+# Build the native SwiftUI "Datadog Assistant.app" on a macOS runner and
+# publish it to a GitHub Release, so users can download + double-click without
+# ever building locally. Triggers on a v* tag (or manually).
+#
+# Assets:
+#   Datadog-Assistant.dmg        — drag-to-Applications disk image (preferred)
+#   Datadog-Assistant.zip        — plain zip of the .app
+#   *.sha256                     — checksums for both
 
 on:
   push:
@@ -11,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v0.3.0)"
+        description: "Tag to release (e.g. v0.4.0)"
         required: true
 
 permissions:
@@ -24,25 +28,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 3.12: the native stack (pyobjc/rumps/py2app/pywebview) is unreliable on
-      # 3.13+, so pin a stable interpreter for the bundle.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Build Datadog Assistant.app (SwiftPM)
+        run: ./Scripts/build-app.sh
+        working-directory: swift
 
-      - name: Build Datadog Assistant.app
-        run: ./installer/build_menubar_app.sh
+      - name: Make DMG (drag to Applications)
+        run: |
+          mkdir -p dmg-root
+          cp -R "swift/build/Datadog Assistant.app" dmg-root/
+          ln -s /Applications dmg-root/Applications
+          hdiutil create -volname "Datadog Assistant" -srcfolder dmg-root \
+            -ov -format UDZO "Datadog-Assistant.dmg"
 
       - name: Zip the app
         run: |
-          ditto -c -k --keepParent "dist/Datadog Assistant.app" \
-            "Datadog-Assistant-Installer.zip"
+          ditto -c -k --keepParent "swift/build/Datadog Assistant.app" \
+            "Datadog-Assistant.zip"
 
-      - name: SHA-256 checksum
+      - name: SHA-256 checksums
         run: |
-          shasum -a 256 "Datadog-Assistant-Installer.zip" \
-            > "Datadog-Assistant-Installer.zip.sha256"
-          cat "Datadog-Assistant-Installer.zip.sha256"
+          shasum -a 256 "Datadog-Assistant.dmg" > "Datadog-Assistant.dmg.sha256"
+          shasum -a 256 "Datadog-Assistant.zip" > "Datadog-Assistant.zip.sha256"
+          cat ./*.sha256
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -51,5 +58,7 @@ jobs:
           name: Datadog Assistant ${{ github.event.inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: |
-            Datadog-Assistant-Installer.zip
-            Datadog-Assistant-Installer.zip.sha256
+            Datadog-Assistant.dmg
+            Datadog-Assistant.dmg.sha256
+            Datadog-Assistant.zip
+            Datadog-Assistant.zip.sha256

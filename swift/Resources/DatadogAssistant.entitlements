@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Hardened-runtime baseline for notarization. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <false/>
+
+    <!--
+      Critical alerts (P1 banners that bypass Focus/Do Not Disturb) need
+      Apple's approval per bundle ID. Apply at:
+      https://developer.apple.com/contact/request/notifications-critical-alerts-entitlement/
+      Once granted, add here:
+
+      <key>com.apple.developer.usernotifications.critical-alerts</key>
+      <true/>
+
+      Signing with the key BEFORE approval makes notarization fail, so it
+      ships commented out.
+    -->
+</dict>
+</plist>

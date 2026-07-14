@@ -68,7 +68,7 @@ LaunchAgent (`~/Library/LaunchAgents/com.nour.datadog-assistant.plist`).
   ```
   then ensure `config.json` has `"auth": "keys"` and `"use_keychain": true`.
 - The app also supports `*_cmd` config keys to shell out to a password manager
-  (1Password, LastPass, Vault…) — see the README "Company setups" section.
+  (1Password, LastPass, Vault…) — see the "Company setups" section in docs/legacy-python-app.md.
 
 ## Verify the install (read-only, no GUI clicks needed)
 
