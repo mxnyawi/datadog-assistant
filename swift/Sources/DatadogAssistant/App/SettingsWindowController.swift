@@ -5,16 +5,19 @@ import SwiftUI
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private let onSave: () -> Void
+    private let monitoredServices: () -> [String]
 
-    init(onSave: @escaping () -> Void) {
+    init(onSave: @escaping () -> Void,
+         monitoredServices: @escaping () -> [String] = { [] }) {
         self.onSave = onSave
+        self.monitoredServices = monitoredServices
     }
 
     func show() {
         if window == nil {
-            let host = NSHostingController(rootView: SettingsView(onSave: { [weak self] in
-                self?.onSave()
-            }))
+            let host = NSHostingController(rootView: SettingsView(
+                onSave: { [weak self] in self?.onSave() },
+                monitoredServices: { [weak self] in self?.monitoredServices() ?? [] }))
             let window = NSWindow(contentViewController: host)
             window.title = "Datadog Assistant Settings"
             window.styleMask = [.titled, .closable]
@@ -33,6 +36,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 /// pickers and toggles persist immediately — no hidden "unsaved" state.
 struct SettingsView: View {
     let onSave: () -> Void
+    var monitoredServices: () -> [String] = { [] }
 
     var body: some View {
         TabView {
@@ -44,7 +48,7 @@ struct SettingsView: View {
                 .tabItem { Label("Notifications", systemImage: "bell.badge.fill") }
             JiraSettingsTab()
                 .tabItem { Label("Jira", systemImage: "ticket.fill") }
-            GitHubSettingsTab(onSave: onSave)
+            GitHubSettingsTab(onSave: onSave, monitoredServices: monitoredServices)
                 .tabItem { Label("GitHub", systemImage: "arrow.triangle.pull") }
         }
         .frame(width: 470)
@@ -782,6 +786,7 @@ private struct JiraSettingsTab: View {
 
 private struct GitHubSettingsTab: View {
     let onSave: () -> Void
+    var monitoredServices: () -> [String] = { [] }
 
     @State private var gitHubToken = ""
     @State private var gitHubRepos = ""
@@ -863,13 +868,32 @@ private struct GitHubSettingsTab: View {
                     if loadingRepos { ProgressView().controlSize(.small) }
                 }
 
+                // The one-click path: match this owner's repos against the
+                // service: tags on your monitors and fill them in for you.
+                let services = monitoredServices()
+                if !services.isEmpty {
+                    Button {
+                        autofillFromMonitors(services: services)
+                    } label: {
+                        Label("Auto-fill from \(services.count) monitored "
+                              + "service\(services.count == 1 ? "" : "s")",
+                              systemImage: "wand.and.stars")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.pressable)
+                    .foregroundColor(Theme.info)
+                    .disabled(loadingRepos)
+                    .help("Match \(currentOwnerLabel)'s repos to your monitors' "
+                          + "service tags and add the ones that line up.")
+                }
+
                 if !suggestedRepos.isEmpty {
                     Menu {
                         ForEach(suggestedRepos, id: \.self) { repo in
                             Button(repo) { appendRepo(repo) }
                         }
                     } label: {
-                        Label("Add from \(currentOwnerLabel)…", systemImage: "plus.circle")
+                        Label("Or add manually from \(currentOwnerLabel)…", systemImage: "plus.circle")
                             .font(.caption)
                     }
                     .fixedSize()
@@ -964,4 +988,80 @@ private struct GitHubSettingsTab: View {
         guard !existing.contains(repo) else { return }
         gitHubRepos = existing.isEmpty ? repo : "\(existing), \(repo)"
     }
+
+    /// Fetch the chosen owner's repos and map them to the monitors' services,
+    /// filling the repos field with `service=owner/repo` specs. The user still
+    /// reviews and hits Save, since fuzzy name matching can mis-guess.
+    private func autofillFromMonitors(services: [String]) {
+        let owner = currentOwner
+        loadingRepos = true
+        error = nil
+        Task.detached {
+            let repos = GitHubCLI.listRepos(owner: owner)
+            let specs = matchReposToServices(services: services, repos: repos)
+            await MainActor.run {
+                loadingRepos = false
+                suggestedRepos = repos
+                if specs.isEmpty {
+                    error = "No repos in \(currentOwnerLabel) matched your monitored "
+                        + "services (\(services.prefix(4).joined(separator: ", "))…). "
+                        + "Add them manually below."
+                } else {
+                    mergeSpecs(specs)
+                }
+            }
+        }
+    }
+
+    /// Merge new `service=owner/repo` specs into the field, skipping any whose
+    /// repo is already listed.
+    private func mergeSpecs(_ specs: [String]) {
+        var current = gitHubRepos
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        func repoPart(_ s: String) -> String { s.split(separator: "=").last.map(String.init) ?? s }
+        let have = Set(current.map(repoPart))
+        for spec in specs where !have.contains(repoPart(spec)) {
+            current.append(spec)
+        }
+        gitHubRepos = current.joined(separator: ", ")
+    }
+
+}
+
+/// Match each monitored service to the best-named repo. Normalizes both sides
+/// (lowercase, drop common suffixes like -api/-service, keep only
+/// alphanumerics) and prefers an exact name match over a containment one, so
+/// service "payments" lines up with "acme/payments-api". Each repo is used at
+/// most once. Free function so it's callable from a detached task without any
+/// actor-isolation ceremony.
+private func matchReposToServices(services: [String], repos: [String]) -> [String] {
+    func norm(_ s: String) -> String {
+        var x = s.lowercased()
+        for suffix in ["-api", "-service", "-svc", "-app", "-backend", "-server", "-worker"]
+        where x.hasSuffix(suffix) { x = String(x.dropLast(suffix.count)) }
+        return x.filter { $0.isLetter || $0.isNumber }
+    }
+    var specs: [String] = []
+    var usedRepos = Set<String>()
+    for service in services {
+        let ns = norm(service)
+        guard !ns.isEmpty else { continue }
+        var best: String?
+        var bestScore = 0
+        for repo in repos where !usedRepos.contains(repo) {
+            let name = repo.split(separator: "/").last.map(String.init) ?? repo
+            let nr = norm(name)
+            var score = 0
+            if nr == ns { score = 3 }
+            else if nr.contains(ns) || ns.contains(nr) { score = 2 }
+            if score > bestScore { bestScore = score; best = repo }
+        }
+        if let best, bestScore >= 2 {
+            specs.append("\(service)=\(best)")
+            usedRepos.insert(best)
+        }
+    }
+    return specs
 }

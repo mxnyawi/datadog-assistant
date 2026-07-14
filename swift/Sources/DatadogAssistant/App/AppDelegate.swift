@@ -70,9 +70,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         if settingsController == nil {
-            settingsController = SettingsWindowController {
-                NotificationCenter.default.post(name: .reloadCredentials, object: nil)
-            }
+            settingsController = SettingsWindowController(
+                onSave: {
+                    NotificationCenter.default.post(name: .reloadCredentials, object: nil)
+                },
+                monitoredServices: { [weak self] in
+                    guard let self else { return [] }
+                    return Array(Set(self.store.snapshot.monitors.compactMap { $0.service })).sorted()
+                })
         }
         settingsController?.show()
     }
