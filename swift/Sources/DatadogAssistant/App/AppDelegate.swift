@@ -12,6 +12,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activityToken: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Wire up Edit-menu shortcuts (⌘V/⌘X/⌘C/⌘A) — an accessory app has no
+        // menu bar, so text fields can't paste without this.
+        MainMenu.install()
+
         activityToken = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiatedAllowingIdleSystemSleep],
             reason: "Polling Datadog monitors")
