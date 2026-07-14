@@ -789,7 +789,20 @@ private struct GitHubSettingsTab: View {
     @State private var ghAvailable = false
     @State private var ghToken = false
     @State private var suggestedRepos: [String] = []
+    @State private var orgs: [String] = []
+    @State private var selectedOwner = ""     // "" = your own repos
+    @State private var customOwner = ""       // free-text org/owner not in the list
+    @State private var loadingRepos = false
     @State private var error: String?
+
+    /// The owner whose repos the suggestion list should show.
+    private var currentOwner: String {
+        let custom = customOwner.trimmingCharacters(in: .whitespaces)
+        return custom.isEmpty ? selectedOwner : custom
+    }
+    private var currentOwnerLabel: String {
+        currentOwner.isEmpty ? "your repos" : currentOwner
+    }
 
     /// Repos-only saves are fine whenever a token resolves elsewhere: the
     /// LastPass note or the gh CLI.
@@ -831,16 +844,42 @@ private struct GitHubSettingsTab: View {
                 TextField("Repos (payments=acme/pay-api, acme/platform)", text: $gitHubRepos)
             }
 
-            if !suggestedRepos.isEmpty {
-                Menu {
-                    ForEach(suggestedRepos, id: \.self) { repo in
-                        Button(repo) { appendRepo(repo) }
+            // Pull repo suggestions from your own account or any organization
+            // you belong to — most org repos aren't owned by your user.
+            if ghToken {
+                HStack(spacing: 8) {
+                    Picker("From", selection: $selectedOwner) {
+                        Text("Your repos").tag("")
+                        ForEach(orgs, id: \.self) { org in Text(org).tag(org) }
                     }
-                } label: {
-                    Label("Add from your gh repos…", systemImage: "plus.circle")
-                        .font(.caption)
+                    .fixedSize()
+                    .onChange(of: selectedOwner) { _ in
+                        customOwner = ""
+                        loadRepos()
+                    }
+                    TextField("or type an org", text: $customOwner)
+                        .frame(width: 130)
+                        .onSubmit { loadRepos() }
+                    if loadingRepos { ProgressView().controlSize(.small) }
                 }
-                .fixedSize()
+
+                if !suggestedRepos.isEmpty {
+                    Menu {
+                        ForEach(suggestedRepos, id: \.self) { repo in
+                            Button(repo) { appendRepo(repo) }
+                        }
+                    } label: {
+                        Label("Add from \(currentOwnerLabel)…", systemImage: "plus.circle")
+                            .font(.caption)
+                    }
+                    .fixedSize()
+                } else if !loadingRepos {
+                    Text("No repos found for \(currentOwnerLabel). "
+                         + "For a private org, make sure `gh auth login` granted read:org.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             if let error {
@@ -863,7 +902,7 @@ private struct GitHubSettingsTab: View {
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(height: 360)
+        .frame(minHeight: 360)
         .onAppear { probeGH() }
     }
 
@@ -896,10 +935,26 @@ private struct GitHubSettingsTab: View {
             let available = GitHubCLI.isInstalled
             let token = available && GitHubCLI.authToken() != nil
             let repos = token ? GitHubCLI.listRepos() : []
+            let orgs = token ? GitHubCLI.listOrgs() : []
             await MainActor.run {
                 ghAvailable = available
                 ghToken = token
                 suggestedRepos = repos
+                self.orgs = orgs
+            }
+        }
+    }
+
+    /// Re-fetch repo suggestions for the currently-chosen owner (your account,
+    /// a picked org, or a typed one). Off the main thread — it shells out.
+    private func loadRepos() {
+        let owner = currentOwner
+        loadingRepos = true
+        Task.detached {
+            let repos = GitHubCLI.listRepos(owner: owner)
+            await MainActor.run {
+                suggestedRepos = repos
+                loadingRepos = false
             }
         }
     }
