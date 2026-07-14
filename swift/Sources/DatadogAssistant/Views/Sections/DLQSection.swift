@@ -45,7 +45,7 @@ struct DLQSection: View {
                         }
                         .foregroundColor(Theme.textSecondary)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pressable)
                     .padding(.leading, 10)
                     if showHealthy {
                         InsetCard {

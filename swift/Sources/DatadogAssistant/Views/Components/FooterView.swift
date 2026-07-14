@@ -92,8 +92,9 @@ struct HoverButton<Label: View>: View {
                         .fill(hovering ? Theme.hover : Color.clear)
                 )
                 .contentShape(Rectangle())
+                .hoverFade(hovering)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
         .onHover { hovering = $0 }
     }
 }

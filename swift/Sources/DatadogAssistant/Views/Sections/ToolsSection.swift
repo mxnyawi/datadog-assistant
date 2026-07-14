@@ -84,7 +84,7 @@ struct ToolsSection: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
     }
 
     private func toolRow(icon: String, label: String, detail: String,
@@ -115,6 +115,6 @@ struct ToolsSection: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
     }
 }

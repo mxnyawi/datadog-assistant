@@ -35,7 +35,7 @@ struct FilterBar: View {
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(Theme.textMuted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable)
             } else {
                 Text("All monitors")
                     .font(.system(size: 11))
@@ -109,7 +109,7 @@ struct FilterBar: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 7, weight: .bold))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
         }
         .foregroundColor(Theme.info)
         .padding(.horizontal, 7).padding(.vertical, 4)

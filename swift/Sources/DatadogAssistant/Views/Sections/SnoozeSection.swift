@@ -40,7 +40,7 @@ struct SnoozeSection: View {
                             )
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.pressable)
                     }
                 }
                 Text("Creates an org-wide Datadog downtime (scope *). Notifications pause; the panel stays live.")
@@ -72,7 +72,7 @@ struct SnoozeSection: View {
                             .overlay(Capsule().stroke(Theme.alert.opacity(0.4), lineWidth: 1))
                     )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)

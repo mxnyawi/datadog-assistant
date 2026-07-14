@@ -74,6 +74,7 @@ struct HeroAlertCard: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(compact(value))
                         .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .tracking(-1)
                         .foregroundColor(Theme.alert)
                         .contentTransition(.numericText())
                     if let threshold = monitor.threshold {
@@ -150,7 +151,7 @@ struct HeroAlertCard: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
     }
 
     private var actions: some View {
@@ -180,7 +181,7 @@ struct HeroAlertCard: View {
             )
             .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
     }
 
     private func compact(_ v: Double) -> String {

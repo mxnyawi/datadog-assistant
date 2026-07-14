@@ -10,6 +10,7 @@ struct IncidentPill: View {
                     .fill(tint.opacity(0.18))
                 Text(severityNumber)
                     .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .tracking(-0.5)
                     .foregroundColor(tint)
             }
             .frame(width: 48, height: 48)

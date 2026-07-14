@@ -14,19 +14,21 @@ struct MonitorRow: View {
     @State private var ticketError: String?
     @State private var renaming = false
     @State private var aliasText = ""
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var tint: Color { Theme.color(for: monitor.state) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                withAnimation(reduceMotion ? .easeOut(duration: 0.2)
+                                           : .spring(response: 0.3, dampingFraction: 0.8)) {
                     expanded.toggle()
                 }
             } label: {
                 header
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
 
             if expanded {
                 if !monitor.sparkline.isEmpty {
@@ -46,6 +48,7 @@ struct MonitorRow: View {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(hovering || expanded ? Theme.hover : Color.clear)
         )
+        .hoverFade(hovering)
         .onHover { hovering = $0 }
     }
 
@@ -166,7 +169,7 @@ struct MonitorRow: View {
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(Theme.textMuted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable)
                 if let original = monitor.originalName {
                     Button {
                         MonitorAliases.reset(monitorID: monitor.id)
@@ -177,7 +180,7 @@ struct MonitorRow: View {
                             .foregroundColor(Theme.textMuted)
                             .lineLimit(1)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pressable)
                 }
             }
         }
@@ -263,7 +266,7 @@ struct MonitorRow: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
     }
 
     private func minutesBefore(_ deploy: DeployEvent) -> String {
@@ -295,7 +298,7 @@ struct MonitorRow: View {
             .padding(.horizontal, 10).padding(.vertical, 5)
             .background(Capsule().fill(Theme.track))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
     }
 
     private var rightLabel: String {

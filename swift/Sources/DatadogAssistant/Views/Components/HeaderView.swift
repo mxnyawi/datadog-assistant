@@ -40,7 +40,7 @@ struct HeaderView: View {
                     .foregroundColor(Theme.textSecondary)
                     .opacity(store.refreshing ? 0.4 : 1)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
             .disabled(store.refreshing)
             .help("Refresh now")
 
@@ -51,7 +51,7 @@ struct HeaderView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Theme.textSecondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
             .help("Settings…")
         }
         .padding(.horizontal, 2)

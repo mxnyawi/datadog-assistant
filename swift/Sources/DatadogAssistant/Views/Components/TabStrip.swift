@@ -76,7 +76,7 @@ struct TabStrip: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
         .help(tab.label)
     }
 }

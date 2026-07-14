@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import QuartzCore
 
 /// Owns the NSStatusItem and the FloatingPanel. The status item is a template
 /// pawprint that adapts to menu bar appearance, with a red monospaced count
@@ -96,7 +97,20 @@ final class MenuBarController: NSObject {
 
     private func showPanel() {
         positionPanel()
-        panel.makeKeyAndOrderFront(nil)
+        // Materialize with a quick fade instead of popping in — respects
+        // Reduce Motion (appears instantly then).
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            panel.alphaValue = 1
+            panel.makeKeyAndOrderFront(nil)
+        } else {
+            panel.alphaValue = 0
+            panel.makeKeyAndOrderFront(nil)
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.14
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().alphaValue = 1
+            }
+        }
         startDismissMonitor()
         Task { await store.refresh() }   // fresh data behind the instant cached render
     }

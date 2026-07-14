@@ -70,7 +70,7 @@ struct MonitorListSection: View {
                         .font(.system(size: 11))
                         .foregroundColor(Theme.textMuted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable)
             }
         }
         .padding(.horizontal, 8).padding(.vertical, 6)

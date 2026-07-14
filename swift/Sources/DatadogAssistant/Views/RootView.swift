@@ -3,6 +3,7 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject var store: SnapshotStore
     @State private var tab: Tab = .monitors
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if store.needsSetup {
@@ -76,7 +77,7 @@ struct RootView: View {
         .padding(.bottom, 8)
         .frame(width: 360)
         .background(Color.clear)   // material comes from the NSVisualEffectView behind us
-        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: snapshot)
+        .animatedContent(snapshot, reduceMotion: reduceMotion)
     }
 
     private func errorBar(_ message: String) -> some View {
