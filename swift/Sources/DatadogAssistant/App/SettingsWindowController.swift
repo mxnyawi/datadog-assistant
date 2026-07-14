@@ -39,20 +39,27 @@ struct SettingsView: View {
     var monitoredServices: () -> [String] = { [] }
 
     var body: some View {
+        // Each tab scrolls inside a fixed-height TabView. Without this, a tab
+        // whose content is taller than the window (Source with the scope
+        // checklist, Notifications) overflows upward into the tab strip on
+        // first open until a relayout — the "overlap" bug.
         TabView {
-            SourceSettingsTab(onSave: onSave)
-                .tabItem { Label("Source", systemImage: "key.fill") }
-            FilterSettingsTab(onSave: onSave)
-                .tabItem { Label("Filters", systemImage: "line.3.horizontal.decrease.circle") }
-            NotificationSettingsTab()
-                .tabItem { Label("Notifications", systemImage: "bell.badge.fill") }
-            JiraSettingsTab()
-                .tabItem { Label("Jira", systemImage: "ticket.fill") }
-            GitHubSettingsTab(onSave: onSave, monitoredServices: monitoredServices)
-                .tabItem { Label("GitHub", systemImage: "arrow.triangle.pull") }
+            tab("Source", "key.fill") { SourceSettingsTab(onSave: onSave) }
+            tab("Filters", "line.3.horizontal.decrease.circle") { FilterSettingsTab(onSave: onSave) }
+            tab("Notifications", "bell.badge.fill") { NotificationSettingsTab() }
+            tab("Jira", "ticket.fill") { JiraSettingsTab() }
+            tab("GitHub", "arrow.triangle.pull") {
+                GitHubSettingsTab(onSave: onSave, monitoredServices: monitoredServices)
+            }
         }
-        .frame(width: 470)
+        .frame(width: 470, height: 490)
         .padding(12)
+    }
+
+    private func tab<Content: View>(_ title: String, _ icon: String,
+                                    @ViewBuilder _ content: () -> Content) -> some View {
+        ScrollView { content() }
+            .tabItem { Label(title, systemImage: icon) }
     }
 }
 
@@ -126,7 +133,7 @@ private struct SourceSettingsTab: View {
         .padding(16)
         // Min, not fixed: the token section's scope checklist expands
         // past 380pt and must not clip.
-        .frame(minHeight: 380)
+        .frame(minHeight: 430)
         .onAppear {
             if let lastPass = LastPassConfig.load() {
                 lastPassEntry = lastPass.entry
@@ -426,7 +433,7 @@ private struct FilterSettingsTab: View {
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(minHeight: 340)
+        .frame(minHeight: 430)
     }
 
     private var tagPicker: some View {
@@ -541,7 +548,7 @@ private struct NotificationSettingsTab: View {
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(height: 480)
+        .frame(minHeight: 430)
         .onChange(of: settings) { newValue in
             newValue.save()
             // Instant feedback when trying sounds from the dropdown.
@@ -662,7 +669,7 @@ private struct JiraSettingsTab: View {
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(height: 420)
+        .frame(minHeight: 430)
         .onAppear { loadStored() }
     }
 
@@ -934,7 +941,7 @@ private struct GitHubSettingsTab: View {
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(minHeight: 360)
+        .frame(minHeight: 430)
         .onAppear { probeGH() }
     }
 
