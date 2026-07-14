@@ -17,8 +17,14 @@ struct HeroAlertCard: View {
             if !monitor.sparkline.isEmpty {
                 Sparkline(points: monitor.sparkline, color: Theme.alert,
                           threshold: monitor.thresholdPosition,
-                          markers: monitor.deployMarkers)
+                          breachBelow: monitor.isBelowThreshold,
+                          markers: monitor.deployMarkers,
+                          ghost: monitor.ghostSparkline,
+                          projection: monitor.projection())
                     .frame(height: 34)
+            }
+            if monitor.groupStates.count > 1 {
+                GroupHeatmap(states: monitor.groupStates)
             }
             if let suspect = store.suspectDeploy(for: monitor) {
                 suspectChip(suspect)
@@ -74,6 +80,7 @@ struct HeroAlertCard: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(compact(value))
                         .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .tracking(-1)
                         .foregroundColor(Theme.alert)
                         .contentTransition(.numericText())
                     if let threshold = monitor.threshold {
@@ -98,11 +105,14 @@ struct HeroAlertCard: View {
     }
 
     /// Value vs threshold: the threshold tick sits at a fixed 62% so overshoot
-    /// reads as "into the red zone", capped at ~1.6× threshold.
+    /// reads as "into the red zone", capped at ~1.6× threshold. For a
+    /// below-threshold (`<`) monitor the ratio is inverted — dropping under
+    /// the threshold is what pushes the bar into the red.
     private func gaugeBar(value: Double, threshold: Double) -> some View {
         GeometryReader { geo in
             let cap = 1.6
-            let fraction = min(value / threshold, cap) / cap
+            let ratio = monitor.isBelowThreshold ? threshold / value : value / threshold
+            let fraction = min(ratio, cap) / cap
             let thresholdX = geo.size.width * CGFloat(1.0 / cap)
             ZStack(alignment: .leading) {
                 Capsule()
@@ -150,7 +160,7 @@ struct HeroAlertCard: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
     }
 
     private var actions: some View {
@@ -180,7 +190,7 @@ struct HeroAlertCard: View {
             )
             .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
     }
 
     private func compact(_ v: Double) -> String {

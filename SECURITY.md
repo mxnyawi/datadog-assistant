@@ -26,21 +26,28 @@ window to ship a fix before any public disclosure.
 
 ## Supported versions
 
-This is a single-file app with no long-term support branches. Fixes land on
-`main` and ship in the next tagged release; please verify a report against the
-latest `main` before filing.
+There are no long-term support branches. Fixes land on `main` and ship in the
+next tagged release; please verify a report against the latest `main` before
+filing. The archived Python app in `legacy/python-app/` is out of support —
+reports against it are welcome for awareness but won't get fixes.
 
 ## Handling of secrets (how the app is designed)
 
-- Credentials are stored in the **macOS Keychain** by default. When the Keychain
-  is unavailable, `config.json` / `state.json` are written **owner-only (0600)**
-  in an owner-only directory (0700).
-- API/App keys supplied via environment variables are written **straight to the
-  Keychain**, never to `config.json`.
-- LastPass-sourced Jira secrets are kept **in memory only** and are stripped
-  before any config is persisted.
-- The app talks to Datadog/Jira over HTTPS with default certificate
-  verification. It never disables TLS verification.
+- Credentials (Datadog access token or API/App keys, GitHub and Jira tokens)
+  are stored **encrypted on-device** by `SecretStore`: AES-GCM in an
+  owner-only (0600) file inside an owner-only (0700) directory, excluded from
+  iCloud/Time Machine, with the encryption key wrapped by the **Secure
+  Enclave** where the hardware supports it (random-key fallback otherwise).
+  The macOS login Keychain is deliberately not used (an ad-hoc-signed app
+  triggers password prompts on every access).
+- Credentials supplied via environment variables or a password-manager
+  command are used **in memory only** — never persisted.
+- LastPass-vault mode fetches credentials at runtime via the `lpass` CLI;
+  vault-sourced secrets (including the Jira client secret) are **not**
+  persisted on-device.
+- The app talks to Datadog/GitHub/Jira over HTTPS with default certificate
+  verification. It never disables TLS verification. The Jira OAuth callback
+  listener binds to loopback only.
 
 If you believe any of the above does not hold, that's a security issue — please
 report it via the process above.

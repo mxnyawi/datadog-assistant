@@ -1,0 +1,291 @@
+import Foundation
+import CryptoKit
+import Security
+
+/// On-device secret storage that never prompts for the login password.
+///
+/// The macOS login Keychain prompts an ad-hoc-signed app for the account
+/// password on nearly every access: the item's access-control list is bound to
+/// the app's code-signing identity, and an unsigned/ad-hoc app gets a fresh,
+/// unstable identity (code-directory hash) on each rebuild — so the Keychain
+/// sees a "different app" every launch/update and asks the user to authorize
+/// it. Until the app is Developer-ID signed (which gives a stable identity and
+/// unlocks the promptless Data-Protection Keychain), simply opening the menu
+/// bar is a password gauntlet. So the app's own secrets (Datadog token/keys,
+/// Jira token, GitHub token) live here instead — no Keychain, no prompt.
+///
+/// **How it's protected.** Secrets are AES-GCM encrypted (CryptoKit) in a file
+/// that's readable only by this user (`0600`), inside a `0700` directory,
+/// excluded from iCloud/Time Machine backups. The encryption key is, when the
+/// hardware allows it, wrapped by this Mac's **Secure Enclave**: the key
+/// material never leaves the Enclave and can't be decrypted on any other
+/// machine, so a stolen disk or a leaked backup is useless — and none of this
+/// touches the Keychain, so there's no prompt. On Macs without a usable
+/// Enclave it falls back to a random key in a sibling `0600` file (still
+/// encrypted at rest, but the key is co-located — obfuscation, not true
+/// confidentiality, against a process running as you).
+///
+/// **Key scheme is pinned.** Whichever scheme seals the file first (Enclave or
+/// random) is the one used forever after, identified by which key file exists.
+/// The store never silently switches schemes or mints a new key over an
+/// existing store — that was the source of a data-loss class of bug. Enclave
+/// operations can also fail *transiently* (locked keybag, wake-from-sleep
+/// races), so a failed key restore is never treated as "key lost" by itself:
+/// the store first proves the Enclave is healthy by minting a probe key, and
+/// only then concludes the pinned key is genuinely foreign/corrupt (e.g. the
+/// file was restored onto a *different* Mac whose Enclave can't unwrap it —
+/// the intended security property). Even then the unreadable ciphertext is
+/// moved aside, not deleted, and the store starts fresh; while the Enclave is
+/// merely unavailable, reads return nothing and writes fail — nothing is
+/// destroyed and nothing is silently re-keyed.
+///
+/// **Honest threat model.** This defeats casual disk inspection, backup/cloud
+/// leakage, other local users, and (with the Enclave) physical theft. It does
+/// **not** stop another process running as you or malware in your account —
+/// the app must decrypt unattended, so anything with your privileges can too.
+/// That's an acceptable trade for a scoped, revocable, expiring Datadog token:
+/// keep FileVault on, and rotate the token if a machine is compromised.
+enum SecretStore {
+    private static let lock = NSLock()
+    private static var cache: [String: String]?
+
+    // MARK: API (mirrors the old Keychain enum so call sites barely change)
+
+    static func read(_ key: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        let value = load()[key]
+        return (value?.isEmpty == false) ? value : nil
+    }
+
+    static func write(_ key: String, _ value: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        var dict = load()
+        dict[key] = value
+        try persist(dict)
+    }
+
+    static func delete(_ key: String) {
+        lock.lock(); defer { lock.unlock() }
+        var dict = load()
+        guard dict[key] != nil else { return }
+        dict.removeValue(forKey: key)
+        try? persist(dict)
+    }
+
+    // MARK: Storage locations
+
+    private static var directory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("DatadogAssistant", isDirectory: true)
+    }
+    private static var secretsURL: URL { directory.appendingPathComponent("secrets.enc") }
+    private static var randomKeyURL: URL { directory.appendingPathComponent("secrets.key") }
+    private static var enclaveKeyURL: URL { directory.appendingPathComponent("secrets.se") }
+    private static var enclavePubURL: URL { directory.appendingPathComponent("secrets.sepub") }
+
+    // MARK: Load / persist
+
+    /// Decrypt the secrets file into memory (cached until the next write). An
+    /// absent file yields an empty store. A file that can't be decrypted with
+    /// the *established* key is moved aside (never deleted), so the next save
+    /// starts clean rather than failing forever. A key that's merely
+    /// unavailable right now (locked keybag / transient Enclave failure) is
+    /// NOT an error state: the call returns empty without caching, so the
+    /// next call retries and no data is touched.
+    private static func load() -> [String: String] {
+        if let cache { return cache }
+        guard let blob = try? Data(contentsOf: secretsURL), !blob.isEmpty else {
+            cache = [:]
+            return [:]
+        }
+        guard let key = try? symmetricKey() else {
+            // Transient: the pinned key exists but can't be used right now.
+            // Don't cache, don't touch the file — retry on the next call.
+            return [:]
+        }
+        guard let sealed = try? AES.GCM.SealedBox(combined: blob),
+              let plain = try? AES.GCM.open(sealed, using: key),
+              let dict = try? JSONDecoder().decode([String: String].self, from: plain)
+        else {
+            // The established key opened fine but the ciphertext doesn't
+            // match it (corruption, or a foreign store copied over ours).
+            // Unrecoverable here — quarantine it so a bug can't destroy data.
+            quarantine(secretsURL)
+            cache = [:]
+            return [:]
+        }
+        cache = dict
+        return dict
+    }
+
+    private static func persist(_ dict: [String: String]) throws {
+        try ensureDirectory()
+        // An empty store means "no secrets" — remove the file rather than
+        // leave an encrypted empty blob behind.
+        guard !dict.isEmpty else {
+            try? FileManager.default.removeItem(at: secretsURL)
+            cache = [:]
+            return
+        }
+        let key = try symmetricKey()
+        let plain = try JSONEncoder().encode(dict)
+        let sealed = try AES.GCM.seal(plain, using: key)
+        guard let combined = sealed.combined else { throw StoreError.seal }
+        try combined.write(to: secretsURL, options: .atomic)   // may throw → cache stays in sync with disk
+        cache = dict
+        setOwnerOnly(secretsURL)
+        excludeFromBackup(secretsURL)
+    }
+
+    // MARK: Key management — one pinned scheme, self-healing
+
+    /// The AES key that seals the secrets file. Deterministic and idempotent:
+    /// it returns the key of whichever scheme is already established (identified
+    /// by the key file on disk), restoring it. A fresh key is *never* minted
+    /// while a usable one exists, and — crucially — a restore failure alone
+    /// never re-keys the store: Enclave calls fail transiently (locked keybag,
+    /// wake-from-sleep), and re-keying on a transient failure would silently
+    /// destroy every stored secret. The pinned key is declared lost only when
+    /// the Enclave *demonstrably works* (a probe key can be minted) and still
+    /// can't restore it — i.e. the key blob itself is foreign or corrupt.
+    private static func symmetricKey() throws -> SymmetricKey {
+        try ensureDirectory()
+        let fm = FileManager.default
+
+        // Established: random scheme (the key file is the literal key bytes).
+        if let raw = try? Data(contentsOf: randomKeyURL), raw.count == 32 {
+            return SymmetricKey(data: raw)
+        }
+        // Established: Enclave scheme (secrets.se is the wrapped-key marker).
+        if fm.fileExists(atPath: enclaveKeyURL.path) {
+            if let key = try? restoreEnclaveKey() { return key }
+            // Restore failed. Transient Enclave outage or genuinely dead key?
+            // Discriminate by minting a probe key: if that fails too, the
+            // Enclave is unavailable right now — fail this operation and
+            // leave everything on disk for the retry.
+            guard let probe = try? mintEnclaveKey() else {
+                throw StoreError.enclaveUnavailable
+            }
+            // The Enclave works but the pinned blob doesn't restore: it was
+            // made by a different Mac's Enclave, or it's corrupt. Re-establish
+            // with the probe key; the old ciphertext (unreadable on this
+            // machine either way) is quarantined, not deleted.
+            quarantine(secretsURL)
+            cache = nil
+            try persistEnclaveKey(probe)
+            return probe.key
+        }
+        // First use: pick the strongest scheme that works and pin it by
+        // creating exactly one key file.
+        if let minted = try? mintEnclaveKey(), (try? persistEnclaveKey(minted)) != nil {
+            return minted.key
+        }
+        return try createRandomKey()
+    }
+
+    /// Restore the symmetric key from an existing Secure-Enclave key pair.
+    private static func restoreEnclaveKey() throws -> SymmetricKey {
+        guard SecureEnclave.isAvailable else { throw StoreError.noEnclave }
+        let keyBlob = try Data(contentsOf: enclaveKeyURL)
+        let pubBlob = try Data(contentsOf: enclavePubURL)
+        let privateKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: keyBlob)
+        let counterpart = try P256.KeyAgreement.PublicKey(rawRepresentation: pubBlob)
+        return try derive(privateKey: privateKey, counterpart: counterpart)
+    }
+
+    private struct EnclaveKey {
+        let key: SymmetricKey
+        let privateBlob: Data
+        let publicBlob: Data
+    }
+
+    /// Mint a new Secure-Enclave key + counterpart public key and derive the
+    /// AES key — exercising the full Enclave round-trip — WITHOUT touching
+    /// disk, so it doubles as the health probe that distinguishes "Enclave
+    /// busy/locked" from "pinned key genuinely lost".
+    private static func mintEnclaveKey() throws -> EnclaveKey {
+        guard SecureEnclave.isAvailable else { throw StoreError.noEnclave }
+        // AfterFirstUnlock: the app polls unattended (screen locked, wake
+        // races), so don't bind the key to the keybag's unlocked state.
+        var acError: Unmanaged<CFError>?
+        guard let access = SecAccessControlCreateWithFlags(
+            nil, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, [], &acError)
+        else { throw StoreError.noEnclave }
+        let privateKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(accessControl: access)
+        let counterpart = P256.KeyAgreement.PrivateKey().publicKey
+        let key = try derive(privateKey: privateKey, counterpart: counterpart)
+        return EnclaveKey(key: key,
+                          privateBlob: privateKey.dataRepresentation,
+                          publicBlob: counterpart.rawRepresentation)
+    }
+
+    /// Pin a minted Enclave key by persisting it. The marker file
+    /// (`secrets.se`) is written **last**, so a partial failure leaves no
+    /// marker and the next launch cleanly retries first-use.
+    private static func persistEnclaveKey(_ minted: EnclaveKey) throws {
+        try minted.publicBlob.write(to: enclavePubURL, options: .atomic)
+        setOwnerOnly(enclavePubURL); excludeFromBackup(enclavePubURL)
+        try minted.privateBlob.write(to: enclaveKeyURL, options: .atomic)
+        setOwnerOnly(enclaveKeyURL); excludeFromBackup(enclaveKeyURL)
+    }
+
+    private static func derive(privateKey: SecureEnclave.P256.KeyAgreement.PrivateKey,
+                               counterpart: P256.KeyAgreement.PublicKey) throws -> SymmetricKey {
+        let shared = try privateKey.sharedSecretFromKeyAgreement(with: counterpart)
+        return shared.hkdfDerivedSymmetricKey(
+            using: SHA256.self,
+            salt: Data("DatadogAssistant.SecretStore".utf8),
+            sharedInfo: Data(),
+            outputByteCount: 32)
+    }
+
+    /// Fallback: a random 256-bit key persisted `0600`.
+    private static func createRandomKey() throws -> SymmetricKey {
+        let key = SymmetricKey(size: .bits256)
+        let raw = key.withUnsafeBytes { Data($0) }
+        try raw.write(to: randomKeyURL, options: .atomic)
+        setOwnerOnly(randomKeyURL)
+        excludeFromBackup(randomKeyURL)
+        return key
+    }
+
+    // MARK: File helpers
+
+    private static func ensureDirectory() throws {
+        let dir = directory
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: dir.path) {
+            try fm.createDirectory(
+                at: dir, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+        } else {
+            // Something else (or an older build) may have created it with
+            // default permissions — enforce owner-only every time.
+            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+        }
+    }
+
+    /// Move an unreadable file aside instead of deleting it: recovery from a
+    /// store-logic bug stays possible, and a genuinely foreign blob is inert.
+    private static func quarantine(_ url: URL) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return }
+        let dest = url.appendingPathExtension("unreadable")
+        try? fm.removeItem(at: dest)
+        try? fm.moveItem(at: url, to: dest)
+    }
+
+    private static func setOwnerOnly(_ url: URL) {
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private static func excludeFromBackup(_ url: URL) {
+        var url = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
+    }
+
+    private enum StoreError: Error { case seal, noEnclave, enclaveUnavailable }
+}

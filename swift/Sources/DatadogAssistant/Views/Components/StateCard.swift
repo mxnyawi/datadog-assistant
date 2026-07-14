@@ -25,6 +25,7 @@ struct StateCard: View {
                 Text(value)
                     .font(.system(size: 20, weight: .semibold, design: .rounded))
                     .monospacedDigit()
+                    .tracking(-0.4)
                     .foregroundColor(tint)
                     .contentTransition(.numericText())
             }
@@ -36,8 +37,9 @@ struct StateCard: View {
                     .fill(hovering ? Theme.hover : Theme.panel)
             )
             .contentShape(Rectangle())
+            .hoverFade(hovering)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
         .onHover { hovering = $0 }
         .help("Show all monitors")
     }

@@ -1,5 +1,13 @@
 import Foundation
 
+/// Whether the Changes tab can pull GitHub deploys, and if not, what's missing.
+enum GitHubSetupStatus: Equatable {
+    case ready          // repos configured + a token resolves
+    case needsAuth      // repos configured, but no token — run `gh auth login`
+    case needsRepos     // signed in (gh/token), but no repos configured
+    case notConfigured  // neither
+}
+
 /// GitHub configuration: a token and repos to watch for merges. Repos map to
 /// services ("payments=acme/payments-api") so a merge can be tied to the
 /// firing monitor's service; a bare "acme/platform" entry watches org-wide.
@@ -31,39 +39,58 @@ struct GitHubConfig: Equatable {
     }
 
     static func load() -> GitHubConfig? {
-        let env = ProcessInfo.processInfo.environment
-        // Repos aren't secret, so they come from env/UserDefaults regardless of
-        // credential mode; without any there's nothing to watch.
-        let specs = env["GITHUB_REPOS"].map { $0.split(separator: ",").map(String.init) }
-            ?? UserDefaults.standard.stringArray(forKey: reposDefaultsKey)
-        guard let specs, !specs.isEmpty else { return nil }
-        // Env wins (dev loop), then the shared LastPass vault, then a stored
-        // token, then the locally-authenticated gh CLI — so a machine that's
-        // already logged into `gh` needs zero token setup.
-        var token = env["GITHUB_TOKEN"]
-        if token?.isEmpty ?? true, let lastPass = LastPassConfig.load(), LastPass.isLoggedIn() {
-            token = lastPass.gitHubToken()
-        }
-        if token?.isEmpty ?? true { token = Keychain.read(service: tokenService) }
-        if token?.isEmpty ?? true { token = GitHubCLI.authToken() }
-        guard let token, !token.isEmpty else { return nil }
+        guard let specs = configuredSpecs(), let token = resolveToken() else { return nil }
         let config = GitHubConfig(token: token, repoSpecs: specs)
         return config.repos.isEmpty ? nil : config
     }
 
+    /// Repos to watch (env or UserDefaults; not secret), or nil if none.
+    static func configuredSpecs() -> [String]? {
+        let env = ProcessInfo.processInfo.environment
+        let specs = env["GITHUB_REPOS"].map { $0.split(separator: ",").map(String.init) }
+            ?? UserDefaults.standard.stringArray(forKey: reposDefaultsKey)
+        return (specs?.isEmpty == false) ? specs : nil
+    }
+
+    /// The GitHub token: env (dev loop) → shared LastPass vault → on-device
+    /// store → the locally-authenticated `gh` CLI. So a machine already logged
+    /// into `gh` needs zero token setup.
+    static func resolveToken() -> String? {
+        let env = ProcessInfo.processInfo.environment
+        var token = env["GITHUB_TOKEN"]
+        if token?.isEmpty ?? true, let lastPass = LastPassConfig.load(), LastPass.isLoggedIn() {
+            token = lastPass.gitHubToken()
+        }
+        if token?.isEmpty ?? true { token = SecretStore.read(tokenService) }
+        if token?.isEmpty ?? true { token = GitHubCLI.authToken() }
+        return (token?.isEmpty ?? true) ? nil : token
+    }
+
+    /// Why the Changes tab may not be showing GitHub deploys — drives the
+    /// setup hint. Runs a `gh auth token` subprocess (cached), so call it off
+    /// the main thread.
+    static func setupStatus() -> GitHubSetupStatus {
+        switch (configuredSpecs() != nil, resolveToken() != nil) {
+        case (true, true):  return .ready
+        case (true, false): return .needsAuth
+        case (false, true): return .needsRepos
+        case (false, false): return .notConfigured
+        }
+    }
+
     func save() throws {
-        try Keychain.write(service: Self.tokenService, value: token)
+        try SecretStore.write(Self.tokenService, token)
         UserDefaults.standard.set(repoSpecs, forKey: Self.reposDefaultsKey)
     }
 
     /// Persist just the repo list — LastPass mode, where the token resolves
-    /// from the shared vault at load time instead of the Keychain.
+    /// from the shared vault at load time instead of the on-device store.
     static func saveRepoSpecsOnly(_ specs: [String]) {
         UserDefaults.standard.set(specs, forKey: reposDefaultsKey)
     }
 
     static func clear() {
-        Keychain.delete(service: tokenService)
+        SecretStore.delete(tokenService)
         UserDefaults.standard.removeObject(forKey: reposDefaultsKey)
     }
 }
@@ -92,7 +119,19 @@ final class GitHubClient {
         let user: User?
     }
 
+    /// GitHub results barely move poll-to-poll, but the poll can run every
+    /// 15s and each poll costs 2 requests per watched repo — enough to chew
+    /// through the borrowed gh token's rate limit on a busy org. Cache
+    /// briefly. (Refreshes are serialized by SnapshotStore, so these caches
+    /// are never touched concurrently.)
+    private static let cacheTTL: TimeInterval = 120
+    private var mergesCache: (at: Date, events: [DeployEvent])?
+    private var runsCache: (at: Date, runs: [CIRun])?
+
     func recentMerges(within window: TimeInterval) async -> [DeployEvent] {
+        if let cached = mergesCache, Date().timeIntervalSince(cached.at) < Self.cacheTTL {
+            return cached.events
+        }
         let cutoff = Date().addingTimeInterval(-window)
         var all: [DeployEvent] = []
         await withTaskGroup(of: [DeployEvent].self) { group in
@@ -103,7 +142,9 @@ final class GitHubClient {
             }
             for await events in group { all.append(contentsOf: events) }
         }
-        return all.sorted { $0.occurredAt > $1.occurredAt }
+        let sorted = all.sorted { $0.occurredAt > $1.occurredAt }
+        mergesCache = (Date(), sorted)
+        return sorted
     }
 
     // MARK: - Actions runs
@@ -124,6 +165,9 @@ final class GitHubClient {
     /// Latest run per workflow per watched repo (runs come newest-first, so
     /// the first run seen per workflow name wins). Failures sort first.
     func latestRuns(maxPerRepo: Int = 3) async -> [CIRun] {
+        if let cached = runsCache, Date().timeIntervalSince(cached.at) < Self.cacheTTL {
+            return cached.runs
+        }
         var all: [CIRun] = []
         await withTaskGroup(of: [CIRun].self) { group in
             for repo in config.repos {
@@ -133,17 +177,23 @@ final class GitHubClient {
             }
             for await runs in group { all.append(contentsOf: runs) }
         }
-        return all.sorted { lhs, rhs in
+        let sorted = all.sorted { lhs, rhs in
             if (lhs.state == .failure) != (rhs.state == .failure) {
                 return lhs.state == .failure
             }
             return lhs.startedAt > rhs.startedAt
         }
+        runsCache = (Date(), sorted)
+        return sorted
     }
 
     private func runs(in repo: GitHubConfig.Repo, limit: Int) async -> [CIRun] {
-        var request = URLRequest(url: URL(string:
-            "https://api.github.com/repos/\(repo.fullName)/actions/runs?per_page=15")!)
+        // The repo spec is user-typed — a stray space or unicode char must
+        // degrade to an empty feed, not crash the poll loop.
+        guard let url = URL(string:
+            "https://api.github.com/repos/\(repo.fullName)/actions/runs?per_page=15")
+        else { return [] }
+        var request = URLRequest(url: url)
         request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
 
@@ -182,8 +232,10 @@ final class GitHubClient {
     }
 
     private func merges(in repo: GitHubConfig.Repo, since cutoff: Date) async -> [DeployEvent] {
-        var request = URLRequest(url: URL(string:
-            "https://api.github.com/repos/\(repo.fullName)/pulls?state=closed&sort=updated&direction=desc&per_page=20")!)
+        guard let url = URL(string:
+            "https://api.github.com/repos/\(repo.fullName)/pulls?state=closed&sort=updated&direction=desc&per_page=50")
+        else { return [] }
+        var request = URLRequest(url: url)
         request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
 

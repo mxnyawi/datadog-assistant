@@ -47,19 +47,39 @@ enum GitHubCLI {
         return token
     }
 
-    /// The user's repos ("owner/name"), most recently pushed first — used to
-    /// suggest watch candidates in Settings. Best-effort; empty on failure.
-    static func listRepos(limit: Int = 30) -> [String] {
-        guard let gh = locate(),
-              let result = run(binary: gh,
-                               args: ["repo", "list", "--limit", String(limit),
-                                      "--json", "nameWithOwner"],
-                               timeout: 20),
+    /// Repos ("owner/name") for `owner`, most recently pushed first — used to
+    /// suggest watch candidates in Settings. With an empty owner it lists the
+    /// signed-in user's own repos (`gh repo list`); pass an org/user login to
+    /// list *their* repos (`gh repo list <owner>`), which is how members see
+    /// the org repos they don't personally own. Best-effort; empty on failure.
+    static func listRepos(owner: String = "", limit: Int = 100) -> [String] {
+        guard let gh = locate() else { return [] }
+        var args = ["repo", "list"]
+        let trimmed = owner.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty { args.append(trimmed) }
+        args += ["--limit", String(limit), "--json", "nameWithOwner"]
+        guard let result = run(binary: gh, args: args, timeout: 25),
               result.status == 0,
               let data = result.output.data(using: .utf8) else { return [] }
         struct Repo: Decodable { let nameWithOwner: String }
         return ((try? JSONDecoder().decode([Repo].self, from: data)) ?? [])
             .map(\.nameWithOwner)
+    }
+
+    /// Organizations the signed-in user belongs to (their logins). Uses the API
+    /// so it works regardless of `gh` version; needs the token's read:org scope
+    /// (which `gh auth login` grants by default). Empty on failure — the user
+    /// can still type an org name manually.
+    static func listOrgs(limit: Int = 100) -> [String] {
+        guard let gh = locate(),
+              let result = run(binary: gh,
+                               args: ["api", "user/orgs", "--paginate", "--jq", ".[].login"],
+                               timeout: 20),
+              result.status == 0 else { return [] }
+        return result.output
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     private static func run(binary: String, args: [String], timeout: TimeInterval)

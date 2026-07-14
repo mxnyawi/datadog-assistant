@@ -36,9 +36,16 @@ enum LinkOpener {
         }
         // `open -a <name> <url>` matches the Python app and resolves the app
         // by display name; fall back to the default browser if it fails.
+        // The failure that matters is `open` exiting non-zero (browser was
+        // uninstalled since being picked) — process.run() itself basically
+        // never throws for /usr/bin/open, so check the exit status too.
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         process.arguments = ["-a", browser, url.absoluteString]
+        process.terminationHandler = { finished in
+            guard finished.terminationStatus != 0 else { return }
+            DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+        }
         do {
             try process.run()
         } catch {

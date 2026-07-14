@@ -350,12 +350,64 @@ enum LastPassSetup {
         return (ok, lines.joined(separator: "\n"))
     }
 
-    /// Call Datadog's key-validation endpoint. Runs synchronously (caller is
-    /// already off the main thread) so it can fold into the transcript.
-    /// Internal so the onboarding window can validate pasted keys the same way.
+    /// Validate a Datadog access token (ddpat_/ddsat_). `/api/v1/validate`
+    /// only understands API keys, so probe the cheapest call the app actually
+    /// needs: one monitor under the monitors_read scope. A 200 proves the
+    /// token is live, on the right site, and scoped for our main read path.
+    static func validateAccessToken(_ token: String, site: String)
+        -> (ok: Bool, detail: String) {
+        guard let url = URL(string: "https://api.\(site)/api/v1/monitor?page_size=1") else {
+            return (false, "→ invalid site “\(site)”.")
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 15
+        let result = probeHTTP(request)
+        switch result.code {
+        case 200:
+            return (true, "→ 200 OK — token is valid for site \(site) and can read monitors.")
+        case 403:
+            return (false, "→ 403 Forbidden — the token was rejected for site \(site). "
+                + "Check the site, that the token hasn't expired, and that it carries "
+                + "the scopes this app needs: \(DatadogScope.copyList).")
+        case 401:
+            return (false, "→ 401 Unauthorized — the token is invalid for site \(site).")
+        case -1:
+            return (false, result.detail)
+        default:
+            return (false, "→ HTTP \(result.code).")
+        }
+    }
+
+    /// Run one request synchronously and report the status code (or a network
+    /// error as code -1). Callers are already off the main thread.
+    private static func probeHTTP(_ request: URLRequest) -> (code: Int, detail: String) {
+        let semaphore = DispatchSemaphore(value: 0)
+        var code = -1
+        var detail = "→ no response"
+        let task = URLSession.shared.dataTask(with: request) { _, response, error in
+            defer { semaphore.signal() }
+            if let error {
+                detail = "→ network error: \(error.localizedDescription)"
+                return
+            }
+            code = (response as? HTTPURLResponse)?.statusCode ?? -1
+        }
+        task.resume()
+        _ = semaphore.wait(timeout: .now() + 20)
+        return (code, detail)
+    }
+
+    /// Validate the key PAIR against Datadog. /api/v1/validate only checks the
+    /// API key — it ignores the Application key entirely, so it happily blesses
+    /// a broken pair. Probe the monitors endpoint instead: a 200 needs a valid
+    /// API key AND an app key with monitors_read, which is exactly what this
+    /// app requires to function. Runs synchronously (caller is already off the
+    /// main thread) so it can fold into the transcript. Internal so the
+    /// onboarding window can validate pasted keys the same way.
     static func validateDatadog(apiKey: String, appKey: String, site: String)
         -> (ok: Bool, detail: String) {
-        guard let url = URL(string: "https://api.\(site)/api/v1/validate") else {
+        guard let url = URL(string: "https://api.\(site)/api/v1/monitor?page_size=1") else {
             return (false, "→ invalid site “\(site)”.")
         }
         var request = URLRequest(url: url)
@@ -375,11 +427,12 @@ enum LastPassSetup {
             switch code {
             case 200:
                 ok = true
-                detail = "→ 200 OK — keys are valid for site \(site)."
+                detail = "→ 200 OK — both keys work on site \(site) (monitors readable)."
             case 403:
                 detail = "→ 403 Forbidden — Datadog rejected the keys for site \(site). "
                     + "Likely the wrong site for your org (try datadoghq.eu / us3 / us5 / "
-                    + "ap1 in Settings), or the App key lacks the needed scopes."
+                    + "ap1 in Settings), an invalid Application key, or an App key "
+                    + "missing the monitors_read scope."
             case 401:
                 detail = "→ 401 Unauthorized — the API key is invalid for site \(site)."
             default:

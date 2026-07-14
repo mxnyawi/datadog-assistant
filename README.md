@@ -49,33 +49,45 @@ open "build/Datadog Assistant.app"
 
 ## 🔐 Connecting to Datadog
 
-On first launch a welcome window offers three paths:
+With nothing configured, the panel shows a **Connect to Datadog** prompt right
+in the app — no separate setup window. Three ways in:
 
-1. **Team LastPass vault (recommended).** Point the app at a shared LastPass
-   secure note and the whole team runs off one set of keys — nothing stored on
-   any machine, rotation in one place. The guided setup installs the `lpass`
-   CLI (via Homebrew), signs you in (MFA supported), lets you pick the entry,
-   and validates the keys against Datadog **before** saving — every step in
-   the GUI, no terminal. The note just needs two fields:
+1. **Access token (primary).** A Datadog **access token** — `ddpat_…`
+   (personal, Datadog's recommended credential for tools like this since
+   mid-2026) or `ddsat_…` (service-account, can be non-expiring) — is one
+   scoped credential that replaces the API + app key pair. Create it under
+   *Personal Settings → Access Tokens*; the setup UI lists the exact scopes
+   with a copy button: `monitors_read, monitors_downtime, events_read,
+   incident_read, dashboards_read, timeseries_query`. Paste it into the connect
+   prompt; it's validated before saving. (Personal tokens expire — max 1 year;
+   the app shows 401/403 when it lapses, paste a fresh one. Want set-and-forget?
+   Use a service-account `ddsat_` token.)
 
-   ```
-   datadogAPIKey=xxxxxxxx
-   datadogAPPKey=xxxxxxxx
-   ```
+2. **API + Application keys.** The classic pair still works — same tab in the
+   connect prompt and in Settings.
 
-   (Field names are remappable; an optional `githubToken` powers deploy
-   correlation, `jiraToken` powers one-tap Jira tickets.)
+3. **Team LastPass vault.** Point the app at a shared LastPass secure note and
+   the whole team runs off one credential, rotation in one place. Settings →
+   *Team LastPass* → **Set up…** installs the `lpass` CLI (via Homebrew), signs
+   you in (MFA supported), and validates the entry — no terminal. The note
+   holds `datadogAPIKey` / `datadogAPPKey` (or a single access-token field via
+   `DD_LASTPASS_TOKEN_FIELD`); optional `githubToken` powers deploy
+   correlation, `jiraToken` powers one-tap Jira tickets.
 
-2. **Paste API keys.** Your own Datadog API + application keys, validated and
-   stored in the macOS Keychain.
-
-3. **Sample data.** Explore the full UI offline first; connect later from
-   Settings.
+**Secrets never touch the macOS login Keychain** (which prompts unsigned apps
+for your password on every access). They're AES-GCM encrypted on the device,
+Secure-Enclave-wrapped where possible — details in
+[swift/README.md](swift/README.md).
 
 Every Datadog site works (US1/EU/US3/US5/AP1/Gov). Power users can override
-everything with env vars (`DD_API_KEY`, `DD_APP_KEY`, `DD_SITE`,
-`DD_LASTPASS_ENTRY`, …) or a password-manager command (`op read …`,
-`lpass show …`) — see [swift/README.md](swift/README.md).
+everything with env vars (`DD_BEARER_TOKEN`, `DD_API_KEY`, `DD_APP_KEY`,
+`DD_SITE`, `DD_LASTPASS_ENTRY`, …) or a password-manager command
+(`op read …`, `lpass show …`) — see [swift/README.md](swift/README.md).
+
+**GitHub, without a token to mint:** if you're logged into the `gh` CLI, the
+app borrows its token automatically for the Changes tab. Settings → GitHub
+lists the orgs you belong to and can **auto-fill watched repos** by matching
+your monitors' `service:` tags against the org's repo names.
 
 ## ✨ What it does
 
@@ -119,10 +131,11 @@ and publishes the DMG/zip with checksums.
 
 ### Legacy Python app
 
-This project started as a Python/rumps menu bar app; it still works and ships
-from the same repo (`datadog_assistant.py`, `install.sh`). Docs:
-[docs/legacy-python-app.md](docs/legacy-python-app.md). New features land in
-the Swift app.
+This project started as a Python/rumps menu bar app. It's archived under
+[`legacy/python-app/`](legacy/python-app/) (docs:
+[docs/legacy-python-app.md](docs/legacy-python-app.md), last state tagged
+`python-final`) for reference — it isn't an install option and doesn't gate
+CI. All development happens in the Swift app.
 
 ## 📄 License
 

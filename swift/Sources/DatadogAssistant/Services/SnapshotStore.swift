@@ -20,6 +20,10 @@ final class SnapshotStore: ObservableObject {
     @Published private(set) var snoozedUntil: Date?
     @Published private(set) var stats = ResponseStats()
     @Published private(set) var filters = FilterConfig.load()
+    /// No usable credentials and the user hasn't chosen sample mode — the
+    /// panel shows a connect prompt instead of sample data. Owned by
+    /// AppDelegate, which is the only thing that knows about credentials.
+    @Published var needsSetup = false
 
     var isSnoozed: Bool {
         guard let until = snoozedUntil else { return false }
@@ -76,7 +80,9 @@ final class SnapshotStore: ObservableObject {
 
     init(source: DataSource) {
         self.source = source
-        self.gitHub = GitHubConfig.load().map(GitHubClient.init)
+        // GitHubConfig.load() can shell out (gh auth token, lpass) — never on
+        // the main thread; the first poll picks the client up when it's ready.
+        reloadGitHubClient()
         if let until = UserDefaults.standard.object(forKey: "snoozedUntil") as? Date, until > Date() {
             snoozedUntil = until
         }
@@ -84,6 +90,18 @@ final class SnapshotStore: ObservableObject {
             var stale = cached
             stale.connected = false   // until the first live poll lands
             snapshot = stale
+        }
+    }
+
+    /// (Re)resolve the GitHub client off the main thread. Also retried while
+    /// unconfigured (see `performRefresh`), so running `gh auth login` starts
+    /// feeding the Changes tab without an app restart.
+    private var gitHubRetryAt: Date = .distantPast
+    private func reloadGitHubClient() {
+        gitHubRetryAt = Date().addingTimeInterval(300)
+        Task { [weak self] in
+            let client = await Task.detached { GitHubConfig.load().map(GitHubClient.init) }.value
+            if let client { self?.gitHub = client }
         }
     }
 
@@ -108,21 +126,62 @@ final class SnapshotStore: ObservableObject {
         pollTask = nil
     }
 
-    /// Swap mock ↔ real (e.g. after credentials are saved) and restart.
-    func replaceSource(_ newSource: DataSource) {
+    /// Install the first real source after launch and begin polling. Unlike
+    /// `replaceSource`, this keeps the disk-cached snapshot on screen (it's
+    /// what makes launch feel instant); the first live poll replaces it.
+    func adoptInitialSource(_ newSource: DataSource) {
+        sourceGeneration += 1
         source = newSource
-        gitHub = GitHubConfig.load().map(GitHubClient.init)
-        filters = FilterConfig.load()   // Settings may have edited them
-        snapshot = .empty
-        lastError = nil
         start()
     }
 
+    /// Swap mock ↔ real (e.g. after credentials are saved) and restart.
+    func replaceSource(_ newSource: DataSource) {
+        sourceGeneration += 1   // in-flight refreshes of the old source discard
+        source = newSource
+        gitHub = nil
+        reloadGitHubClient()   // repos/token may have changed with the source
+        filters = FilterConfig.load()   // Settings may have edited them
+        snapshot = .empty
+        lastError = nil
+        hasLivePoll = false
+        start()
+    }
+
+    /// Refreshes are strictly serialized (FIFO): the poll loop, mute/unmute,
+    /// and filter changes can all request one, and two in flight at once
+    /// would race the data source's per-poll state and apply results out of
+    /// order (a stale fetch overwriting a newer one — mutes "reverting").
+    private var refreshChain: Task<Void, Never>?
+    /// Bumped when the source is swapped; a refresh started against an old
+    /// generation throws its result away instead of overwriting the new
+    /// source's data.
+    private var sourceGeneration = 0
+    /// False until a live fetch lands. The disk-cached snapshot republished at
+    /// launch must not be diffed against — it would replay hours-old fired/
+    /// recovered transitions as fresh notifications and pollute the stats.
+    private var hasLivePoll = false
+
     func refresh() async {
+        let previous = refreshChain
+        let task = Task { [weak self] in
+            await previous?.value
+            await self?.performRefresh()
+        }
+        refreshChain = task
+        await task.value
+    }
+
+    private func performRefresh() async {
+        let generation = sourceGeneration
         refreshing = true
         defer { refreshing = false }
+        // GitHub still unconfigured? Retry occasionally so `gh auth login`
+        // or newly-added repos take effect without a restart.
+        if gitHub == nil, Date() >= gitHubRetryAt { reloadGitHubClient() }
         do {
             var next = try await source.fetchSnapshot(previous: snapshot)
+            guard generation == sourceGeneration else { return }   // source swapped mid-fetch
 
             next.monitors = MonitorAliases.apply(to: next.monitors)
             // Remember every tag we've ever seen so the filter dropdown can
@@ -133,6 +192,16 @@ final class SnapshotStore: ObservableObject {
             // take effect immediately.
             if filters.isActive {
                 next.monitors = next.monitors.filter { filters.matches($0) }
+            }
+            // No-Data monitors carry no signal — drop them everywhere (list,
+            // counts, notifications) unless the user opts back in. Safe for
+            // transition diffing: a dropped monitor can't false-recover
+            // (recovery requires it be present and .ok). Count what was
+            // hidden so the filter bar can say so.
+            if filters.hideNoData {
+                let before = next.monitors.count
+                next.monitors = next.monitors.filter { $0.state != .noData }
+                next.hiddenNoDataCount = before - next.monitors.count
             }
 
             if let gitHub {
@@ -148,7 +217,11 @@ final class SnapshotStore: ObservableObject {
             Self.markSuspects(in: &next)
             Self.attachDeployMarkers(in: &next)
 
-            let transitions = Self.diff(old: snapshot, new: next)
+            // The first live poll is a baseline, not news: diffing it against
+            // the republished disk cache would notify about transitions that
+            // happened while the app wasn't even running.
+            let transitions = hasLivePoll ? Self.diff(old: snapshot, new: next) : []
+            hasLivePoll = true
             if transitions.contains(where: { $0.kind == .recovered }) {
                 lastRecoveryAt = Date()
             }
@@ -157,10 +230,15 @@ final class SnapshotStore: ObservableObject {
             snapshot = next
             lastError = nil
             Self.writeCache(next)
-            // Snooze silences banners, not the panel — it stays live.
-            if !transitions.isEmpty, !isSnoozed { onTransitions?(transitions) }
-            if !isSnoozed { onPoll?(next) }
+            // Snooze silences banners, not the panel — it stays live. Sample
+            // data must never page anyone (no notifications, no nags, no
+            // auto-created Jira tickets from generated monitors).
+            if !next.sampleData {
+                if !transitions.isEmpty, !isSnoozed { onTransitions?(transitions) }
+                if !isSnoozed { onPoll?(next) }
+            }
         } catch {
+            guard generation == sourceGeneration else { return }
             lastError = error.localizedDescription
             snapshot.connected = false
         }
@@ -219,11 +297,13 @@ final class SnapshotStore: ObservableObject {
     /// Deploys that fall inside a monitor's sparkline window become vertical
     /// ticks on that sparkline (0…1 x positions, service-matched).
     private static func attachDeployMarkers(in snapshot: inout Snapshot) {
-        let window = Monitor.sparklineWindow
         let now = snapshot.lastRefresh
         for index in snapshot.monitors.indices {
             guard !snapshot.monitors[index].sparkline.isEmpty else { continue }
             let monitor = snapshot.monitors[index]
+            // Position ticks against this monitor's own sparkline span, which
+            // stretches with firing duration.
+            let window = monitor.sparklineSpan
             snapshot.monitors[index].deployMarkers = snapshot.deploys.compactMap { deploy in
                 let age = now.timeIntervalSince(deploy.occurredAt)
                 guard age >= 0, age <= window else { return nil }
@@ -266,7 +346,13 @@ final class SnapshotStore: ObservableObject {
     func cancelSnooze() async {
         if let handle = snoozeHandle {
             do { try await source.cancelSnooze(handle: handle) }
-            catch { lastError = "Unsnooze failed: \(error.localizedDescription)" }
+            catch {
+                // Keep the handle: this is an org-wide Datadog downtime, and
+                // discarding it on a failed cancel would leave it running
+                // with no way to retry from the app.
+                lastError = "Unsnooze failed: \(error.localizedDescription)"
+                return
+            }
         }
         snoozeHandle = nil
         snoozedUntil = nil

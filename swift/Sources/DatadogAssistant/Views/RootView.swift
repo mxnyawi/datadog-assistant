@@ -3,12 +3,34 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject var store: SnapshotStore
     @State private var tab: Tab = .monitors
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        if store.needsSetup {
+            setupBody
+        } else {
+            dashboardBody
+        }
+    }
+
+    /// The connect prompt, shown when there are no usable credentials.
+    private var setupBody: some View {
+        VStack(spacing: 12) {
+            ConnectPromptView()
+            Spacer(minLength: 0)
+            FooterView(tab: $tab)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 14)
+        .padding(.bottom, 8)
+        .frame(width: 360)
+    }
+
+    private var dashboardBody: some View {
         let snapshot = store.snapshot
         let suspectCount = snapshot.deploys.filter { !$0.suspectFor.isEmpty }.count
             + snapshot.ciRuns.filter { $0.state == .failure }.count
-        VStack(spacing: 10) {
+        return VStack(spacing: 10) {
             // Pinned: identity + summary stay put; only the content scrolls.
             HeaderView()
             TabStrip(selected: $tab, badges: [.changes: suspectCount])
@@ -55,7 +77,7 @@ struct RootView: View {
         .padding(.bottom, 8)
         .frame(width: 360)
         .background(Color.clear)   // material comes from the NSVisualEffectView behind us
-        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: snapshot)
+        .animatedContent(snapshot, reduceMotion: reduceMotion)
     }
 
     private func errorBar(_ message: String) -> some View {

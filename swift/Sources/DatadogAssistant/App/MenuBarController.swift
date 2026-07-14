@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import QuartzCore
 
 /// Owns the NSStatusItem and the FloatingPanel. The status item is a template
 /// pawprint that adapts to menu bar appearance, with a red monospaced count
@@ -96,7 +97,20 @@ final class MenuBarController: NSObject {
 
     private func showPanel() {
         positionPanel()
-        panel.makeKeyAndOrderFront(nil)
+        // Materialize with a quick fade instead of popping in — respects
+        // Reduce Motion (appears instantly then).
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            panel.alphaValue = 1
+            panel.makeKeyAndOrderFront(nil)
+        } else {
+            panel.alphaValue = 0
+            panel.makeKeyAndOrderFront(nil)
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.14
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().alphaValue = 1
+            }
+        }
         startDismissMonitor()
         Task { await store.refresh() }   // fresh data behind the instant cached render
     }
@@ -133,7 +147,13 @@ final class MenuBarController: NSObject {
         dismissMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] _ in
-            self?.hidePanel()
+            guard let self else { return }
+            // While the connect prompt is up, don't dismiss on outside clicks —
+            // the user has to switch to a browser/password manager to copy the
+            // token, and that click shouldn't hide the panel out from under
+            // them. They can still close it with the menu bar icon or Esc.
+            if self.store.needsSetup { return }
+            self.hidePanel()
         }
     }
 
@@ -147,4 +167,7 @@ final class MenuBarController: NSObject {
 
 extension Notification.Name {
     static let openSettingsWindow = Notification.Name("openSettingsWindow")
+    /// Posted after credentials are saved or sample mode is chosen, so the
+    /// AppDelegate rebuilds the data source and refreshes the setup state.
+    static let reloadCredentials = Notification.Name("reloadCredentials")
 }

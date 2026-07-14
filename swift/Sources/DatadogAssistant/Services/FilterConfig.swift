@@ -11,11 +11,16 @@ struct FilterConfig: Equatable {
     var tags: [String] = []
     /// Case-insensitive substring match on monitor names.
     var name: String = ""
+    /// Hide No-Data monitors everywhere (list, counts, notifications). On by
+    /// default — a No-Data monitor carries no signal, and the triage probes it
+    /// would need are skipped too. Toggle off in Settings → Filters.
+    var hideNoData: Bool = true
 
     var isActive: Bool { !tags.isEmpty || !name.trimmingCharacters(in: .whitespaces).isEmpty }
 
     private static let tagsKey = "filterTags"
     private static let nameKey = "filterName"
+    private static let hideNoDataKey = "filterHideNoData"
     private static let knownTagsKey = "filterKnownTags"
 
     static func load() -> FilterConfig {
@@ -25,19 +30,30 @@ struct FilterConfig: Equatable {
         let tags = env["DD_TAG_FILTER"].map { $0.split(separator: " ").map(String.init) }
             ?? defaults.stringArray(forKey: tagsKey) ?? []
         let name = env["DD_NAME_FILTER"] ?? defaults.string(forKey: nameKey) ?? ""
-        return FilterConfig(tags: tags, name: name)
+        // Default true when unset (object(forKey:) is nil), overridable by env.
+        let hideNoData = env["DD_HIDE_NO_DATA"].map { $0 == "1" || $0.lowercased() == "true" }
+            ?? (defaults.object(forKey: hideNoDataKey) as? Bool ?? true)
+        return FilterConfig(tags: tags, name: name, hideNoData: hideNoData)
     }
 
     func save() {
         let defaults = UserDefaults.standard
         defaults.set(tags, forKey: Self.tagsKey)
         defaults.set(name, forKey: Self.nameKey)
+        defaults.set(hideNoData, forKey: Self.hideNoDataKey)
     }
 
     func matches(_ monitor: Monitor) -> Bool {
         if !tags.isEmpty, !tags.contains(where: { monitor.tags.contains($0) }) { return false }
         let needle = name.trimmingCharacters(in: .whitespaces).lowercased()
-        if !needle.isEmpty, !monitor.name.lowercased().contains(needle) { return false }
+        if !needle.isEmpty {
+            // Match the local alias OR the Datadog name: the server-side name
+            // filter matched the Datadog name, so a renamed monitor must not
+            // vanish just because its alias doesn't contain the needle.
+            let inAlias = monitor.name.lowercased().contains(needle)
+            let inOriginal = monitor.originalName?.lowercased().contains(needle) ?? false
+            if !inAlias, !inOriginal { return false }
+        }
         return true
     }
 

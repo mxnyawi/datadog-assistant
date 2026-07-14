@@ -199,14 +199,14 @@
       <div class="panel lead-card">
         <div class="ic">🪄</div>
         <h3>Download the app</h3>
-        <p>One download. Double click it and a clean installer steps you through your region, your Datadog login, and setup. No Terminal. The 🐶 shows up in your menu bar when it is done.</p>
+        <p>Grab the DMG, drag to Applications, and open it (first launch: right-click → Open — the app isn't notarized yet). A 🐾 appears in your menu bar and the app walks you through pasting a Datadog access token. Two minutes, no Terminal.</p>
         <a class="btn btn-primary" href="https://github.com/mxnyawi/datadog-assistant/releases/latest/download/Datadog-Assistant.dmg">Download for macOS</a>
       </div>
       <div class="panel">
         <div class="ic">⌨️</div>
-        <h3>Build from source</h3>
-        <p>One dependency light Python file. Clone it, run the installer script, send a PR. MIT licensed.</p>
-        <code>git clone https://github.com/mxnyawi/datadog-assistant &amp;&amp; ./install.sh</code>
+        <h3>Homebrew or source</h3>
+        <p>Native SwiftUI, no Electron. Install the cask, or build the SwiftPM package yourself. MIT licensed.</p>
+        <code>brew tap mxnyawi/datadog-assistant https://github.com/mxnyawi/datadog-assistant &amp;&amp; brew install --cask --no-quarantine datadog-assistant</code>
         <a class="btn btn-ghost" href="https://github.com/mxnyawi/datadog-assistant" target="_blank" rel="noopener">Open the repo</a>
       </div>
     </div>
@@ -229,7 +229,7 @@
       <div class="cell"><div class="ic">🔥</div><h4>Incidents and dashboards</h4>
         <p>Active Datadog incidents and your real dashboards, right in the menu.</p></div>
       <div class="cell"><div class="ic">🔐</div><h4>Keys stay home</h4>
-        <p>API keys or OAuth, stored in the macOS Keychain. Never on a server, never in a config file.</p></div>
+        <p>A scoped Datadog access token (or API keys), encrypted on this Mac — Secure-Enclave-backed, no password prompts. Never on a server, never in a config file.</p></div>
     </div>
   </div>
 </section>

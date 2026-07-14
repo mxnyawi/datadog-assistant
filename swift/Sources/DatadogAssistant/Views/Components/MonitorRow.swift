@@ -14,26 +14,31 @@ struct MonitorRow: View {
     @State private var ticketError: String?
     @State private var renaming = false
     @State private var aliasText = ""
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var tint: Color { Theme.color(for: monitor.state) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                withAnimation(reduceMotion ? .easeOut(duration: 0.2)
+                                           : .spring(response: 0.3, dampingFraction: 0.8)) {
                     expanded.toggle()
                 }
             } label: {
                 header
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
 
             if expanded {
                 if !monitor.sparkline.isEmpty {
                     Sparkline(points: monitor.sparkline, color: tint,
                               threshold: monitor.thresholdPosition,
-                              markers: monitor.deployMarkers)
-                        .frame(height: 26)
+                              breachBelow: monitor.isBelowThreshold,
+                              markers: monitor.deployMarkers,
+                              ghost: monitor.ghostSparkline,
+                              projection: monitor.projection())
+                        .frame(height: 30)
                         .padding(.leading, 24)
                 }
                 details
@@ -46,11 +51,15 @@ struct MonitorRow: View {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(hovering || expanded ? Theme.hover : Color.clear)
         )
+        .hoverFade(hovering)
         .onHover { hovering = $0 }
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        // Expanded: the name wraps to as many lines as it needs so a long,
+        // unwieldy monitor title is fully readable; collapsed, it stays one
+        // truncated line. Trailing value/chevron align to the first line.
+        HStack(alignment: expanded ? .top : .center, spacing: 8) {
             Image(systemName: Theme.symbol(for: monitor.state))
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(tint)
@@ -68,8 +77,10 @@ struct MonitorRow: View {
             Text(monitor.name)
                 .font(.system(size: 13))
                 .foregroundColor(Theme.textPrimary)
-                .lineLimit(1)
+                .lineLimit(expanded ? nil : 1)
                 .truncationMode(.middle)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             if let delta = monitor.delta, delta >= 1.5 {
                 Text("×\(String(format: delta >= 10 ? "%.0f" : "%.1f", delta))")
@@ -100,6 +111,23 @@ struct MonitorRow: View {
                 if let threshold = monitor.threshold {
                     detailItem(icon: "ruler", text: "threshold \(compact(threshold))")
                 }
+                if let trend = monitor.trendLabel {
+                    let critical = trend.contains("critical")
+                    HStack(spacing: 4) {
+                        Image(systemName: trend.hasPrefix("easing")
+                              ? "chart.line.downtrend.xyaxis"
+                              : "chart.line.uptrend.xyaxis")
+                            .font(.system(size: 9))
+                        Text(trend)
+                            .font(.system(size: 11, weight: critical ? .semibold : .medium))
+                            .lineLimit(1)
+                    }
+                    .foregroundColor(critical ? tint : Theme.textSecondary)
+                }
+            }
+            // Blast radius: which hosts/groups are firing vs healthy.
+            if monitor.groupStates.count > 1 {
+                GroupHeatmap(states: monitor.groupStates)
             }
             if !monitor.triggeredHosts.isEmpty {
                 detailItem(icon: "server.rack",
@@ -166,7 +194,7 @@ struct MonitorRow: View {
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(Theme.textMuted)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.pressable)
                 if let original = monitor.originalName {
                     Button {
                         MonitorAliases.reset(monitorID: monitor.id)
@@ -177,7 +205,7 @@ struct MonitorRow: View {
                             .foregroundColor(Theme.textMuted)
                             .lineLimit(1)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pressable)
                 }
             }
         }
@@ -223,7 +251,9 @@ struct MonitorRow: View {
     private func createTicket(_ config: JiraConfig) {
         creatingTicket = true
         ticketError = nil
-        Task {
+        // @MainActor: mutates @State after the await; a plain Task from a
+        // nonisolated View method would do that off the main thread.
+        Task { @MainActor in
             do {
                 let ticket = try await JiraClient.createIssue(for: monitor, config: config)
                 LinkOpener.open(ticket.url)
@@ -263,7 +293,7 @@ struct MonitorRow: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
     }
 
     private func minutesBefore(_ deploy: DeployEvent) -> String {
@@ -295,7 +325,7 @@ struct MonitorRow: View {
             .padding(.horizontal, 10).padding(.vertical, 5)
             .background(Capsule().fill(Theme.track))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
     }
 
     private var rightLabel: String {

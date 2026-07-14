@@ -5,16 +5,31 @@ import SwiftUI
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private let onSave: () -> Void
+    private let monitoredServices: () -> [String]
 
-    init(onSave: @escaping () -> Void) {
+    init(onSave: @escaping () -> Void,
+         monitoredServices: @escaping () -> [String] = { [] }) {
         self.onSave = onSave
+        self.monitoredServices = monitoredServices
     }
 
     func show() {
-        if window == nil {
-            let host = NSHostingController(rootView: SettingsView(onSave: { [weak self] in
-                self?.onSave()
-            }))
+        // Already open: just bring it forward — rebuilding would wipe
+        // in-progress typing.
+        if let window, window.isVisible {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        // (Re)opening: build fresh content so every tab's @State re-reads the
+        // stored truth — credentials may have changed from the connect prompt,
+        // env, or a previous visit since the view was last built.
+        let host = NSHostingController(rootView: SettingsView(
+            onSave: { [weak self] in self?.onSave() },
+            monitoredServices: { [weak self] in self?.monitoredServices() ?? [] }))
+        if let window {
+            window.contentViewController = host
+        } else {
             let window = NSWindow(contentViewController: host)
             window.title = "Datadog Assistant Settings"
             window.styleMask = [.titled, .closable]
@@ -33,22 +48,30 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 /// pickers and toggles persist immediately — no hidden "unsaved" state.
 struct SettingsView: View {
     let onSave: () -> Void
+    var monitoredServices: () -> [String] = { [] }
 
     var body: some View {
+        // Each tab scrolls inside a fixed-height TabView. Without this, a tab
+        // whose content is taller than the window (Source with the scope
+        // checklist, Notifications) overflows upward into the tab strip on
+        // first open until a relayout — the "overlap" bug.
         TabView {
-            SourceSettingsTab(onSave: onSave)
-                .tabItem { Label("Source", systemImage: "key.fill") }
-            FilterSettingsTab(onSave: onSave)
-                .tabItem { Label("Filters", systemImage: "line.3.horizontal.decrease.circle") }
-            NotificationSettingsTab()
-                .tabItem { Label("Notifications", systemImage: "bell.badge.fill") }
-            JiraSettingsTab()
-                .tabItem { Label("Jira", systemImage: "ticket.fill") }
-            GitHubSettingsTab(onSave: onSave)
-                .tabItem { Label("GitHub", systemImage: "arrow.triangle.pull") }
+            tab("Source", "key.fill") { SourceSettingsTab(onSave: onSave) }
+            tab("Filters", "line.3.horizontal.decrease.circle") { FilterSettingsTab(onSave: onSave) }
+            tab("Notifications", "bell.badge.fill") { NotificationSettingsTab() }
+            tab("Jira", "ticket.fill") { JiraSettingsTab() }
+            tab("GitHub", "arrow.triangle.pull") {
+                GitHubSettingsTab(onSave: onSave, monitoredServices: monitoredServices)
+            }
         }
-        .frame(width: 470)
+        .frame(width: 470, height: 490)
         .padding(12)
+    }
+
+    private func tab<Content: View>(_ title: String, _ icon: String,
+                                    @ViewBuilder _ content: () -> Content) -> some View {
+        ScrollView { content() }
+            .tabItem { Label(title, systemImage: icon) }
     }
 }
 
@@ -61,7 +84,10 @@ private struct SourceSettingsTab: View {
     @State private var appKey = ""
     @State private var site = Credentials.currentSite()
     @State private var error: String?
-    @State private var hasExistingKeys = Credentials.load() != nil
+    // Presence check only — Credentials.load() can shell out to lpass/
+    // password-manager commands and must never run during view init.
+    @State private var hasExistingKeys =
+        Credentials.hasStoredAccessToken() || Credentials.hasStoredKeyPair()
     @State private var lastPassEntry = ""
     @State private var hasLastPass = LastPassConfig.load() != nil
     @State private var lastPassLoggedIn = false
@@ -71,15 +97,20 @@ private struct SourceSettingsTab: View {
     @State private var browser = LinkOpener.currentBrowser()
     @State private var apiKeyCmd = UserDefaults.standard.string(forKey: "apiKeyCmd") ?? ""
     @State private var appKeyCmd = UserDefaults.standard.string(forKey: "appKeyCmd") ?? ""
+    // Token-first: default to the access-token sub-tab unless a key pair is
+    // what's actually stored.
+    @State private var useAccessToken =
+        Credentials.hasStoredAccessToken() || !Credentials.hasStoredKeyPair()
+    @State private var accessToken = ""
+    @State private var accessTokenCmd = UserDefaults.standard.string(forKey: "accessTokenCmd") ?? ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Credential source")
                 .font(.headline)
-            // LastPass first — the shared team vault is the recommended path.
             Picker("", selection: Binding(get: { authMode }, set: { setMode($0) })) {
-                Text("LastPass").tag(AuthMode.lastPass)
-                Text("API keys").tag(AuthMode.keychain)
+                Text("This Mac").tag(AuthMode.device)
+                Text("Team LastPass").tag(AuthMode.lastPass)
                 Text("Sample data").tag(AuthMode.sample)
             }
             .pickerStyle(.segmented)
@@ -93,12 +124,12 @@ private struct SourceSettingsTab: View {
 
             switch authMode {
             case .sample:
-                Text("Running on sample data — nothing to configure. Pick LastPass "
-                     + "or API keys above to connect your org.")
+                Text("Running on sample data — nothing to configure. Pick This Mac "
+                     + "or Team LastPass above to connect your org.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            case .keychain:
+            case .device:
                 keychainSection
             case .lastPass:
                 lastPassSection
@@ -115,7 +146,9 @@ private struct SourceSettingsTab: View {
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(height: 380)
+        // Min, not fixed: the token section's scope checklist expands
+        // past 380pt and must not clip.
+        .frame(minHeight: 430)
         .onAppear {
             if let lastPass = LastPassConfig.load() {
                 lastPassEntry = lastPass.entry
@@ -135,9 +168,28 @@ private struct SourceSettingsTab: View {
 
     private var keychainSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(hasExistingKeys
-                 ? "Keys are stored in the macOS Keychain. Enter new values to replace them."
-                 : "Stored in the macOS Keychain, never written to disk in plain text. "
+            // Two credential shapes since Datadog's 2026 auth modernization:
+            // the classic pair, or one scoped access token.
+            Picker("", selection: $useAccessToken) {
+                Text("Access token").tag(true)
+                Text("API + App keys").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            if useAccessToken {
+                accessTokenFields
+            } else {
+                keyPairFields
+            }
+        }
+    }
+
+    private var keyPairFields: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(hasExistingKeys && !Credentials.hasStoredAccessToken()
+                 ? "Keys are stored securely on this Mac. Enter new values to replace them."
+                 : "Stored securely on this Mac (encrypted on disk, no password prompt). "
                    + "App key needs monitors_read (plus monitors_write for mute, "
                    + "incident_read and metrics_read for full features).")
                 .font(.subheadline)
@@ -151,8 +203,10 @@ private struct SourceSettingsTab: View {
                 }
                 TextField("API key command (optional, e.g. op read op://…)", text: $apiKeyCmd)
                     .onSubmit { saveCommands() }
+                    .onChange(of: apiKeyCmd) { _ in saveCommands(reload: false) }
                 TextField("App key command (optional)", text: $appKeyCmd)
                     .onSubmit { saveCommands() }
+                    .onChange(of: appKeyCmd) { _ in saveCommands(reload: false) }
             }
             HStack {
                 if hasExistingKeys {
@@ -166,6 +220,52 @@ private struct SourceSettingsTab: View {
                 Button("Save keys") { saveKeys() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(apiKey.isEmpty || appKey.isEmpty)
+            }
+        }
+    }
+
+    private var accessTokenFields: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(Credentials.hasStoredAccessToken()
+                 ? "An access token is stored securely on this Mac. Paste a new one to replace it."
+                 : "One scoped credential instead of a key pair — create it under "
+                   + "Personal Settings → Access Tokens (or on a service account for a "
+                   + "non-expiring token).")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            DisclosureGroup("Which scopes does the token need?") {
+                ScopeChecklistView()
+                    .padding(.top, 4)
+            }
+            .font(.caption)
+            Form {
+                SecureField("Access token (ddpat_… or ddsat_…)", text: $accessToken)
+                Picker("Site", selection: $site) {
+                    ForEach(Credentials.knownSites, id: \.self) { Text($0) }
+                }
+                TextField("Token command (optional, e.g. op read op://…)", text: $accessTokenCmd)
+                    .onSubmit { saveCommands() }
+                    .onChange(of: accessTokenCmd) { _ in saveCommands(reload: false) }
+            }
+            Text("Personal tokens expire (up to 1 year) — you'll re-paste one when "
+                 + "Datadog reports 401/403. Service-account tokens can be non-expiring.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                if Credentials.hasStoredAccessToken() {
+                    Button("Remove token", role: .destructive) {
+                        Credentials.clear()
+                        hasExistingKeys = false
+                        useAccessToken = false
+                        setMode(.sample)
+                    }
+                }
+                Spacer()
+                Button("Save token") { saveAccessToken() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(accessToken.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
     }
@@ -232,13 +332,20 @@ private struct SourceSettingsTab: View {
     private var authSourceHint: String {
         switch authMode {
         case .sample:
-            return "Running on sample data. Choose Keychain or LastPass to connect real data."
-        case .keychain:
-            return "Using keys stored in the macOS Keychain."
+            return "Running on sample data. Choose This Mac or Team LastPass to connect real data."
+        case .device:
+            return Credentials.hasStoredAccessToken()
+                ? "Using an access token stored securely on this Mac."
+                : "Using keys stored securely on this Mac."
         case .lastPass:
-            return lastPassLoggedIn
-                ? "Using the shared LastPass vault — keys are fetched at runtime, nothing is stored locally."
+            let base = lastPassLoggedIn
+                ? "Using the shared LastPass vault — keys are fetched at runtime."
                 : "LastPass selected. Run Set up… (or `lpass login`) to unlock the vault."
+            // Don't claim "nothing is stored locally" while device-saved
+            // credentials still exist — they stay until removed in This Mac.
+            return (Credentials.hasStoredAccessToken() || Credentials.hasStoredKeyPair())
+                ? base + " Credentials saved earlier under This Mac remain stored until you remove them there."
+                : base
         }
     }
 
@@ -249,10 +356,13 @@ private struct SourceSettingsTab: View {
         onSave()
     }
 
-    private func saveCommands() {
+    /// Persist the password-manager command fields. `reload` re-resolves the
+    /// data source — wanted on an explicit submit, too heavy per keystroke.
+    private func saveCommands(reload: Bool = true) {
         UserDefaults.standard.set(apiKeyCmd, forKey: "apiKeyCmd")
         UserDefaults.standard.set(appKeyCmd, forKey: "appKeyCmd")
-        onSave()
+        UserDefaults.standard.set(accessTokenCmd, forKey: "accessTokenCmd")
+        if reload { onSave() }
     }
 
     private func saveKeys() {
@@ -261,16 +371,33 @@ private struct SourceSettingsTab: View {
             hasExistingKeys = true
             apiKey = ""
             appKey = ""
-            setMode(.keychain)
+            setMode(.device)
         } catch {
-            self.error = "Keychain write failed: \(error.localizedDescription)"
+            self.error = "Couldn't save: \(error.localizedDescription)"
+        }
+    }
+
+    private func saveAccessToken() {
+        do {
+            try Credentials.saveAccessToken(
+                accessToken.trimmingCharacters(in: .whitespaces), site: site)
+            hasExistingKeys = true
+            accessToken = ""
+            setMode(.device)
+        } catch {
+            self.error = "Couldn't save: \(error.localizedDescription)"
         }
     }
 
     private func saveLastPass() {
         var config = LastPassConfig.load() ?? LastPassConfig(entry: "")
-        config.entry = lastPassEntry.trimmingCharacters(in: .whitespaces)
-        guard !config.entry.isEmpty else { return }
+        let typed = lastPassEntry.trimmingCharacters(in: .whitespaces)
+        guard !typed.isEmpty else { return }
+        // A newly typed entry must actually be used: lookups prefer the
+        // stored entryID (set by the picker), so keeping a stale ID would
+        // silently ignore what the user just typed.
+        if typed != config.entry { config.entryID = "" }
+        config.entry = typed
         config.save()
         hasLastPass = true
         lastPassLoggedIn = LastPass.isLoggedIn()
@@ -298,7 +425,15 @@ private struct FilterSettingsTab: View {
 
             Form {
                 TextField("Name contains", text: $filters.name)
+                Toggle("Hide No-Data monitors", isOn: $filters.hideNoData)
+                    .onChange(of: filters.hideNoData) { _ in apply() }
             }
+            Text("No-Data monitors carry no signal, so they're hidden by default "
+                 + "(their triage checks are skipped too). Turn this off to see them, "
+                 + "grouped as likely-broken vs quiet.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             if FilterConfig.knownTags().isEmpty {
                 Text("No tags discovered yet — they appear after the first poll.")
@@ -328,7 +463,7 @@ private struct FilterSettingsTab: View {
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(height: 340)
+        .frame(minHeight: 430)
     }
 
     private var tagPicker: some View {
@@ -443,7 +578,7 @@ private struct NotificationSettingsTab: View {
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(height: 480)
+        .frame(minHeight: 430)
         .onChange(of: settings) { newValue in
             newValue.save()
             // Instant feedback when trying sounds from the dropdown.
@@ -564,7 +699,7 @@ private struct JiraSettingsTab: View {
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(height: 420)
+        .frame(minHeight: 430)
         .onAppear { loadStored() }
     }
 
@@ -645,7 +780,7 @@ private struct JiraSettingsTab: View {
                 token = ""
             }
         } catch {
-            status = "Keychain write failed: \(error.localizedDescription)"
+            status = "Couldn't save: \(error.localizedDescription)"
             isError = true
             return
         }
@@ -660,7 +795,9 @@ private struct JiraSettingsTab: View {
         guard !isError else { return }
         busy = true; status = "Opening browser for Atlassian consent…"; isError = false
         let host = baseURL
-        Task {
+        // @MainActor: these tasks mutate @State after suspension points, and
+        // a plain Task from a nonisolated View method lands off the main thread.
+        Task { @MainActor in
             do {
                 let site = try await JiraOAuth.connect(preferredHost: host)
                 connected = true
@@ -683,7 +820,7 @@ private struct JiraSettingsTab: View {
         guard !isError else { return }
         busy = true; status = "Testing…"; isError = false
         let config = currentConfig()
-        Task {
+        Task { @MainActor in
             let report = await JiraClient.connectionTest(config: config)
             status = report
             isError = report.lowercased().contains("failed")
@@ -696,6 +833,7 @@ private struct JiraSettingsTab: View {
 
 private struct GitHubSettingsTab: View {
     let onSave: () -> Void
+    var monitoredServices: () -> [String] = { [] }
 
     @State private var gitHubToken = ""
     @State private var gitHubRepos = ""
@@ -703,7 +841,20 @@ private struct GitHubSettingsTab: View {
     @State private var ghAvailable = false
     @State private var ghToken = false
     @State private var suggestedRepos: [String] = []
+    @State private var orgs: [String] = []
+    @State private var selectedOwner = ""     // "" = your own repos
+    @State private var customOwner = ""       // free-text org/owner not in the list
+    @State private var loadingRepos = false
     @State private var error: String?
+
+    /// The owner whose repos the suggestion list should show.
+    private var currentOwner: String {
+        let custom = customOwner.trimmingCharacters(in: .whitespaces)
+        return custom.isEmpty ? selectedOwner : custom
+    }
+    private var currentOwnerLabel: String {
+        currentOwner.isEmpty ? "your repos" : currentOwner
+    }
 
     /// Repos-only saves are fine whenever a token resolves elsewhere: the
     /// LastPass note or the gh CLI.
@@ -745,16 +896,61 @@ private struct GitHubSettingsTab: View {
                 TextField("Repos (payments=acme/pay-api, acme/platform)", text: $gitHubRepos)
             }
 
-            if !suggestedRepos.isEmpty {
-                Menu {
-                    ForEach(suggestedRepos, id: \.self) { repo in
-                        Button(repo) { appendRepo(repo) }
+            // Pull repo suggestions from your own account or any organization
+            // you belong to — most org repos aren't owned by your user.
+            if ghToken {
+                HStack(spacing: 8) {
+                    Picker("From", selection: $selectedOwner) {
+                        Text("Your repos").tag("")
+                        ForEach(orgs, id: \.self) { org in Text(org).tag(org) }
                     }
-                } label: {
-                    Label("Add from your gh repos…", systemImage: "plus.circle")
-                        .font(.caption)
+                    .fixedSize()
+                    .onChange(of: selectedOwner) { _ in
+                        customOwner = ""
+                        loadRepos()
+                    }
+                    TextField("or type an org", text: $customOwner)
+                        .frame(width: 130)
+                        .onSubmit { loadRepos() }
+                    if loadingRepos { ProgressView().controlSize(.small) }
                 }
-                .fixedSize()
+
+                // The one-click path: match this owner's repos against the
+                // service: tags on your monitors and fill them in for you.
+                let services = monitoredServices()
+                if !services.isEmpty {
+                    Button {
+                        autofillFromMonitors(services: services)
+                    } label: {
+                        Label("Auto-fill from \(services.count) monitored "
+                              + "service\(services.count == 1 ? "" : "s")",
+                              systemImage: "wand.and.stars")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.pressable)
+                    .foregroundColor(Theme.info)
+                    .disabled(loadingRepos)
+                    .help("Match \(currentOwnerLabel)'s repos to your monitors' "
+                          + "service tags and add the ones that line up.")
+                }
+
+                if !suggestedRepos.isEmpty {
+                    Menu {
+                        ForEach(suggestedRepos, id: \.self) { repo in
+                            Button(repo) { appendRepo(repo) }
+                        }
+                    } label: {
+                        Label("Or add manually from \(currentOwnerLabel)…", systemImage: "plus.circle")
+                            .font(.caption)
+                    }
+                    .fixedSize()
+                } else if !loadingRepos {
+                    Text("No repos found for \(currentOwnerLabel). "
+                         + "For a private org, make sure `gh auth login` granted read:org.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             if let error {
@@ -777,7 +973,7 @@ private struct GitHubSettingsTab: View {
             Spacer(minLength: 0)
         }
         .padding(16)
-        .frame(height: 360)
+        .frame(minHeight: 430)
         .onAppear { probeGH() }
     }
 
@@ -799,7 +995,7 @@ private struct GitHubSettingsTab: View {
             hasGitHub = true
             onSave()
         } catch {
-            self.error = "Keychain write failed: \(error.localizedDescription)"
+            self.error = "Couldn't save: \(error.localizedDescription)"
         }
     }
 
@@ -810,10 +1006,26 @@ private struct GitHubSettingsTab: View {
             let available = GitHubCLI.isInstalled
             let token = available && GitHubCLI.authToken() != nil
             let repos = token ? GitHubCLI.listRepos() : []
+            let orgs = token ? GitHubCLI.listOrgs() : []
             await MainActor.run {
                 ghAvailable = available
                 ghToken = token
                 suggestedRepos = repos
+                self.orgs = orgs
+            }
+        }
+    }
+
+    /// Re-fetch repo suggestions for the currently-chosen owner (your account,
+    /// a picked org, or a typed one). Off the main thread — it shells out.
+    private func loadRepos() {
+        let owner = currentOwner
+        loadingRepos = true
+        Task.detached {
+            let repos = GitHubCLI.listRepos(owner: owner)
+            await MainActor.run {
+                suggestedRepos = repos
+                loadingRepos = false
             }
         }
     }
@@ -823,4 +1035,80 @@ private struct GitHubSettingsTab: View {
         guard !existing.contains(repo) else { return }
         gitHubRepos = existing.isEmpty ? repo : "\(existing), \(repo)"
     }
+
+    /// Fetch the chosen owner's repos and map them to the monitors' services,
+    /// filling the repos field with `service=owner/repo` specs. The user still
+    /// reviews and hits Save, since fuzzy name matching can mis-guess.
+    private func autofillFromMonitors(services: [String]) {
+        let owner = currentOwner
+        loadingRepos = true
+        error = nil
+        Task.detached {
+            let repos = GitHubCLI.listRepos(owner: owner)
+            let specs = matchReposToServices(services: services, repos: repos)
+            await MainActor.run {
+                loadingRepos = false
+                suggestedRepos = repos
+                if specs.isEmpty {
+                    error = "No repos in \(currentOwnerLabel) matched your monitored "
+                        + "services (\(services.prefix(4).joined(separator: ", "))…). "
+                        + "Add them manually below."
+                } else {
+                    mergeSpecs(specs)
+                }
+            }
+        }
+    }
+
+    /// Merge new `service=owner/repo` specs into the field, skipping any whose
+    /// repo is already listed.
+    private func mergeSpecs(_ specs: [String]) {
+        var current = gitHubRepos
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        func repoPart(_ s: String) -> String { s.split(separator: "=").last.map(String.init) ?? s }
+        let have = Set(current.map(repoPart))
+        for spec in specs where !have.contains(repoPart(spec)) {
+            current.append(spec)
+        }
+        gitHubRepos = current.joined(separator: ", ")
+    }
+
+}
+
+/// Match each monitored service to the best-named repo. Normalizes both sides
+/// (lowercase, drop common suffixes like -api/-service, keep only
+/// alphanumerics) and prefers an exact name match over a containment one, so
+/// service "payments" lines up with "acme/payments-api". Each repo is used at
+/// most once. Free function so it's callable from a detached task without any
+/// actor-isolation ceremony.
+private func matchReposToServices(services: [String], repos: [String]) -> [String] {
+    func norm(_ s: String) -> String {
+        var x = s.lowercased()
+        for suffix in ["-api", "-service", "-svc", "-app", "-backend", "-server", "-worker"]
+        where x.hasSuffix(suffix) { x = String(x.dropLast(suffix.count)) }
+        return x.filter { $0.isLetter || $0.isNumber }
+    }
+    var specs: [String] = []
+    var usedRepos = Set<String>()
+    for service in services {
+        let ns = norm(service)
+        guard !ns.isEmpty else { continue }
+        var best: String?
+        var bestScore = 0
+        for repo in repos where !usedRepos.contains(repo) {
+            let name = repo.split(separator: "/").last.map(String.init) ?? repo
+            let nr = norm(name)
+            var score = 0
+            if nr == ns { score = 3 }
+            else if nr.contains(ns) || ns.contains(nr) { score = 2 }
+            if score > bestScore { bestScore = score; best = repo }
+        }
+        if let best, bestScore >= 2 {
+            specs.append("\(service)=\(best)")
+            usedRepos.insert(best)
+        }
+    }
+    return specs
 }

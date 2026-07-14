@@ -40,7 +40,7 @@ struct SnoozeSection: View {
                             )
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.pressable)
                     }
                 }
                 Text("Creates an org-wide Datadog downtime (scope *). Notifications pause; the panel stays live.")
@@ -72,7 +72,7 @@ struct SnoozeSection: View {
                             .overlay(Capsule().stroke(Theme.alert.opacity(0.4), lineWidth: 1))
                     )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -84,7 +84,11 @@ struct SnoozeSection: View {
 
     private func resolved(_ duration: TimeInterval) -> TimeInterval {
         guard duration == 0 else { return duration }
-        let endOfDay = Calendar.current.startOfDay(for: Date()).addingTimeInterval(24 * 3600)
-        return max(60, endOfDay.timeIntervalSinceNow)
+        // Calendar math, not +24h: on DST-transition days the day is 23 or
+        // 25 hours long and a fixed offset lands the "end of day" an hour off.
+        let calendar = Calendar.current
+        let now = Date()
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: now) ?? now.addingTimeInterval(86_400)
+        return max(60, calendar.startOfDay(for: tomorrow).timeIntervalSince(now))
     }
 }
