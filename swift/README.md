@@ -4,11 +4,11 @@ A native Swift / SwiftUI rewrite of the menu-bar app, branched off `main` so
 the original Python app keeps working untouched. Self-contained SwiftPM
 package that builds a menu-bar-only `.app` bundle.
 
-> Status: **functional prototype.** Real Datadog client, glass panel UI,
-> actionable notifications, global hotkey, settings window. Written on Linux —
-> compiles-on-first-try is not guaranteed; expect to fix small type errors on
-> first `swift build`. Jira, DLQ grouping, No-Data triage, and per-monitor
-> rename from the Python app are not ported yet.
+> Status: **feature-complete port** (see [PARITY.md](PARITY.md)) with a
+> native adaptive UI — system popover material, light/dark mode, HIG type
+> sizes, grouped-inset sections. First launch shows a welcome window that
+> sets up the team LastPass vault (recommended), pasted API keys, or sample
+> data. CI compiles the package on macOS on every PR.
 
 ## Prerequisites
 
