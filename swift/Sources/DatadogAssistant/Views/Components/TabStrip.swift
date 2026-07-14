@@ -10,7 +10,7 @@ enum Tab: Hashable {
 
     var symbol: String {
         switch self {
-        case .monitors: return "cpu"
+        case .monitors: return "gauge.with.needle"
         case .changes:  return "arrow.triangle.branch"
         case .snooze:   return "moon.zzz.fill"
         case .tools:    return "wrench.and.screwdriver.fill"
@@ -29,50 +29,52 @@ enum Tab: Hashable {
     }
 }
 
+/// Segmented tab switcher styled like a native segmented control: one card,
+/// the selected segment lifted with a subtle fill, accent color for state.
 struct TabStrip: View {
     @Binding var selected: Tab
     /// Badge counts (e.g. suspect changes) keyed by tab.
     var badges: [Tab: Int] = [:]
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 2) {
             ForEach(Tab.strip, id: \.self) { tab in
-                Button {
-                    selected = tab
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: tab.symbol)
-                            .font(.system(size: 12, weight: .semibold))
-                        if let count = badges[tab], count > 0 {
-                            Text("\(count)")
-                                .font(.system(size: 10, weight: .bold, design: .rounded))
-                                .foregroundColor(Theme.alert)
-                        }
-                    }
-                    .foregroundColor(selected == tab ? Theme.info : Theme.textSecondary)
-                    .frame(maxWidth: .infinity, minHeight: 34)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(selected == tab ? Theme.info.opacity(0.18) : Color.clear)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .stroke(selected == tab ? Theme.info.opacity(0.45) : .clear,
-                                            lineWidth: 1)
-                            )
-                    )
-                }
-                .buttonStyle(.plain)
-                .help(tab.label)
+                segment(tab)
             }
         }
-        .padding(4)
+        .padding(3)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Theme.panel)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Theme.panelStroke, lineWidth: 1)
-                )
         )
+    }
+
+    private func segment(_ tab: Tab) -> some View {
+        Button {
+            selected = tab
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: tab.symbol)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(tab.label)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                if let count = badges[tab], count > 0 {
+                    Text("\(count)")
+                        .font(.system(size: 10, weight: .bold))
+                        .monospacedDigit()
+                        .foregroundColor(Theme.alert)
+                }
+            }
+            .foregroundColor(selected == tab ? Theme.textPrimary : Theme.textSecondary)
+            .frame(maxWidth: .infinity, minHeight: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(selected == tab ? Theme.track : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(tab.label)
     }
 }

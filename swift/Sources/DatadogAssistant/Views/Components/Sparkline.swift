@@ -28,7 +28,7 @@ struct Sparkline: View {
                         p.move(to: CGPoint(x: 0, y: y))
                         p.addLine(to: CGPoint(x: geo.size.width, y: y))
                     }
-                    .stroke(Color.white.opacity(0.35),
+                    .stroke(Color.primary.opacity(0.35),
                             style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
                 }
                 ForEach(Array(markers.enumerated()), id: \.offset) { _, position in

@@ -1,9 +1,14 @@
 import AppKit
 import SwiftUI
 
-/// Borderless, non-activating glass panel — replaces NSPopover so we control
-/// the chrome entirely: no arrow, continuous 20pt corners, behind-window blur.
+/// Borderless, non-activating panel — replaces NSPopover so we control the
+/// chrome: no arrow, continuous 13pt corners (the Sonoma+ menu radius), and
+/// the system popover material, adapting to light/dark automatically.
 final class FloatingPanel: NSPanel {
+    /// Called when the user asks the panel to go away (Esc). The owning
+    /// controller hides the panel and tears down its dismiss monitors.
+    var onDismiss: (() -> Void)?
+
     init(contentView: NSView, size: NSSize) {
         super.init(
             contentRect: NSRect(origin: .zero, size: size),
@@ -13,26 +18,23 @@ final class FloatingPanel: NSPanel {
         )
 
         isFloatingPanel = true
-        level = .statusBar
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        level = .popUpMenu
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
         isMovable = false
         hidesOnDeactivate = false
         animationBehavior = .utilityWindow
-        appearance = NSAppearance(named: .darkAqua)   // the design is dark glass
 
         let effect = NSVisualEffectView()
-        effect.material = .hudWindow
+        effect.material = .popover
         effect.blendingMode = .behindWindow
         effect.state = .active
         effect.wantsLayer = true
-        effect.layer?.cornerRadius = 20
+        effect.layer?.cornerRadius = 13
         effect.layer?.cornerCurve = .continuous
         effect.layer?.masksToBounds = true
-        effect.layer?.borderWidth = 1
-        effect.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
 
         contentView.translatesAutoresizingMaskIntoConstraints = false
         effect.addSubview(contentView)
@@ -46,7 +48,12 @@ final class FloatingPanel: NSPanel {
     }
 
     // Borderless panels refuse key status by default; we want it so the panel
-    // can host focused controls (search, settings fields) later.
+    // can host focused controls (search, filter fields).
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// Esc dismisses, like a menu.
+    override func cancelOperation(_ sender: Any?) {
+        onDismiss?()
+    }
 }

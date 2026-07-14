@@ -4,33 +4,26 @@ struct ActivitySection: View {
     let snapshot: Snapshot
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                Text("Activity")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(Theme.textSecondary)
-
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                SectionHeader(title: "Activity")
                 HStack(spacing: 4) {
                     Circle().fill(pressureColor).frame(width: 7, height: 7)
                     Text(pressureLabel)
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(pressureColor)
                 }
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(
-                    Capsule().fill(pressureColor.opacity(0.15))
-                )
-
-                Spacer()
                 Text("\(snapshot.alerting.count + snapshot.warning.count) firing")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .font(.system(size: 11, weight: .medium))
+                    .monospacedDigit()
                     .foregroundColor(Theme.textSecondary)
             }
-            .padding(.leading, 2)
 
-            Sparkline(points: snapshot.activity, color: pressureColor, lineWidth: 1.5)
-                .frame(height: 40)
-                .padding(.top, 2)
+            InsetCard {
+                Sparkline(points: snapshot.activity, color: pressureColor, lineWidth: 1.5)
+                    .frame(height: 36)
+                    .padding(6)
+            }
         }
     }
 

@@ -25,16 +25,15 @@ struct HeroAlertCard: View {
             }
             actions
         }
-        .padding(14)
+        .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Theme.alert.opacity(0.09))
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Theme.alert.opacity(0.10))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Theme.alert.opacity(0.40), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Theme.alert.opacity(0.35), lineWidth: 1)
                 )
         )
-        .shadow(color: Theme.alert.opacity(0.25), radius: 16, y: 4)
         .onAppear { pulsing = true }
     }
 
@@ -107,14 +106,14 @@ struct HeroAlertCard: View {
             let thresholdX = geo.size.width * CGFloat(1.0 / cap)
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Theme.track)
                 Capsule()
                     .fill(LinearGradient(
                         colors: [Theme.warn, Theme.alert],
                         startPoint: .leading, endPoint: .trailing))
                     .frame(width: max(6, geo.size.width * CGFloat(fraction)))
                 Rectangle()
-                    .fill(Color.white.opacity(0.7))
+                    .fill(Color.primary.opacity(0.6))
                     .frame(width: 1.5)
                     .offset(x: thresholdX)
             }
@@ -174,12 +173,10 @@ struct HeroAlertCard: View {
                 Text(label)
                     .font(.system(size: 11, weight: .bold))
             }
-            .foregroundColor(prominent ? Color.black.opacity(0.85) : Theme.textPrimary)
+            .foregroundColor(prominent ? Color.white : Theme.textPrimary)
             .frame(maxWidth: .infinity, minHeight: 28)
             .background(
-                Capsule().fill(prominent ? Theme.alert : Color.white.opacity(0.10))
-                    .overlay(Capsule().stroke(
-                        prominent ? Color.clear : Theme.panelStroke, lineWidth: 1))
+                Capsule().fill(prominent ? Theme.alert : Theme.track)
             )
             .contentShape(Capsule())
         }

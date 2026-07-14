@@ -9,21 +9,15 @@ struct ChangesSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !snapshot.ciRuns.isEmpty {
-                Text("CI · latest runs")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(Theme.textSecondary)
-                    .padding(.leading, 2)
+                SectionHeader(title: "CI — Latest Runs", count: snapshot.ciRuns.count)
                 VStack(spacing: 4) {
                     ForEach(snapshot.ciRuns.prefix(4)) { CIRunRow(run: $0) }
                 }
-                Divider().background(Theme.panelStroke)
-                    .padding(.vertical, 4)
+                Spacer().frame(height: 6)
             }
 
-            Text("Recent changes")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Theme.textSecondary)
-                .padding(.leading, 2)
+            SectionHeader(title: "Recent Changes",
+                          count: snapshot.deploys.isEmpty ? nil : snapshot.deploys.count)
 
             if snapshot.deploys.isEmpty {
                 emptyState
@@ -97,13 +91,8 @@ struct CIRunRow: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(run.state == .failure ? Theme.alert.opacity(0.10) : Theme.panel)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(run.state == .failure ? Theme.alert.opacity(0.40) : Theme.panelStroke,
-                                    lineWidth: 1)
-                    )
             )
             .contentShape(Rectangle())
         }
@@ -140,13 +129,8 @@ struct DeployRow: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(isSuspect ? Theme.alert.opacity(0.10) : Theme.panel)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(isSuspect ? Theme.alert.opacity(0.40) : Theme.panelStroke,
-                                    lineWidth: 1)
-                    )
             )
             .contentShape(Rectangle())
         }

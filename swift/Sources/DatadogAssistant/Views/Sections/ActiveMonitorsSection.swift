@@ -6,36 +6,38 @@ struct ActiveMonitorsSection: View {
     var excluding: Int? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(excluding == nil ? "Active monitors" : "Also firing")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Theme.textSecondary)
-                .padding(.leading, 2)
+        // DLQ monitors live in their own section (exclusive grouping).
+        let dlqExclusive = DLQConfig.load().exclusive
+        let active = (snapshot.alerting + snapshot.warning)
+            .filter { $0.id != excluding && !(dlqExclusive && $0.isDLQ) }
+            .prefix(4)
 
-            // DLQ monitors live in their own section (exclusive grouping).
-            let dlqExclusive = DLQConfig.load().exclusive
-            let active = (snapshot.alerting + snapshot.warning)
-                .filter { $0.id != excluding && !(dlqExclusive && $0.isDLQ) }
-                .prefix(4)
+        VStack(alignment: .leading, spacing: 6) {
+            SectionHeader(title: excluding == nil ? "Active Monitors" : "Also Firing",
+                          count: active.isEmpty ? nil : active.count)
+
             if active.isEmpty {
                 // With a hero card above, an empty remainder needs no state.
                 if excluding == nil { emptyState }
             } else {
-                VStack(spacing: 2) {
+                InsetCard {
                     ForEach(Array(active), id: \.id) { MonitorRow(monitor: $0) }
                 }
             }
         }
     }
 
+    /// The native empty state: one quiet line, not an illustration.
     private var emptyState: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "checkmark.seal.fill")
-                .foregroundColor(Theme.ok)
-            Text("Nothing firing.")
-                .font(.system(size: 12, weight: .medium))
+        VStack(spacing: 6) {
+            Image(systemName: "checkmark.circle")
+                .font(.system(size: 24, weight: .regular))
+                .foregroundColor(Theme.textSecondary)
+            Text("All monitors OK")
+                .font(.system(size: 13))
                 .foregroundColor(Theme.textSecondary)
         }
-        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
     }
 }

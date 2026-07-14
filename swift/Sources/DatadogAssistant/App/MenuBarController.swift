@@ -8,7 +8,7 @@ import Combine
 /// Python app's 🐶/‼️ flip.
 @MainActor
 final class MenuBarController: NSObject {
-    private static let panelSize = NSSize(width: 380, height: 640)
+    private static let panelSize = NSSize(width: 360, height: 600)
 
     private let statusItem: NSStatusItem
     private let panel: FloatingPanel
@@ -23,6 +23,7 @@ final class MenuBarController: NSObject {
         let host = NSHostingView(rootView: RootView().environmentObject(store))
         self.panel = FloatingPanel(contentView: host, size: Self.panelSize)
         super.init()
+        panel.onDismiss = { [weak self] in self?.hidePanel() }
 
         if let button = statusItem.button {
             button.image = NSImage(

@@ -7,10 +7,7 @@ struct ToolsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Tools")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Theme.textSecondary)
-                .padding(.leading, 2)
+            SectionHeader(title: "Tools")
 
             toolRow(icon: "gearshape.fill", label: "Settings…",
                     detail: "Credentials, filters, notifications, Jira, GitHub") {
@@ -26,18 +23,12 @@ struct ToolsSection: View {
                 Task { await store.refresh() }
             }
 
-            Text("Quick links")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Theme.textSecondary)
-                .padding(.leading, 2)
+            SectionHeader(title: "Quick Links")
                 .padding(.top, 6)
             quickLinks
 
             if !store.snapshot.dashboards.isEmpty {
-                Text("My dashboards")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(Theme.textSecondary)
-                    .padding(.leading, 2)
+                SectionHeader(title: "My Dashboards")
                     .padding(.top, 6)
                 ForEach(store.snapshot.dashboards.prefix(8)) { dashboard in
                     linkRow(icon: "chart.bar.xaxis",
@@ -119,12 +110,8 @@ struct ToolsSection: View {
             }
             .padding(.horizontal, 12).padding(.vertical, 9)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Theme.panel)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Theme.panelStroke, lineWidth: 1)
-                    )
             )
             .contentShape(Rectangle())
         }

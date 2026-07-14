@@ -1,13 +1,15 @@
 import SwiftUI
 import AppKit
 
-/// One monitor: collapsed shows badge + name + value + sparkline; expanding
-/// (the chevron affordance from Vorssaint) reveals firing duration, hosts, and
-/// the fast actions — mute / open — inline, no context menus to discover.
+/// One monitor, in the native list-row grammar: leading status symbol (shape
+/// + color), 13pt name, trailing value in monospaced digits. Hovering
+/// highlights the row like a menu item; clicking expands to the sparkline,
+/// firing details, and the fast actions — mute / open — inline.
 struct MonitorRow: View {
     @EnvironmentObject var store: SnapshotStore
     let monitor: Monitor
     @State private var expanded = false
+    @State private var hovering = false
     @State private var creatingTicket = false
     @State private var ticketError: String?
     @State private var renaming = false
@@ -26,52 +28,65 @@ struct MonitorRow: View {
             }
             .buttonStyle(.plain)
 
-            if !monitor.sparkline.isEmpty {
-                Sparkline(points: monitor.sparkline, color: tint,
-                          threshold: monitor.thresholdPosition,
-                          markers: monitor.deployMarkers)
-                    .frame(height: 26)
-            }
-
             if expanded {
+                if !monitor.sparkline.isEmpty {
+                    Sparkline(points: monitor.sparkline, color: tint,
+                              threshold: monitor.thresholdPosition,
+                              markers: monitor.deployMarkers)
+                        .frame(height: 26)
+                        .padding(.leading, 24)
+                }
                 details
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(hovering || expanded ? Theme.hover : Color.clear)
+        )
+        .onHover { hovering = $0 }
     }
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundColor(Theme.textMuted)
-                .rotationEffect(.degrees(expanded ? 90 : 0))
-            Text(monitor.priority.label)
-                .font(.system(size: 10, weight: .bold))
+            Image(systemName: Theme.symbol(for: monitor.state))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(tint)
-                .padding(.horizontal, 5).padding(.vertical, 2)
-                .background(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(tint.opacity(0.15))
-                )
+                .frame(width: 16)
+            if monitor.priority <= .p2 {
+                Text(monitor.priority.label)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(tint)
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(tint.opacity(0.15))
+                    )
+            }
             Text(monitor.name)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 13))
                 .foregroundColor(Theme.textPrimary)
                 .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer()
+                .truncationMode(.middle)
+            Spacer(minLength: 8)
             if let delta = monitor.delta, delta >= 1.5 {
-                Text("×\(String(format: delta >= 10 ? "%.0f" : "%.1f", delta)) vs last wk")
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                Text("×\(String(format: delta >= 10 ? "%.0f" : "%.1f", delta))")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .foregroundColor(tint)
-                    .padding(.horizontal, 5).padding(.vertical, 2)
-                    .background(Capsule().fill(tint.opacity(0.14)))
+                    .help("vs the same time last week")
             }
             Text(rightLabel)
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .font(.system(size: 12, weight: .medium))
+                .monospacedDigit()
                 .foregroundColor(tint)
                 .contentTransition(.numericText())
+            Image(systemName: "chevron.right")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundColor(Theme.textMuted)
+                .rotationEffect(.degrees(expanded ? 90 : 0))
+                .opacity(hovering || expanded ? 1 : 0)
         }
         .contentShape(Rectangle())
     }
@@ -123,7 +138,8 @@ struct MonitorRow: View {
             }
             renameRow
         }
-        .padding(.leading, 17)
+        .padding(.leading, 24)
+        .padding(.bottom, 2)
     }
 
     /// Local rename: a display alias for this app only (unwieldy monitor
@@ -195,10 +211,7 @@ struct MonitorRow: View {
             }
             .foregroundColor(Theme.textPrimary)
             .padding(.horizontal, 10).padding(.vertical, 5)
-            .background(
-                Capsule().fill(Color.white.opacity(0.08))
-                    .overlay(Capsule().stroke(Theme.panelStroke, lineWidth: 1))
-            )
+            .background(Capsule().fill(Theme.track))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -245,12 +258,8 @@ struct MonitorRow: View {
             .foregroundColor(Theme.alert)
             .padding(.horizontal, 9).padding(.vertical, 6)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(Theme.alert.opacity(0.10))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Theme.alert.opacity(0.35), lineWidth: 1)
-                    )
             )
             .contentShape(Rectangle())
         }
@@ -284,10 +293,7 @@ struct MonitorRow: View {
             }
             .foregroundColor(Theme.textPrimary)
             .padding(.horizontal, 10).padding(.vertical, 5)
-            .background(
-                Capsule().fill(Color.white.opacity(0.08))
-                    .overlay(Capsule().stroke(Theme.panelStroke, lineWidth: 1))
-            )
+            .background(Capsule().fill(Theme.track))
         }
         .buttonStyle(.plain)
     }

@@ -8,12 +8,13 @@ struct RootView: View {
         let snapshot = store.snapshot
         let suspectCount = snapshot.deploys.filter { !$0.suspectFor.isEmpty }.count
             + snapshot.ciRuns.filter { $0.state == .failure }.count
-        VStack(spacing: 16) {
+        VStack(spacing: 10) {
+            // Pinned: identity + summary stay put; only the content scrolls.
             HeaderView(snapshot: snapshot)
             TabStrip(selected: $tab, badges: [.changes: suspectCount])
 
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 18) {
+                VStack(spacing: 14) {
                     switch tab {
                     case .monitors:
                         let hero = snapshot.alerting
@@ -24,14 +25,11 @@ struct RootView: View {
                         if let hero {
                             HeroAlertCard(monitor: hero)
                         }
+                        StateSection(snapshot: snapshot, tab: $tab)
                         DLQSection(snapshot: snapshot)
-                        StateSection(snapshot: snapshot)
-                        ResponseStrip(stats: store.stats)
-                        Divider().background(Theme.panelStroke)
                         ActiveMonitorsSection(snapshot: snapshot, excluding: hero?.id)
-                        Divider().background(Theme.panelStroke)
                         IncidentsSection(snapshot: snapshot)
-                        Divider().background(Theme.panelStroke)
+                        ResponseStrip(stats: store.stats)
                         ActivitySection(snapshot: snapshot)
                     case .changes:
                         ChangesSection(snapshot: snapshot)
@@ -44,19 +42,19 @@ struct RootView: View {
                         MonitorListSection(snapshot: snapshot)
                     }
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, 2)
             }
 
             if let error = store.lastError {
                 errorBar(error)
             }
-            FreshnessBar()
             FooterView(tab: $tab)
         }
-        .padding(16)
-        .frame(width: 380)
-        .background(Color.clear)   // glass comes from the NSVisualEffectView behind us
-        .preferredColorScheme(.dark)
+        .padding(.horizontal, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .frame(width: 360)
+        .background(Color.clear)   // material comes from the NSVisualEffectView behind us
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: snapshot)
     }
 
@@ -65,7 +63,7 @@ struct RootView: View {
             Image(systemName: "wifi.exclamationmark")
                 .font(.system(size: 10, weight: .semibold))
             Text(message)
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .lineLimit(2)
         }
         .foregroundColor(Theme.warn)
@@ -75,36 +73,5 @@ struct RootView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Theme.warn.opacity(0.12))
         )
-    }
-}
-
-/// "Checked 4s ago · next in 15s · ⌥⌘D" — the polling cadence is the latency
-/// floor for on-call response, so it's shown, not hidden.
-struct FreshnessBar: View {
-    @EnvironmentObject var store: SnapshotStore
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            HStack(spacing: 4) {
-                Image(systemName: "clock")
-                    .font(.system(size: 9))
-                Text(freshnessText(now: context.date))
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                Spacer()
-                Text("⌥⌘D")
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .foregroundColor(Theme.textMuted)
-            }
-            .foregroundColor(Theme.textMuted)
-        }
-        .frame(height: 14)
-    }
-
-    private func freshnessText(now: Date) -> String {
-        guard store.snapshot.lastRefresh != .distantPast else { return "connecting…" }
-        let age = max(0, Int(now.timeIntervalSince(store.snapshot.lastRefresh)))
-        let cadence = Int(store.currentInterval)
-        if store.refreshing { return "checking now…" }
-        return "checked \(age)s ago · every \(cadence)s"
     }
 }

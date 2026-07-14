@@ -113,7 +113,7 @@ private struct OnboardingView: View {
                 .frame(width: 72, height: 72)
                 .background(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(.quaternary.opacity(0.5))
+                        .fill(Theme.panel)
                 )
             Text("Welcome to Datadog Assistant")
                 .font(.title2.bold())
@@ -178,7 +178,7 @@ private struct ChoiceCard: View {
                     Text(badge)
                         .font(.caption2.weight(.semibold))
                         .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(.tint.opacity(0.15)))
+                        .background(Capsule().fill(Color.accentColor.opacity(0.15)))
                         .foregroundStyle(.tint)
                 }
                 Spacer()
@@ -203,7 +203,7 @@ private struct ChoiceCard: View {
         .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(.quaternary.opacity(0.5))
+                .fill(Theme.panel)
         )
     }
 }

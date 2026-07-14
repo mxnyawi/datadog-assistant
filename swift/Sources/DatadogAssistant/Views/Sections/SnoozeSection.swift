@@ -15,10 +15,7 @@ struct SnoozeSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Snooze all alerting")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Theme.textSecondary)
-                .padding(.leading, 2)
+            SectionHeader(title: "Snooze All Alerting")
 
             if store.isSnoozed, let until = store.snoozedUntil {
                 activeState(until: until)
@@ -38,12 +35,8 @@ struct SnoozeSection: View {
                             .foregroundColor(Theme.textPrimary)
                             .padding(.horizontal, 12).padding(.vertical, 9)
                             .background(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
                                     .fill(Theme.panel)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                            .stroke(Theme.panelStroke, lineWidth: 1)
-                                    )
                             )
                             .contentShape(Rectangle())
                         }
@@ -84,12 +77,8 @@ struct SnoozeSection: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Theme.info.opacity(0.10))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Theme.info.opacity(0.35), lineWidth: 1)
-                )
         )
     }
 

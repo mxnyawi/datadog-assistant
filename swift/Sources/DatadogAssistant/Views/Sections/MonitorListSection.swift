@@ -16,13 +16,13 @@ struct MonitorListSection: View {
     }
 
     private static let buckets: [Bucket] = [
-        Bucket(label: "💀 DLQ", tint: .alert) { $0.isDLQ && $0.state != .ok },
+        Bucket(label: "Dead Letter Queues", tint: .alert) { $0.isDLQ && $0.state != .ok },
         Bucket(label: "Alerting", tint: .alert) { $0.state == .alert && !$0.isDLQ },
         Bucket(label: "Warning", tint: .warn) { $0.state == .warn && !$0.isDLQ },
-        Bucket(label: "No Data (likely broken)", tint: .noData) {
+        Bucket(label: "No Data — Likely Broken", tint: .noData) {
             $0.state == .noData && !$0.noDataQuiet && !$0.isDLQ
         },
-        Bucket(label: "🤫 Quiet (no data, expected)", tint: .noData) {
+        Bucket(label: "Quiet — No Data, Expected", tint: .noData) {
             $0.state == .noData && $0.noDataQuiet && !$0.isDLQ
         },
         Bucket(label: "Muted", tint: .muted) { $0.state == .muted && !$0.isDLQ },
@@ -38,7 +38,8 @@ struct MonitorListSection: View {
                 Text(query.isEmpty ? "No monitors." : "No matches for “\(query)”.")
                     .font(.system(size: 12))
                     .foregroundColor(Theme.textMuted)
-                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
             } else {
                 ForEach(Array(Self.buckets.enumerated()), id: \.offset) { _, bucket in
                     let group = filtered.filter(bucket.matches)
@@ -57,7 +58,7 @@ struct MonitorListSection: View {
                 .foregroundColor(Theme.textMuted)
             TextField("Search name or service…", text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundColor(Theme.textPrimary)
             if !query.isEmpty {
                 Button {
@@ -70,14 +71,10 @@ struct MonitorListSection: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 10).padding(.vertical, 7)
+        .padding(.horizontal, 8).padding(.vertical, 6)
         .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Theme.panel)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Theme.panelStroke, lineWidth: 1)
-                )
         )
     }
 
@@ -91,18 +88,22 @@ struct MonitorListSection: View {
     }
 
     private func monitorGroup(_ bucket: Bucket, monitors: [Monitor]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(Theme.color(for: bucket.tint))
-                    .frame(width: 7, height: 7)
-                Text("\(bucket.label) · \(monitors.count)")
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Image(systemName: Theme.symbol(for: bucket.tint))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(Theme.color(for: bucket.tint))
+                Text(bucket.label)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(Theme.textSecondary)
+                Text("\(monitors.count)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundColor(Theme.textMuted)
+                Spacer()
             }
-            .padding(.leading, 2)
-
-            VStack(spacing: 2) {
+            .padding(.leading, 10)
+            InsetCard {
                 ForEach(monitors.sorted { ($0.priority, $0.name) < ($1.priority, $1.name) }) {
                     MonitorRow(monitor: $0)
                 }
