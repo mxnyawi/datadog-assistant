@@ -7,13 +7,13 @@
 ## How I tested it
 
 <!-- Please be specific. Examples: -->
-<!-- - Ran `python3 test_smoke.py` -->
+<!-- - `swift build` green on the macOS CI job -->
 <!-- - Ran on macOS 14.5 with a real Datadog org (EU site) and confirmed the banner fired -->
 <!-- - Logic only; could not test on a Mac -->
 
 ## Checklist
 
-- [ ] Ran `python3 test_smoke.py` (and added/updated a test if logic changed)
-- [ ] Updated `README.md` and `config.example.json` if I changed a config key or user-facing behaviour
-- [ ] No secrets, keys, or private monitor/project names committed
-- [ ] Kept the API clients stdlib-only (no new runtime dependencies), or explained why a new dep is needed
+- [ ] `swift build` passes (locally or on the macOS CI job)
+- [ ] Updated `README.md` / `swift/README.md` if I changed a credential flow, setting, or user-facing behaviour
+- [ ] No secrets, tokens, keys, or private monitor/project names committed
+- [ ] No new dependencies (the package is intentionally dependency-free), or explained why one is needed
