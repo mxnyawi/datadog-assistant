@@ -29,10 +29,13 @@ enum Priority: Int, Codable, Comparable {
 struct Monitor: Identifiable, Hashable, Codable {
     /// Default (and minimum) span a sparkline covers. A firing monitor's
     /// sparkline stretches to cover how long it's been firing, so you see the
-    /// climb since it started instead of a flat last-hour plateau — capped at
+    /// climb since it started instead of a flat plateau — capped at
     /// `maxSparklineWindow` to keep the tiny chart readable and the query cheap.
-    static let sparklineWindow: TimeInterval = 3600
-    static let maxSparklineWindow: TimeInterval = 24 * 3600
+    /// The 4h floor matters: `firingSince` is only known for group-based
+    /// monitors, so ungrouped/just-started alerts would otherwise fall back to
+    /// a short flat window; 4h guarantees enough history to show variation.
+    static let sparklineWindow: TimeInterval = 4 * 3600
+    static let maxSparklineWindow: TimeInterval = 48 * 3600
 
     let id: Int
     /// Display name — the Datadog name, or a local alias (see MonitorAliases,

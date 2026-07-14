@@ -53,7 +53,10 @@ struct MonitorRow: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        // Expanded: the name wraps to as many lines as it needs so a long,
+        // unwieldy monitor title is fully readable; collapsed, it stays one
+        // truncated line. Trailing value/chevron align to the first line.
+        HStack(alignment: expanded ? .top : .center, spacing: 8) {
             Image(systemName: Theme.symbol(for: monitor.state))
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(tint)
@@ -71,8 +74,10 @@ struct MonitorRow: View {
             Text(monitor.name)
                 .font(.system(size: 13))
                 .foregroundColor(Theme.textPrimary)
-                .lineLimit(1)
+                .lineLimit(expanded ? nil : 1)
                 .truncationMode(.middle)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             if let delta = monitor.delta, delta >= 1.5 {
                 Text("×\(String(format: delta >= 10 ? "%.0f" : "%.1f", delta))")
