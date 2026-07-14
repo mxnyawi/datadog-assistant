@@ -15,3 +15,7 @@ installer/dist/
 *.app
 *.dmg
 *.zip
+
+# SwiftPM build tree + assembled app bundle
+.build/
+swift/build/

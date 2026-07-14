@@ -75,6 +75,11 @@ struct Monitor: Identifiable, Hashable, Codable {
     /// The critical threshold mapped into the sparkline's normalized 0…1 y-space,
     /// so views can draw the guide line without knowing the raw scale.
     var thresholdPosition: Double? = nil
+    /// True for `<`/`<=` monitors — ones that alert when the value drops UNDER
+    /// the threshold. Flips breach shading, the gauge, and the ETA logic.
+    /// Optional so snapshots cached by older builds still decode.
+    var thresholdBelow: Bool? = nil
+    var isBelowThreshold: Bool { thresholdBelow ?? false }
     /// Deploys that landed inside the sparkline window, as 0…1 x positions —
     /// "the line went vertical right after that tick" is the fastest possible
     /// change correlation. Filled by SnapshotStore.
@@ -121,20 +126,29 @@ extension Monitor {
         return (1...points).map { min(1, max(0, last + slope * Double($0))) }
     }
 
-    /// One-line trend read for the expanded row: direction, and — when climbing
+    /// One-line trend read for the expanded row: direction, and — when heading
     /// toward an as-yet-uncrossed critical threshold — an ETA to breach.
+    /// Breach direction matters: an above-threshold monitor breaches by
+    /// climbing, a below-threshold (`<`) monitor by falling, and "easing"
+    /// means moving AWAY from its threshold in either case.
     var trendLabel: String? {
         let proj = projection()
         guard let now = sparkline.last, let end = proj.last else { return nil }
         let rising = end > now + 0.01
         let falling = end < now - 0.01
         guard rising || falling else { return nil }
-        if rising, let thr = thresholdPosition, now < thr,
-           let crossIdx = proj.firstIndex(where: { $0 >= thr }) {
-            let secPerPoint = sparklineSpan / Double(max(sparkline.count - 1, 1))
-            let mins = max(1, Int(Double(crossIdx + 1) * secPerPoint / 60))
-            return "climbing · ~critical in \(mins)m"
+        let below = isBelowThreshold
+        if let thr = thresholdPosition {
+            let crossIdx = below
+                ? (falling && now > thr ? proj.firstIndex(where: { $0 <= thr }) : nil)
+                : (rising && now < thr ? proj.firstIndex(where: { $0 >= thr }) : nil)
+            if let crossIdx {
+                let secPerPoint = sparklineSpan / Double(max(sparkline.count - 1, 1))
+                let mins = max(1, Int(Double(crossIdx + 1) * secPerPoint / 60))
+                return "\(below ? "falling" : "climbing") · ~critical in \(mins)m"
+            }
         }
+        if below { return falling ? "falling" : "easing" }
         return rising ? "climbing" : "easing"
     }
 }

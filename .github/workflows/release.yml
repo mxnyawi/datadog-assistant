@@ -31,6 +31,8 @@ jobs:
       - name: Build Datadog Assistant.app (SwiftPM)
         run: ./Scripts/build-app.sh
         working-directory: swift
+        env:
+          VERSION: ${{ github.event.inputs.tag || github.ref_name }}
 
       - name: Make DMG (drag to Applications)
         run: |

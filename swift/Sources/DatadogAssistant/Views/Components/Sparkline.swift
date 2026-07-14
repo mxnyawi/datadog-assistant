@@ -14,6 +14,9 @@ struct Sparkline: View {
     /// Critical threshold in normalized 0…1 y-space; drives the dashed guide
     /// and the two-tone breach shading.
     var threshold: Double? = nil
+    /// True when the monitor alerts BELOW the threshold (`<`/`<=` queries) —
+    /// the severity mass is then under the guide line, not over it.
+    var breachBelow: Bool = false
     /// Deploy timestamps as 0…1 x positions; vertical ticks.
     var markers: [Double] = []
     /// Week-ago series in the same 0…1 space — a faint dashed ghost.
@@ -59,9 +62,12 @@ struct Sparkline: View {
                         let intensity = pow(1 - Double(fillFrac), 0.75)
                         let thr = Self.bayer[Int(cy / cell) % 4][Int(cx / cell) % 4]
                         if intensity > thr {
-                            let above = thY.map { cy < $0 } ?? true
-                            let fillColor = above ? color.opacity(0.9)
-                                                  : Color.primary.opacity(0.14)
+                            // Canvas y grows downward: cy < thY is visually
+                            // above the guide. The "severity" side is above it
+                            // for > monitors, below it for < monitors.
+                            let severity = thY.map { breachBelow ? cy > $0 : cy < $0 } ?? true
+                            let fillColor = severity ? color.opacity(0.9)
+                                                     : Color.primary.opacity(0.14)
                             ctx.fill(Path(ellipseIn: CGRect(x: cx - dot / 2, y: cy - dot / 2,
                                                             width: dot, height: dot)),
                                      with: .color(fillColor))

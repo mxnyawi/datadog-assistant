@@ -25,6 +25,19 @@ mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
 cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${EXECUTABLE_NAME}"
 cp Resources/Info.plist "${APP_DIR}/Contents/Info.plist"
 
+# Stamp the real version into the bundle (VERSION env from the release
+# workflow's tag, else the latest tag for local builds) — otherwise every
+# release ships an app that reports the placeholder version.
+VERSION="${VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || true)}"
+VERSION="${VERSION#v}"
+if [[ -n "${VERSION}" ]]; then
+    echo "==> stamping version ${VERSION}"
+    /usr/libexec/PlistBuddy \
+        -c "Set :CFBundleShortVersionString ${VERSION}" \
+        -c "Set :CFBundleVersion ${VERSION}" \
+        "${APP_DIR}/Contents/Info.plist"
+fi
+
 # Ad-hoc sign by default so TCC (notifications) has a stable code identity
 # across rebuilds; ./Scripts/notarize.sh does the real Developer ID signing.
 if [[ -z "${SIGN_IDENTITY:-}" ]]; then

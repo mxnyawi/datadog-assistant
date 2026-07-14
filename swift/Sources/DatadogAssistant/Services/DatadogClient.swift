@@ -121,24 +121,26 @@ final class DatadogClient: DataSource {
         } else {
             dtos = try await fetchMonitorsPage(tag: filter.tags.first ?? "", name: filter.name)
         }
-        queriesByID = Dictionary(uniqueKeysWithValues: dtos.compactMap { dto in
+        queriesByID = Dictionary(dtos.compactMap { dto in
             QueryParser.parse(dto.query ?? "").map { (dto.id, $0.metricQuery) }
-        })
+        }, uniquingKeysWith: { first, _ in first })
         var monitors: [Monitor] = []
         for dto in dtos {
             var monitor = Self.monitor(from: dto)
-            // No-Data monitors carry no signal; when hidden, skip them here so
-            // we don't even pay for the per-monitor triage probes.
-            if monitor.state == .noData, filter.hideNoData {
-                probeCache.removeValue(forKey: dto.id)
-                continue
-            }
             monitor.url = credentials.appBaseURL.appendingPathComponent("/monitors/\(dto.id)")
             monitor.isDLQ = DLQConfig.load().matches(name: monitor.name,
                                                      tags: monitor.tags,
                                                      query: dto.query ?? "")
             if monitor.state == .noData {
-                (monitor.noDataQuiet, monitor.noDataReason) = await triageNoData(dto)
+                // When hidden, skip the per-monitor triage probes (the
+                // expensive part) but still return the monitor — the store
+                // does the hiding and counts what it hid, so the UI can say
+                // "N hidden" instead of having monitors silently vanish.
+                if filter.hideNoData {
+                    probeCache.removeValue(forKey: dto.id)
+                } else {
+                    (monitor.noDataQuiet, monitor.noDataReason) = await triageNoData(dto)
+                }
             } else {
                 probeCache.removeValue(forKey: dto.id)
             }
@@ -205,7 +207,14 @@ final class DatadogClient: DataSource {
 
     private func noDataAge(_ dto: MonitorDTO) -> TimeInterval? {
         let now = Date().timeIntervalSince1970
-        if let ts = dto.state?.groups?.values.compactMap(\.last_nodata_ts).min() {
+        // Only groups that are CURRENTLY silent count, and the age is the
+        // *newest* transition among them: "likely retired" must mean every
+        // group has been silent for a long time. Taking min(ts) over all
+        // groups (including healthy ones) called a monitor retired the moment
+        // any group had an old no-data stamp — and then never notified.
+        if let ts = dto.state?.groups?.values
+            .filter({ $0.status == "No Data" })
+            .compactMap(\.last_nodata_ts).max() {
             return now - TimeInterval(ts)
         }
         if let modified = dto.overall_state_modified {
@@ -222,9 +231,9 @@ final class DatadogClient: DataSource {
     /// probe itself failed (no verdict).
     private func probeHadRecentData(_ metricQuery: String) async -> Bool? {
         let now = Int(Date().timeIntervalSince1970)
-        let url = credentials.apiBaseURL
-            .appendingPathComponent("/api/v1/query")
-            .appending(queryItems: [
+        let url = queryURL(
+            path: "/api/v1/query",
+            items: [
                 URLQueryItem(name: "from", value: String(now - Int(Self.probeLookbackHours * 3600))),
                 URLQueryItem(name: "to", value: String(now)),
                 URLQueryItem(name: "query", value: metricQuery),
@@ -249,14 +258,17 @@ final class DatadogClient: DataSource {
         if !trimmedName.isEmpty { queryItems.append(URLQueryItem(name: "name", value: trimmedName)) }
 
         var all: [MonitorDTO] = []
+        var seen = Set<Int>()
         var page = 0
         while page < 500 {
-            let url = credentials.apiBaseURL
-                .appendingPathComponent("/api/v1/monitor")
-                .appending(queryItems: queryItems + [URLQueryItem(name: "page", value: String(page))])
+            let url = queryURL(
+                path: "/api/v1/monitor",
+                items: queryItems + [URLQueryItem(name: "page", value: String(page))])
             let data = try await requestWithRetry(url: url)
             let batch = try JSONDecoder().decode([MonitorDTO].self, from: data)
-            all += batch
+            // The list can shift between page fetches, so a monitor can appear
+            // on two pages — dedupe, or downstream keyed dictionaries trap.
+            all += batch.filter { seen.insert($0.id).inserted }
             if batch.count < 200 { break }
             page += 1
         }
@@ -336,6 +348,7 @@ final class DatadogClient: DataSource {
             tags: dto.tags ?? []
         )
         monitor.groupStates = groupStates
+        monitor.thresholdBelow = parsed?.below
         return monitor
     }
 
@@ -359,7 +372,13 @@ final class DatadogClient: DataSource {
     // MARK: - Sparklines
 
     private struct QuerySeriesDTO: Decodable {
-        struct Series: Decodable { let pointlist: [[Double?]]? }
+        struct Series: Decodable {
+            let pointlist: [[Double?]]?
+            /// The expression this series answers — how the live series and
+            /// the week_before() ghost are told apart when a grouped query
+            /// returns several series per expression.
+            let expression: String?
+        }
         let series: [Series]?
     }
 
@@ -383,9 +402,25 @@ final class DatadogClient: DataSource {
             .prefix(Self.maxSparklines)
         guard !active.isEmpty else { return monitors }
 
-        var byID = Dictionary(uniqueKeysWithValues: monitors.map { ($0.id, $0) })
+        var byID = Dictionary(monitors.map { ($0.id, $0) },
+                              uniquingKeysWith: { first, _ in first })
+
+        // Serve fresh cache hits without a query; only misses hit the API.
+        // The cache is read and written ONLY here in the parent task — the
+        // task-group children just fetch — so there's no concurrent mutation.
+        let now = Date()
+        var sparks: [(Int, SparkData)] = []
+        var misses: [Monitor] = []
+        for monitor in active {
+            if let hit = sparkCache[monitor.id],
+               now.timeIntervalSince(hit.at) < Self.sparkCacheTTL {
+                sparks.append((monitor.id, hit.data))
+            } else {
+                misses.append(monitor)
+            }
+        }
         await withTaskGroup(of: (Int, SparkData).self) { group in
-            for monitor in active {
+            for monitor in misses {
                 group.addTask { [self] in
                     (monitor.id, await fetchSparkline(forMonitorID: monitor.id,
                                                       threshold: monitor.threshold,
@@ -393,15 +428,19 @@ final class DatadogClient: DataSource {
                 }
             }
             for await (id, spark) in group {
-                guard !spark.series.isEmpty, var m = byID[id] else { continue }
-                m.sparkline = spark.series
-                m.value = spark.lastValue
-                m.delta = spark.delta
-                m.thresholdPosition = spark.thresholdPosition
-                m.sparklineSpan = spark.span
-                m.ghostSparkline = spark.ghost
-                byID[id] = m
+                if !spark.series.isEmpty { sparkCache[id] = (now, spark) }
+                sparks.append((id, spark))
             }
+        }
+        for (id, spark) in sparks {
+            guard !spark.series.isEmpty, var m = byID[id] else { continue }
+            m.sparkline = spark.series
+            m.value = spark.lastValue
+            m.delta = spark.delta
+            m.thresholdPosition = spark.thresholdPosition
+            m.sparklineSpan = spark.span
+            m.ghostSparkline = spark.ghost
+            byID[id] = m
         }
         return monitors.map { byID[$0.id] ?? $0 }
     }
@@ -409,6 +448,12 @@ final class DatadogClient: DataSource {
     /// Parsed metric expressions from the last fetchMonitors call, keyed by
     /// monitor id, so sparkline fetches don't re-hit the monitors endpoint.
     private var queriesByID: [Int: String] = [:]
+
+    /// One timeseries query per firing monitor is the expensive part of a
+    /// poll — cache the result briefly so hot refresh cadences (or a user
+    /// mashing refresh) don't hammer Datadog's rate-limited query endpoint.
+    private var sparkCache: [Int: (at: Date, data: SparkData)] = [:]
+    private static let sparkCacheTTL: TimeInterval = 120
 
     private func fetchSparkline(forMonitorID id: Int, threshold: Double?,
                                firingSince: Date?) async -> SparkData {
@@ -423,9 +468,9 @@ final class DatadogClient: DataSource {
         // stays readable.
         let firedFor = firingSince.map { max(0, now.timeIntervalSince($0)) } ?? 0
         let span = min(max(firedFor * 1.25, Self.sparklineWindow), Self.maxSparklineWindow)
-        let url = credentials.apiBaseURL
-            .appendingPathComponent("/api/v1/query")
-            .appending(queryItems: [
+        let url = queryURL(
+            path: "/api/v1/query",
+            items: [
                 URLQueryItem(name: "from", value: String(nowTS - Int(span))),
                 URLQueryItem(name: "to", value: String(nowTS)),
                 URLQueryItem(name: "query", value: "\(metricQuery), week_before(\(metricQuery))"),
@@ -433,8 +478,17 @@ final class DatadogClient: DataSource {
         guard let (data, response) = try? await session.data(for: authedRequest(url: url)),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let decoded = try? JSONDecoder().decode(QuerySeriesDTO.self, from: data),
-              let series = decoded.series, !series.isEmpty,
-              let points = series.first?.pointlist else { return SparkData() }
+              let series = decoded.series, !series.isEmpty else { return SparkData() }
+
+        // A grouped query ("… by {host}") returns several series per
+        // expression, so index 0/1 aren't "live/ghost" — tell them apart by
+        // the expression Datadog echoes back. Falls back to positional when
+        // the expression is missing.
+        let live = series.first { !($0.expression?.contains("week_before") ?? false) }
+            ?? series.first
+        let shiftedSeries = series.first { $0.expression?.contains("week_before") == true }
+            ?? (series.count > 1 && live?.expression == nil ? series[1] : nil)
+        guard let points = live?.pointlist else { return SparkData() }
 
         let values = points.compactMap { $0.count > 1 ? $0[1] : nil }
         guard values.count > 1, let lo = values.min(), let hi = values.max() else { return SparkData() }
@@ -455,11 +509,10 @@ final class DatadogClient: DataSource {
             }
         }
 
-        // series[1] is week_before(m): the same series a week ago. Normalized
-        // into the *live* series' space so the ghost overlay is comparable, and
-        // its last point drives the ×N-vs-last-week delta.
-        if series.count > 1,
-           let shifted = series[1].pointlist?.compactMap({ $0.count > 1 ? $0[1] : nil }),
+        // week_before(m): the same series a week ago. Normalized into the
+        // *live* series' space so the ghost overlay is comparable, and its
+        // last point drives the ×N-vs-last-week delta.
+        if let shifted = shiftedSeries?.pointlist?.compactMap({ $0.count > 1 ? $0[1] : nil }),
            shifted.count > 1 {
             spark.ghost = shifted.map(normalize)
             if let lastWeek = shifted.last, let current = values.last, abs(lastWeek) > 1e-9 {
@@ -475,7 +528,26 @@ final class DatadogClient: DataSource {
     private struct IncidentsDTO: Decodable {
         struct Item: Decodable {
             struct Attributes: Decodable {
-                struct Field: Decodable { let value: String? }
+                /// Incident fields are shaped by the org: dropdowns are
+                /// strings, but multiselects are arrays and autocompletes can
+                /// be numbers. Decode leniently — one exotic field must not
+                /// nuke the entire incidents response.
+                struct Field: Decodable {
+                    let value: String?
+                    init(from decoder: Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        if let s = try? container.decodeIfPresent(String.self, forKey: .value) {
+                            value = s
+                        } else if let list = try? container.decodeIfPresent([String].self, forKey: .value) {
+                            value = list.first
+                        } else if let n = try? container.decodeIfPresent(Double.self, forKey: .value) {
+                            value = String(n)
+                        } else {
+                            value = nil
+                        }
+                    }
+                    private enum CodingKeys: String, CodingKey { case value }
+                }
                 let title: String?
                 let created: String?
                 let fields: [String: Field]?
@@ -501,7 +573,11 @@ final class DatadogClient: DataSource {
 
         return items.compactMap { item in
             let fields = item.attributes.fields ?? [:]
-            guard fields["state"]?.value == "active" else { return nil }
+            // Open means "not resolved" — Datadog incidents sit in "stable"
+            // (impact contained, still open) for most of their life, so an
+            // active-only allowlist hid real incidents.
+            let state = fields["state"]?.value ?? "active"
+            guard !["resolved", "completed"].contains(state) else { return nil }
             let sevRaw = fields["severity"]?.value ?? "UNKNOWN"
             let created = item.attributes.created.flatMap {
                 iso.date(from: $0) ?? isoPlain.date(from: $0)
@@ -639,6 +715,20 @@ final class DatadogClient: DataSource {
         return request
     }
 
+    /// Build a query URL with real percent-encoding. URLQueryItem leaves "+"
+    /// literal (it's valid in a URL query), but Datadog's server decodes it as
+    /// a space — so arithmetic metric queries ("a + b") silently return no
+    /// series. Encode it explicitly.
+    private func queryURL(path: String, items: [URLQueryItem]) -> URL {
+        var components = URLComponents(
+            url: credentials.apiBaseURL.appendingPathComponent(path),
+            resolvingAgainstBaseURL: false)!
+        components.queryItems = items
+        components.percentEncodedQuery = components.percentEncodedQuery?
+            .replacingOccurrences(of: "+", with: "%2B")
+        return components.url!
+    }
+
     enum APIError: LocalizedError {
         case http(Int)
         var errorDescription: String? {
@@ -657,19 +747,25 @@ final class DatadogClient: DataSource {
     }
 }
 
-/// Pulls the metric expression and critical threshold out of a classic metric
-/// monitor query, e.g. "avg(last_5m):avg:system.cpu.user{env:prod} > 85".
+/// Pulls the metric expression, critical threshold, and breach direction out
+/// of a classic metric monitor query, e.g.
+/// "avg(last_5m):avg:system.cpu.user{env:prod} > 85".
+/// `below` is true for `<`/`<=` monitors — ones that alert when the value
+/// drops UNDER the threshold — which flips every piece of threshold analysis
+/// (breach shading, gauge, ETA-to-critical).
 /// Best-effort: composite / log / synthetic queries return nil and the monitor
 /// simply renders without a sparkline.
 enum QueryParser {
-    static func parse(_ query: String) -> (metricQuery: String, threshold: Double)? {
-        let pattern = #"^[a-z_]+\([^)]*\):\s*(.+?)\s*(?:>=|<=|>|<|==)\s*([0-9.]+)\s*$"#
+    static func parse(_ query: String) -> (metricQuery: String, threshold: Double, below: Bool)? {
+        let pattern = #"^[a-z_]+\([^)]*\):\s*(.+?)\s*(>=|<=|>|<|==)\s*([0-9.]+)\s*$"#
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let match = regex.firstMatch(
                   in: query, range: NSRange(query.startIndex..., in: query)),
               let metricRange = Range(match.range(at: 1), in: query),
-              let thresholdRange = Range(match.range(at: 2), in: query),
+              let comparatorRange = Range(match.range(at: 2), in: query),
+              let thresholdRange = Range(match.range(at: 3), in: query),
               let threshold = Double(query[thresholdRange]) else { return nil }
-        return (String(query[metricRange]), threshold)
+        return (String(query[metricRange]), threshold,
+                query[comparatorRange].hasPrefix("<"))
     }
 }

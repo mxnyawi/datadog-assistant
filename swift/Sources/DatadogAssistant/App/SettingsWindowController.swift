@@ -14,10 +14,22 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func show() {
-        if window == nil {
-            let host = NSHostingController(rootView: SettingsView(
-                onSave: { [weak self] in self?.onSave() },
-                monitoredServices: { [weak self] in self?.monitoredServices() ?? [] }))
+        // Already open: just bring it forward — rebuilding would wipe
+        // in-progress typing.
+        if let window, window.isVisible {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        // (Re)opening: build fresh content so every tab's @State re-reads the
+        // stored truth — credentials may have changed from the connect prompt,
+        // env, or a previous visit since the view was last built.
+        let host = NSHostingController(rootView: SettingsView(
+            onSave: { [weak self] in self?.onSave() },
+            monitoredServices: { [weak self] in self?.monitoredServices() ?? [] }))
+        if let window {
+            window.contentViewController = host
+        } else {
             let window = NSWindow(contentViewController: host)
             window.title = "Datadog Assistant Settings"
             window.styleMask = [.titled, .closable]
@@ -72,7 +84,10 @@ private struct SourceSettingsTab: View {
     @State private var appKey = ""
     @State private var site = Credentials.currentSite()
     @State private var error: String?
-    @State private var hasExistingKeys = Credentials.load() != nil
+    // Presence check only — Credentials.load() can shell out to lpass/
+    // password-manager commands and must never run during view init.
+    @State private var hasExistingKeys =
+        Credentials.hasStoredAccessToken() || Credentials.hasStoredKeyPair()
     @State private var lastPassEntry = ""
     @State private var hasLastPass = LastPassConfig.load() != nil
     @State private var lastPassLoggedIn = false
@@ -188,8 +203,10 @@ private struct SourceSettingsTab: View {
                 }
                 TextField("API key command (optional, e.g. op read op://…)", text: $apiKeyCmd)
                     .onSubmit { saveCommands() }
+                    .onChange(of: apiKeyCmd) { _ in saveCommands(reload: false) }
                 TextField("App key command (optional)", text: $appKeyCmd)
                     .onSubmit { saveCommands() }
+                    .onChange(of: appKeyCmd) { _ in saveCommands(reload: false) }
             }
             HStack {
                 if hasExistingKeys {
@@ -229,6 +246,7 @@ private struct SourceSettingsTab: View {
                 }
                 TextField("Token command (optional, e.g. op read op://…)", text: $accessTokenCmd)
                     .onSubmit { saveCommands() }
+                    .onChange(of: accessTokenCmd) { _ in saveCommands(reload: false) }
             }
             Text("Personal tokens expire (up to 1 year) — you'll re-paste one when "
                  + "Datadog reports 401/403. Service-account tokens can be non-expiring.")
@@ -320,9 +338,14 @@ private struct SourceSettingsTab: View {
                 ? "Using an access token stored securely on this Mac."
                 : "Using keys stored securely on this Mac."
         case .lastPass:
-            return lastPassLoggedIn
-                ? "Using the shared LastPass vault — keys are fetched at runtime, nothing is stored locally."
+            let base = lastPassLoggedIn
+                ? "Using the shared LastPass vault — keys are fetched at runtime."
                 : "LastPass selected. Run Set up… (or `lpass login`) to unlock the vault."
+            // Don't claim "nothing is stored locally" while device-saved
+            // credentials still exist — they stay until removed in This Mac.
+            return (Credentials.hasStoredAccessToken() || Credentials.hasStoredKeyPair())
+                ? base + " Credentials saved earlier under This Mac remain stored until you remove them there."
+                : base
         }
     }
 
@@ -333,11 +356,13 @@ private struct SourceSettingsTab: View {
         onSave()
     }
 
-    private func saveCommands() {
+    /// Persist the password-manager command fields. `reload` re-resolves the
+    /// data source — wanted on an explicit submit, too heavy per keystroke.
+    private func saveCommands(reload: Bool = true) {
         UserDefaults.standard.set(apiKeyCmd, forKey: "apiKeyCmd")
         UserDefaults.standard.set(appKeyCmd, forKey: "appKeyCmd")
         UserDefaults.standard.set(accessTokenCmd, forKey: "accessTokenCmd")
-        onSave()
+        if reload { onSave() }
     }
 
     private func saveKeys() {
@@ -366,8 +391,13 @@ private struct SourceSettingsTab: View {
 
     private func saveLastPass() {
         var config = LastPassConfig.load() ?? LastPassConfig(entry: "")
-        config.entry = lastPassEntry.trimmingCharacters(in: .whitespaces)
-        guard !config.entry.isEmpty else { return }
+        let typed = lastPassEntry.trimmingCharacters(in: .whitespaces)
+        guard !typed.isEmpty else { return }
+        // A newly typed entry must actually be used: lookups prefer the
+        // stored entryID (set by the picker), so keeping a stale ID would
+        // silently ignore what the user just typed.
+        if typed != config.entry { config.entryID = "" }
+        config.entry = typed
         config.save()
         hasLastPass = true
         lastPassLoggedIn = LastPass.isLoggedIn()
@@ -765,7 +795,9 @@ private struct JiraSettingsTab: View {
         guard !isError else { return }
         busy = true; status = "Opening browser for Atlassian consent…"; isError = false
         let host = baseURL
-        Task {
+        // @MainActor: these tasks mutate @State after suspension points, and
+        // a plain Task from a nonisolated View method lands off the main thread.
+        Task { @MainActor in
             do {
                 let site = try await JiraOAuth.connect(preferredHost: host)
                 connected = true
@@ -788,7 +820,7 @@ private struct JiraSettingsTab: View {
         guard !isError else { return }
         busy = true; status = "Testing…"; isError = false
         let config = currentConfig()
-        Task {
+        Task { @MainActor in
             let report = await JiraClient.connectionTest(config: config)
             status = report
             isError = report.lowercased().contains("failed")

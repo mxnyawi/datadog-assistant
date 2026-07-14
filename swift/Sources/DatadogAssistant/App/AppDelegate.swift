@@ -19,11 +19,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             options: [.userInitiatedAllowingIdleSystemSleep],
             reason: "Polling Datadog monitors")
 
-        let credentials = Credentials.load()
-        let source: DataSource = credentials
-            .map { DatadogClient(credentials: $0) } ?? MockDataSource()
-        store = SnapshotStore(source: source)
-        store.needsSetup = Self.needsSetup(credentials: credentials)
+        // The store starts on the disk-cached snapshot so the panel renders
+        // instantly; the real source arrives once credentials resolve.
+        // Credentials.load() can shell out (lpass, password-manager commands)
+        // for tens of seconds — never on the main thread.
+        store = SnapshotStore(source: MockDataSource())
+        Task { [weak self] in
+            let credentials = await Task.detached { Credentials.load() }.value
+            guard let self else { return }
+            let source: DataSource = credentials
+                .map { DatadogClient(credentials: $0) } ?? MockDataSource()
+            self.store.adoptInitialSource(source)
+            self.store.needsSetup = Self.needsSetup(credentials: credentials)
+        }
 
         NotificationManager.shared.setup()
         // Arrives on the notification-center delegate queue; hop to the main
@@ -36,6 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await self.store.mute(monitor, for: 3600)
             }
         }
+        // SnapshotStore never fires these for sample data — no notifications,
+        // no nags, no auto-created Jira tickets from generated monitors.
         store.onTransitions = { transitions in
             NotificationManager.shared.deliver(transitions: transitions)
             JiraAutoCreate.handle(transitions)
@@ -45,7 +55,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NotificationManager.shared.maybeDigest(snapshot: snapshot)
         }
 
-        store.start()
         menuBar = MenuBarController(store: store)
         hotKey = HotKey { [weak self] in self?.menuBar.togglePanel() }
 
@@ -83,11 +92,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func reloadCredentials() {
-        let credentials = Credentials.load()
-        let source: DataSource = credentials
-            .map { DatadogClient(credentials: $0) } ?? MockDataSource()
-        store.replaceSource(source)
-        store.needsSetup = Self.needsSetup(credentials: credentials)
+        Task { [weak self] in
+            let credentials = await Task.detached { Credentials.load() }.value
+            guard let self else { return }
+            let source: DataSource = credentials
+                .map { DatadogClient(credentials: $0) } ?? MockDataSource()
+            self.store.replaceSource(source)
+            self.store.needsSetup = Self.needsSetup(credentials: credentials)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

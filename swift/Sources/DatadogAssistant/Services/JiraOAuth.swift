@@ -57,23 +57,25 @@ enum JiraOAuth {
 
     /// Client ID + secret: env → LastPass note (jiraClientID/jiraClientSecret,
     /// same fields the Python app reads) → stored (ID in defaults, secret in
-    /// the Keychain blob).
-    static func clientCredentials() -> (id: String, secret: String)? {
+    /// the SecretStore blob). `ephemeral` means the secret came from a runtime
+    /// source (env/vault) and must NOT be persisted to the on-device blob —
+    /// vault mode's promise is that rotation happens in one place.
+    static func clientCredentials() -> (id: String, secret: String, ephemeral: Bool)? {
         let env = ProcessInfo.processInfo.environment
         if let id = env["JIRA_OAUTH_CLIENT_ID"], let secret = env["JIRA_OAUTH_CLIENT_SECRET"],
            !id.isEmpty, !secret.isEmpty {
-            return (id, secret)
+            return (id, secret, true)
         }
         if AuthMode.current == .lastPass, let lastPass = LastPassConfig.load(),
            LastPass.isLoggedIn(),
            let id = LastPass.get(entry: lastPass.lookupRef, field: "jiraClientID"),
            let secret = LastPass.get(entry: lastPass.lookupRef, field: "jiraClientSecret"),
            !id.isEmpty, !secret.isEmpty {
-            return (id, secret)
+            return (id, secret, true)
         }
         if let id = UserDefaults.standard.string(forKey: clientIDKey), !id.isEmpty,
            let secret = blob()?["client_secret"], !secret.isEmpty {
-            return (id, secret)
+            return (id, secret, false)
         }
         return nil
     }
@@ -176,7 +178,9 @@ enum JiraOAuth {
         let site = resources.first { preferred.isEmpty ? false : $0.url.lowercased().contains(preferred) }
             ?? resources[0]
 
-        try writeBlob(["client_secret": creds.secret, "refresh_token": refresh])
+        var stored = ["refresh_token": refresh]
+        if !creds.ephemeral { stored["client_secret"] = creds.secret }
+        try writeBlob(stored)
         UserDefaults.standard.set(creds.id, forKey: clientIDKey)
         UserDefaults.standard.set(site.id, forKey: cloudIDKey)
         UserDefaults.standard.set(site.url, forKey: siteURLKey)
@@ -208,11 +212,42 @@ enum JiraOAuth {
         cachedToken = nil
     }
 
+    /// A rotated refresh token whose persist failed (SecretStore transiently
+    /// unavailable). Losing it would permanently disconnect Jira — Atlassian
+    /// has already invalidated the old one — so it lives here until a
+    /// writeBlob finally lands. Guarded by `lock`.
+    private static var unsavedRefreshToken: String?
+    private static var refreshTask: Task<String, Error>?
+
     static func accessToken() async throws -> String {
         if let cached = validCachedToken() { return cached }
+        // Single-flight: Atlassian rotates refresh tokens, so two concurrent
+        // refreshes with the same token can invalidate the grant entirely.
+        lock.lock()
+        let task: Task<String, Error>
+        if let running = refreshTask {
+            task = running
+        } else {
+            task = Task {
+                defer {
+                    lock.lock()
+                    refreshTask = nil
+                    lock.unlock()
+                }
+                return try await refreshAccessToken()
+            }
+            refreshTask = task
+        }
+        lock.unlock()
+        return try await task.value
+    }
 
+    private static func refreshAccessToken() async throws -> String {
+        lock.lock()
+        let pending = unsavedRefreshToken
+        lock.unlock()
         guard let creds = clientCredentials(),
-              let refresh = blob()?["refresh_token"], !refresh.isEmpty else {
+              let refresh = pending ?? blob()?["refresh_token"], !refresh.isEmpty else {
             throw OAuthError.notConnected
         }
         let refreshed = try await tokenRequest([
@@ -222,10 +257,21 @@ enum JiraOAuth {
             "refresh_token": refresh,
         ])
         // Atlassian rotates refresh tokens: persist the new one or the next
-        // refresh fails.
-        if let rotated = refreshed.refreshToken, !rotated.isEmpty, rotated != refresh {
-            try? writeBlob(["client_secret": creds.secret, "refresh_token": rotated])
+        // refresh fails. If persisting fails, keep it in memory and retry on
+        // the next refresh — dropping it silently would orphan the grant.
+        let rotated = refreshed.refreshToken?.isEmpty == false ? refreshed.refreshToken! : refresh
+        var stored = blob() ?? [:]
+        if creds.ephemeral { stored.removeValue(forKey: "client_secret") }
+        else { stored["client_secret"] = creds.secret }
+        stored["refresh_token"] = rotated
+        lock.lock()
+        do {
+            try writeBlob(stored)
+            unsavedRefreshToken = nil
+        } catch {
+            unsavedRefreshToken = rotated
         }
+        lock.unlock()
         storeCachedToken(refreshed.accessToken, expiresIn: refreshed.expiresIn)
         return refreshed.accessToken
     }
@@ -287,8 +333,13 @@ enum OAuthCallbackServer {
 
     static func waitForCallback(port: UInt16, openURL: URL, timeout: TimeInterval)
         async throws -> Callback {
-        let listener = try NWListener(
-            using: .tcp, on: NWEndpoint.Port(rawValue: port)!)
+        // Loopback only: the redirect always comes from this machine's
+        // browser, and an all-interfaces listener would let anything on the
+        // network burn the one-shot (or just look creepy in a port scan).
+        let params = NWParameters.tcp
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(
+            host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!)
+        let listener = try NWListener(using: params)
 
         return try await withCheckedThrowingContinuation { continuation in
             let finished = ProtectedFlag()
@@ -306,6 +357,18 @@ enum OAuthCallbackServer {
                     let request = data.map { String(decoding: $0, as: UTF8.self) } ?? ""
                     // "GET /callback?code=...&state=... HTTP/1.1"
                     let target = request.split(separator: " ").dropFirst().first.map(String.init) ?? ""
+                    // Only the OAuth redirect ends the wait — favicon fetches,
+                    // browser preconnects, and stray probes get a 404 and the
+                    // listener keeps waiting for the real callback.
+                    guard target.hasPrefix("/callback") else {
+                        let notFound = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n"
+                            + "Connection: close\r\n\r\n"
+                        connection.send(content: Data(notFound.utf8),
+                                        completion: .contentProcessed { _ in
+                            connection.cancel()
+                        })
+                        return
+                    }
                     let body = "<html><body style='font-family:-apple-system;background:#111;"
                         + "color:#eee;text-align:center;padding-top:20vh'>"
                         + "<h2>🐶 Connected — you can close this tab.</h2></body></html>"

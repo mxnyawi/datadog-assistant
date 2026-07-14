@@ -46,7 +46,14 @@ struct FilterConfig: Equatable {
     func matches(_ monitor: Monitor) -> Bool {
         if !tags.isEmpty, !tags.contains(where: { monitor.tags.contains($0) }) { return false }
         let needle = name.trimmingCharacters(in: .whitespaces).lowercased()
-        if !needle.isEmpty, !monitor.name.lowercased().contains(needle) { return false }
+        if !needle.isEmpty {
+            // Match the local alias OR the Datadog name: the server-side name
+            // filter matched the Datadog name, so a renamed monitor must not
+            // vanish just because its alias doesn't contain the needle.
+            let inAlias = monitor.name.lowercased().contains(needle)
+            let inOriginal = monitor.originalName?.lowercased().contains(needle) ?? false
+            if !inAlias, !inOriginal { return false }
+        }
         return true
     }
 

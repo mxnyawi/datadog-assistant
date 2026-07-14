@@ -398,12 +398,16 @@ enum LastPassSetup {
         return (code, detail)
     }
 
-    /// Call Datadog's key-validation endpoint. Runs synchronously (caller is
-    /// already off the main thread) so it can fold into the transcript.
-    /// Internal so the onboarding window can validate pasted keys the same way.
+    /// Validate the key PAIR against Datadog. /api/v1/validate only checks the
+    /// API key — it ignores the Application key entirely, so it happily blesses
+    /// a broken pair. Probe the monitors endpoint instead: a 200 needs a valid
+    /// API key AND an app key with monitors_read, which is exactly what this
+    /// app requires to function. Runs synchronously (caller is already off the
+    /// main thread) so it can fold into the transcript. Internal so the
+    /// onboarding window can validate pasted keys the same way.
     static func validateDatadog(apiKey: String, appKey: String, site: String)
         -> (ok: Bool, detail: String) {
-        guard let url = URL(string: "https://api.\(site)/api/v1/validate") else {
+        guard let url = URL(string: "https://api.\(site)/api/v1/monitor?page_size=1") else {
             return (false, "→ invalid site “\(site)”.")
         }
         var request = URLRequest(url: url)
@@ -423,11 +427,12 @@ enum LastPassSetup {
             switch code {
             case 200:
                 ok = true
-                detail = "→ 200 OK — keys are valid for site \(site)."
+                detail = "→ 200 OK — both keys work on site \(site) (monitors readable)."
             case 403:
                 detail = "→ 403 Forbidden — Datadog rejected the keys for site \(site). "
                     + "Likely the wrong site for your org (try datadoghq.eu / us3 / us5 / "
-                    + "ap1 in Settings), or the App key lacks the needed scopes."
+                    + "ap1 in Settings), an invalid Application key, or an App key "
+                    + "missing the monitors_read scope."
             case 401:
                 detail = "→ 401 Unauthorized — the API key is invalid for site \(site)."
             default:

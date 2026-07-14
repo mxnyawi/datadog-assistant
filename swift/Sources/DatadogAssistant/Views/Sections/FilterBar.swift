@@ -29,7 +29,11 @@ struct FilterBar: View {
                     }
                 }
                 Button {
-                    store.setFilters(FilterConfig())
+                    // Clear the tag/name chips only — the hide-No-Data
+                    // preference isn't a chip, so "Clear" must not flip it.
+                    var next = FilterConfig()
+                    next.hideNoData = store.filters.hideNoData
+                    store.setFilters(next)
                 } label: {
                     Text("Clear")
                         .font(.system(size: 10, weight: .semibold))
@@ -41,6 +45,20 @@ struct FilterBar: View {
                     .font(.system(size: 11))
                     .foregroundColor(Theme.textMuted)
                 Spacer()
+            }
+            if let hidden = store.snapshot.hiddenNoDataCount, hidden > 0 {
+                Button {
+                    var next = store.filters
+                    next.hideNoData = false
+                    store.setFilters(next)
+                } label: {
+                    Text("\(hidden) No Data hidden")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.textMuted)
+                        .underline()
+                }
+                .buttonStyle(.pressable)
+                .help("No-Data monitors are hidden by default — click to show them")
             }
         }
     }

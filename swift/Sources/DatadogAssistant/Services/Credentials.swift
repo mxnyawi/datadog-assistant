@@ -103,23 +103,28 @@ struct Credentials: Equatable {
     }
 
     /// Load credentials for the *selected* auth mode only — no silent
-    /// cross-mode fallback. Environment variables always win for the dev loop.
+    /// cross-mode fallback. Environment variables win for the dev loop,
+    /// except over an explicit Sample choice: a user who picked Sample in
+    /// the UI means it, and the UI has no way to show an env override.
     static func load() -> Credentials? {
+        let mode = AuthMode.current
         let env = ProcessInfo.processInfo.environment
-        // DD_BEARER_TOKEN is the name the Datadog ecosystem settled on
-        // (API clients, Terraform); DD_ACCESS_TOKEN accepted as an alias.
-        if let token = env["DD_BEARER_TOKEN"] ?? env["DD_ACCESS_TOKEN"], !token.isEmpty {
-            return Credentials(apiKey: "", appKey: "",
-                               site: env["DD_SITE"] ?? storedSite(),
-                               accessToken: token,
-                               subdomain: storedSubdomain())
+        if mode != .sample {
+            // DD_BEARER_TOKEN is the name the Datadog ecosystem settled on
+            // (API clients, Terraform); DD_ACCESS_TOKEN accepted as an alias.
+            if let token = env["DD_BEARER_TOKEN"] ?? env["DD_ACCESS_TOKEN"], !token.isEmpty {
+                return Credentials(apiKey: "", appKey: "",
+                                   site: env["DD_SITE"] ?? storedSite(),
+                                   accessToken: token,
+                                   subdomain: storedSubdomain())
+            }
+            if let api = env["DD_API_KEY"], let app = env["DD_APP_KEY"], !api.isEmpty, !app.isEmpty {
+                return Credentials(apiKey: api, appKey: app,
+                                   site: env["DD_SITE"] ?? storedSite(),
+                                   subdomain: storedSubdomain())
+            }
         }
-        if let api = env["DD_API_KEY"], let app = env["DD_APP_KEY"], !api.isEmpty, !app.isEmpty {
-            return Credentials(apiKey: api, appKey: app,
-                               site: env["DD_SITE"] ?? "datadoghq.com",
-                               subdomain: storedSubdomain())
-        }
-        switch AuthMode.current {
+        switch mode {
         case .sample:
             return nil
         case .lastPass:

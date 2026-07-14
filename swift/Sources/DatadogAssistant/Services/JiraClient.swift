@@ -200,8 +200,10 @@ enum JiraClient {
             return URL(string: "https://api.atlassian.com/ex/jira/\(cloudID)")!
         case .token:
             let host = config.browseHost
-            guard !host.isEmpty else { throw JiraError.http(0, "no Jira site configured") }
-            return URL(string: "https://\(host)")!
+            guard !host.isEmpty, let url = URL(string: "https://\(host)") else {
+                throw JiraError.http(0, "invalid Jira site “\(host)” — use yourorg.atlassian.net")
+            }
+            return url
         }
     }
 

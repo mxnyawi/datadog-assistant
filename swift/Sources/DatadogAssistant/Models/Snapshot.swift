@@ -23,6 +23,10 @@ struct Snapshot: Equatable, Codable {
     var connected: Bool
     /// True while rendering MockDataSource output (no credentials configured).
     var sampleData: Bool
+    /// How many No-Data monitors the hide-No-Data filter removed from this
+    /// snapshot — lets the UI say "N hidden" instead of having monitors
+    /// silently vanish. Optional so caches from older builds still decode.
+    var hiddenNoDataCount: Int? = nil
 
     var alerting: [Monitor] { monitors.filter { $0.state == .alert } }
     var warning:  [Monitor] { monitors.filter { $0.state == .warn  } }

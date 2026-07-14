@@ -119,7 +119,19 @@ final class GitHubClient {
         let user: User?
     }
 
+    /// GitHub results barely move poll-to-poll, but the poll can run every
+    /// 15s and each poll costs 2 requests per watched repo — enough to chew
+    /// through the borrowed gh token's rate limit on a busy org. Cache
+    /// briefly. (Refreshes are serialized by SnapshotStore, so these caches
+    /// are never touched concurrently.)
+    private static let cacheTTL: TimeInterval = 120
+    private var mergesCache: (at: Date, events: [DeployEvent])?
+    private var runsCache: (at: Date, runs: [CIRun])?
+
     func recentMerges(within window: TimeInterval) async -> [DeployEvent] {
+        if let cached = mergesCache, Date().timeIntervalSince(cached.at) < Self.cacheTTL {
+            return cached.events
+        }
         let cutoff = Date().addingTimeInterval(-window)
         var all: [DeployEvent] = []
         await withTaskGroup(of: [DeployEvent].self) { group in
@@ -130,7 +142,9 @@ final class GitHubClient {
             }
             for await events in group { all.append(contentsOf: events) }
         }
-        return all.sorted { $0.occurredAt > $1.occurredAt }
+        let sorted = all.sorted { $0.occurredAt > $1.occurredAt }
+        mergesCache = (Date(), sorted)
+        return sorted
     }
 
     // MARK: - Actions runs
@@ -151,6 +165,9 @@ final class GitHubClient {
     /// Latest run per workflow per watched repo (runs come newest-first, so
     /// the first run seen per workflow name wins). Failures sort first.
     func latestRuns(maxPerRepo: Int = 3) async -> [CIRun] {
+        if let cached = runsCache, Date().timeIntervalSince(cached.at) < Self.cacheTTL {
+            return cached.runs
+        }
         var all: [CIRun] = []
         await withTaskGroup(of: [CIRun].self) { group in
             for repo in config.repos {
@@ -160,17 +177,23 @@ final class GitHubClient {
             }
             for await runs in group { all.append(contentsOf: runs) }
         }
-        return all.sorted { lhs, rhs in
+        let sorted = all.sorted { lhs, rhs in
             if (lhs.state == .failure) != (rhs.state == .failure) {
                 return lhs.state == .failure
             }
             return lhs.startedAt > rhs.startedAt
         }
+        runsCache = (Date(), sorted)
+        return sorted
     }
 
     private func runs(in repo: GitHubConfig.Repo, limit: Int) async -> [CIRun] {
-        var request = URLRequest(url: URL(string:
-            "https://api.github.com/repos/\(repo.fullName)/actions/runs?per_page=15")!)
+        // The repo spec is user-typed — a stray space or unicode char must
+        // degrade to an empty feed, not crash the poll loop.
+        guard let url = URL(string:
+            "https://api.github.com/repos/\(repo.fullName)/actions/runs?per_page=15")
+        else { return [] }
+        var request = URLRequest(url: url)
         request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
 
@@ -209,8 +232,10 @@ final class GitHubClient {
     }
 
     private func merges(in repo: GitHubConfig.Repo, since cutoff: Date) async -> [DeployEvent] {
-        var request = URLRequest(url: URL(string:
-            "https://api.github.com/repos/\(repo.fullName)/pulls?state=closed&sort=updated&direction=desc&per_page=20")!)
+        guard let url = URL(string:
+            "https://api.github.com/repos/\(repo.fullName)/pulls?state=closed&sort=updated&direction=desc&per_page=50")
+        else { return [] }
+        var request = URLRequest(url: url)
         request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
 

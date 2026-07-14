@@ -30,12 +30,8 @@ struct DLQConfig: Equatable {
         return config
     }
 
-    func save() {
-        let defaults = UserDefaults.standard
-        defaults.set(enabled, forKey: Self.enabledKey)
-        defaults.set(patterns, forKey: Self.patternsKey)
-        defaults.set(exclusive, forKey: Self.exclusiveKey)
-    }
+    // Configured via `defaults write` on the three keys above — there's no
+    // Settings UI for DLQ yet, so no save() until one exists.
 
     func matches(name: String, tags: [String], query: String) -> Bool {
         guard enabled else { return false }

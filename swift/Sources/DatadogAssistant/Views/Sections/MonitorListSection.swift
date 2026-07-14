@@ -15,21 +15,27 @@ struct MonitorListSection: View {
         let matches: (Monitor) -> Bool
     }
 
-    private static let buckets: [Bucket] = [
-        // All DLQ monitors, healthy included — every monitor must land in
-        // exactly one bucket or it silently vanishes from this list.
-        Bucket(label: "Dead Letter Queues", tint: .alert) { $0.isDLQ },
-        Bucket(label: "Alerting", tint: .alert) { $0.state == .alert && !$0.isDLQ },
-        Bucket(label: "Warning", tint: .warn) { $0.state == .warn && !$0.isDLQ },
-        Bucket(label: "No Data — Likely Broken", tint: .noData) {
-            $0.state == .noData && !$0.noDataQuiet && !$0.isDLQ
-        },
-        Bucket(label: "Quiet — No Data, Expected", tint: .noData) {
-            $0.state == .noData && $0.noDataQuiet && !$0.isDLQ
-        },
-        Bucket(label: "Muted", tint: .muted) { $0.state == .muted && !$0.isDLQ },
-        Bucket(label: "Healthy", tint: .ok) { $0.state == .ok && !$0.isDLQ },
-    ]
+    /// With `exclusive` (the default) DLQ monitors appear ONLY in their own
+    /// bucket; with it off they also show in their normal state groups —
+    /// honoring the same dlqExclusive setting ActiveMonitorsSection reads.
+    private static func buckets(exclusive: Bool) -> [Bucket] {
+        // Every monitor must land in at least one bucket or it silently
+        // vanishes from this list — the DLQ bucket takes healthy ones too.
+        func inStateBuckets(_ monitor: Monitor) -> Bool { !exclusive || !monitor.isDLQ }
+        return [
+            Bucket(label: "Dead Letter Queues", tint: .alert) { $0.isDLQ },
+            Bucket(label: "Alerting", tint: .alert) { $0.state == .alert && inStateBuckets($0) },
+            Bucket(label: "Warning", tint: .warn) { $0.state == .warn && inStateBuckets($0) },
+            Bucket(label: "No Data — Likely Broken", tint: .noData) {
+                $0.state == .noData && !$0.noDataQuiet && inStateBuckets($0)
+            },
+            Bucket(label: "Quiet — No Data, Expected", tint: .noData) {
+                $0.state == .noData && $0.noDataQuiet && inStateBuckets($0)
+            },
+            Bucket(label: "Muted", tint: .muted) { $0.state == .muted && inStateBuckets($0) },
+            Bucket(label: "Healthy", tint: .ok) { $0.state == .ok && inStateBuckets($0) },
+        ]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -43,7 +49,8 @@ struct MonitorListSection: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
             } else {
-                ForEach(Array(Self.buckets.enumerated()), id: \.offset) { _, bucket in
+                let buckets = Self.buckets(exclusive: DLQConfig.load().exclusive)
+                ForEach(Array(buckets.enumerated()), id: \.offset) { _, bucket in
                     let group = filtered.filter(bucket.matches)
                     if !group.isEmpty {
                         monitorGroup(bucket, monitors: group)

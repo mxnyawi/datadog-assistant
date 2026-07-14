@@ -34,6 +34,7 @@ struct MonitorRow: View {
                 if !monitor.sparkline.isEmpty {
                     Sparkline(points: monitor.sparkline, color: tint,
                               threshold: monitor.thresholdPosition,
+                              breachBelow: monitor.isBelowThreshold,
                               markers: monitor.deployMarkers,
                               ghost: monitor.ghostSparkline,
                               projection: monitor.projection())
@@ -250,7 +251,9 @@ struct MonitorRow: View {
     private func createTicket(_ config: JiraConfig) {
         creatingTicket = true
         ticketError = nil
-        Task {
+        // @MainActor: mutates @State after the await; a plain Task from a
+        // nonisolated View method would do that off the main thread.
+        Task { @MainActor in
             do {
                 let ticket = try await JiraClient.createIssue(for: monitor, config: config)
                 LinkOpener.open(ticket.url)

@@ -22,7 +22,9 @@ struct DatadogAssistantApp {
         let dir = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("DatadogAssistant", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])   // SecretStore lives here — owner-only
         let fd = open(dir.appendingPathComponent("app.lock").path, O_CREAT | O_RDWR, 0o600)
         guard fd >= 0 else { return true }   // can't lock → don't block launch
         return flock(fd, LOCK_EX | LOCK_NB) == 0
