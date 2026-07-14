@@ -1,5 +1,13 @@
 import Foundation
 
+/// Whether the Changes tab can pull GitHub deploys, and if not, what's missing.
+enum GitHubSetupStatus: Equatable {
+    case ready          // repos configured + a token resolves
+    case needsAuth      // repos configured, but no token — run `gh auth login`
+    case needsRepos     // signed in (gh/token), but no repos configured
+    case notConfigured  // neither
+}
+
 /// GitHub configuration: a token and repos to watch for merges. Repos map to
 /// services ("payments=acme/payments-api") so a merge can be tied to the
 /// firing monitor's service; a bare "acme/platform" entry watches org-wide.
@@ -31,24 +39,43 @@ struct GitHubConfig: Equatable {
     }
 
     static func load() -> GitHubConfig? {
+        guard let specs = configuredSpecs(), let token = resolveToken() else { return nil }
+        let config = GitHubConfig(token: token, repoSpecs: specs)
+        return config.repos.isEmpty ? nil : config
+    }
+
+    /// Repos to watch (env or UserDefaults; not secret), or nil if none.
+    static func configuredSpecs() -> [String]? {
         let env = ProcessInfo.processInfo.environment
-        // Repos aren't secret, so they come from env/UserDefaults regardless of
-        // credential mode; without any there's nothing to watch.
         let specs = env["GITHUB_REPOS"].map { $0.split(separator: ",").map(String.init) }
             ?? UserDefaults.standard.stringArray(forKey: reposDefaultsKey)
-        guard let specs, !specs.isEmpty else { return nil }
-        // Env wins (dev loop), then the shared LastPass vault, then a stored
-        // token, then the locally-authenticated gh CLI — so a machine that's
-        // already logged into `gh` needs zero token setup.
+        return (specs?.isEmpty == false) ? specs : nil
+    }
+
+    /// The GitHub token: env (dev loop) → shared LastPass vault → on-device
+    /// store → the locally-authenticated `gh` CLI. So a machine already logged
+    /// into `gh` needs zero token setup.
+    static func resolveToken() -> String? {
+        let env = ProcessInfo.processInfo.environment
         var token = env["GITHUB_TOKEN"]
         if token?.isEmpty ?? true, let lastPass = LastPassConfig.load(), LastPass.isLoggedIn() {
             token = lastPass.gitHubToken()
         }
         if token?.isEmpty ?? true { token = SecretStore.read(tokenService) }
         if token?.isEmpty ?? true { token = GitHubCLI.authToken() }
-        guard let token, !token.isEmpty else { return nil }
-        let config = GitHubConfig(token: token, repoSpecs: specs)
-        return config.repos.isEmpty ? nil : config
+        return (token?.isEmpty ?? true) ? nil : token
+    }
+
+    /// Why the Changes tab may not be showing GitHub deploys — drives the
+    /// setup hint. Runs a `gh auth token` subprocess (cached), so call it off
+    /// the main thread.
+    static func setupStatus() -> GitHubSetupStatus {
+        switch (configuredSpecs() != nil, resolveToken() != nil) {
+        case (true, true):  return .ready
+        case (true, false): return .needsAuth
+        case (false, true): return .needsRepos
+        case (false, false): return .notConfigured
+        }
     }
 
     func save() throws {

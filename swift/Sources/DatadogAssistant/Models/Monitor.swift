@@ -83,6 +83,12 @@ struct Monitor: Identifiable, Hashable, Codable {
     /// duration, up to `maxSparklineWindow`). Deploy-marker x-positions are
     /// computed against this, not the fixed default.
     var sparklineSpan: TimeInterval = sparklineWindow
+    /// Week-ago series in the same normalized 0…1 space as `sparkline`, for the
+    /// ghost overlay ("is this normal for right now?"). Empty when unavailable.
+    var ghostSparkline: [Double] = []
+    /// Per-group status (one entry per host/group) for the blast-radius
+    /// heatmap. Empty for ungrouped monitors.
+    var groupStates: [MonitorState] = []
 
     var firingDuration: String? {
         guard let since = firingSince else { return nil }
@@ -90,5 +96,45 @@ struct Monitor: Identifiable, Hashable, Codable {
         if mins < 60 { return "\(mins)m" }
         if mins < 60 * 24 { return "\(mins / 60)h \(mins % 60)m" }
         return "\(mins / (60 * 24))d \(mins / 60 % 24)h"
+    }
+}
+
+// MARK: - Trend analysis (for the projection tail + trend chip)
+
+extension Monitor {
+    /// A short projected continuation of the normalized sparkline: the least-
+    /// squares slope of the recent tail, extended forward and clamped to 0…1.
+    /// Empty when the series is too short or basically flat.
+    func projection(points: Int = 12) -> [Double] {
+        guard sparkline.count >= 6 else { return [] }
+        let tail = Array(sparkline.suffix(10))
+        let n = Double(tail.count)
+        let xs = (0..<tail.count).map(Double.init)
+        let sx = xs.reduce(0, +), sy = tail.reduce(0, +)
+        let sxx = xs.map { $0 * $0 }.reduce(0, +)
+        let sxy = zip(xs, tail).map(*).reduce(0, +)
+        let denom = n * sxx - sx * sx
+        guard abs(denom) > 1e-9 else { return [] }
+        let slope = (n * sxy - sx * sy) / denom
+        guard abs(slope) > 0.003 else { return [] }   // essentially flat
+        let last = sparkline.last ?? tail.last!
+        return (1...points).map { min(1, max(0, last + slope * Double($0))) }
+    }
+
+    /// One-line trend read for the expanded row: direction, and — when climbing
+    /// toward an as-yet-uncrossed critical threshold — an ETA to breach.
+    var trendLabel: String? {
+        let proj = projection()
+        guard let now = sparkline.last, let end = proj.last else { return nil }
+        let rising = end > now + 0.01
+        let falling = end < now - 0.01
+        guard rising || falling else { return nil }
+        if rising, let thr = thresholdPosition, now < thr,
+           let crossIdx = proj.firstIndex(where: { $0 >= thr }) {
+            let secPerPoint = sparklineSpan / Double(max(sparkline.count - 1, 1))
+            let mins = max(1, Int(Double(crossIdx + 1) * secPerPoint / 60))
+            return "climbing · ~critical in \(mins)m"
+        }
+        return rising ? "climbing" : "easing"
     }
 }

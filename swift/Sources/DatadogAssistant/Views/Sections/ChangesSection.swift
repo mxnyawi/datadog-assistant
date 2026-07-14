@@ -5,9 +5,13 @@ import AppKit
 /// suspects (changes that landed just before an alert started) called out.
 struct ChangesSection: View {
     let snapshot: Snapshot
+    @State private var gitHubStatus: GitHubSetupStatus?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let gitHubStatus, gitHubStatus != .ready {
+                gitHubHint(gitHubStatus)
+            }
             if !snapshot.ciRuns.isEmpty {
                 SectionHeader(title: "CI — Latest Runs", count: snapshot.ciRuns.count)
                 VStack(spacing: 4) {
@@ -29,6 +33,56 @@ struct ChangesSection: View {
                 }
             }
         }
+        .task {
+            // `gh auth token` shells out, so resolve the status off the main
+            // thread when the tab appears.
+            gitHubStatus = await Task.detached { GitHubConfig.setupStatus() }.value
+        }
+    }
+
+    /// Guidance when GitHub deploys can't be pulled — most importantly, telling
+    /// the user to `gh auth login` so the app can borrow the CLI's token.
+    private func hintText(_ status: GitHubSetupStatus) -> String {
+        switch status {
+        case .needsAuth:
+            return "GitHub repos are configured but you're not signed in. "
+                + "Run  gh auth login  in Terminal to pull deploys from your repos."
+        case .needsRepos:
+            return "Signed in to GitHub. Add the repos behind your monitored services "
+                + "in Settings → GitHub to see their deploys here."
+        default:
+            return "Correlate deploys with alerts: run  gh auth login  in Terminal, "
+                + "then add your repos in Settings → GitHub."
+        }
+    }
+
+    @ViewBuilder private func gitHubHint(_ status: GitHubSetupStatus) -> some View {
+        let text = hintText(status)
+        let showsSettings = status != .needsAuth   // needsAuth is a terminal step, not a Settings one
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "arrow.triangle.pull")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(Theme.info)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(text)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if showsSettings {
+                    Button("Open GitHub settings") {
+                        NotificationCenter.default.post(name: .openSettingsWindow, object: nil)
+                    }
+                    .buttonStyle(.pressable)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.info)
+                }
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Theme.info.opacity(0.10))
+        )
     }
 
     private var emptyState: some View {

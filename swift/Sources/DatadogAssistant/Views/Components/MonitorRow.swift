@@ -34,8 +34,10 @@ struct MonitorRow: View {
                 if !monitor.sparkline.isEmpty {
                     Sparkline(points: monitor.sparkline, color: tint,
                               threshold: monitor.thresholdPosition,
-                              markers: monitor.deployMarkers)
-                        .frame(height: 26)
+                              markers: monitor.deployMarkers,
+                              ghost: monitor.ghostSparkline,
+                              projection: monitor.projection())
+                        .frame(height: 30)
                         .padding(.leading, 24)
                 }
                 details
@@ -108,6 +110,23 @@ struct MonitorRow: View {
                 if let threshold = monitor.threshold {
                     detailItem(icon: "ruler", text: "threshold \(compact(threshold))")
                 }
+                if let trend = monitor.trendLabel {
+                    let critical = trend.contains("critical")
+                    HStack(spacing: 4) {
+                        Image(systemName: trend.hasPrefix("easing")
+                              ? "chart.line.downtrend.xyaxis"
+                              : "chart.line.uptrend.xyaxis")
+                            .font(.system(size: 9))
+                        Text(trend)
+                            .font(.system(size: 11, weight: critical ? .semibold : .medium))
+                            .lineLimit(1)
+                    }
+                    .foregroundColor(critical ? tint : Theme.textSecondary)
+                }
+            }
+            // Blast radius: which hosts/groups are firing vs healthy.
+            if monitor.groupStates.count > 1 {
+                GroupHeatmap(states: monitor.groupStates)
             }
             if !monitor.triggeredHosts.isEmpty {
                 detailItem(icon: "server.rack",

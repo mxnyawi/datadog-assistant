@@ -289,12 +289,23 @@ final class DatadogClient: DataSource {
 
         var firingSince: Date?
         var hosts: [String] = []
+        var groupStates: [MonitorState] = []
         if let groups = dto.state?.groups {
-            for (name, group) in groups where group.status == "Alert" || group.status == "Warn" {
-                hosts.append(name)
-                if let ts = group.last_triggered_ts {
-                    let date = Date(timeIntervalSince1970: TimeInterval(ts))
-                    firingSince = min(firingSince ?? date, date)
+            for (name, group) in groups {
+                let gs: MonitorState
+                switch group.status {
+                case "Alert":   gs = .alert
+                case "Warn":    gs = .warn
+                case "No Data": gs = .noData
+                default:        gs = .ok
+                }
+                groupStates.append(gs)
+                if gs == .alert || gs == .warn {
+                    hosts.append(name)
+                    if let ts = group.last_triggered_ts {
+                        let date = Date(timeIntervalSince1970: TimeInterval(ts))
+                        firingSince = min(firingSince ?? date, date)
+                    }
                 }
             }
         }
@@ -304,7 +315,7 @@ final class DatadogClient: DataSource {
         let service = dto.tags?
             .first { $0.hasPrefix("service:") }
             .map { String($0.dropFirst("service:".count)) }
-        return Monitor(
+        var monitor = Monitor(
             id: dto.id,
             name: dto.name ?? "monitor \(dto.id)",
             state: state,
@@ -318,6 +329,8 @@ final class DatadogClient: DataSource {
             service: service,
             tags: dto.tags ?? []
         )
+        monitor.groupStates = groupStates
+        return monitor
     }
 
     /// Priority: the monitor's priority field, else a priority:pN / priority:N
@@ -354,6 +367,7 @@ final class DatadogClient: DataSource {
         var delta: Double?
         var thresholdPosition: Double?
         var span: TimeInterval = Monitor.sparklineWindow
+        var ghost: [Double] = []
     }
 
     private func attachSparklines(to monitors: [Monitor], previous: Snapshot?) async -> [Monitor] {
@@ -379,6 +393,7 @@ final class DatadogClient: DataSource {
                 m.delta = spark.delta
                 m.thresholdPosition = spark.thresholdPosition
                 m.sparklineSpan = spark.span
+                m.ghostSparkline = spark.ghost
                 byID[id] = m
             }
         }
@@ -434,13 +449,17 @@ final class DatadogClient: DataSource {
             }
         }
 
-        // series[1] is week_before(m): compare now vs the same moment last week.
+        // series[1] is week_before(m): the same series a week ago. Normalized
+        // into the *live* series' space so the ghost overlay is comparable, and
+        // its last point drives the ×N-vs-last-week delta.
         if series.count > 1,
            let shifted = series[1].pointlist?.compactMap({ $0.count > 1 ? $0[1] : nil }),
-           let lastWeek = shifted.last, let current = values.last,
-           abs(lastWeek) > 1e-9 {
-            let ratio = current / lastWeek
-            if ratio.isFinite, ratio > 0 { spark.delta = ratio }
+           shifted.count > 1 {
+            spark.ghost = shifted.map(normalize)
+            if let lastWeek = shifted.last, let current = values.last, abs(lastWeek) > 1e-9 {
+                let ratio = current / lastWeek
+                if ratio.isFinite, ratio > 0 { spark.delta = ratio }
+            }
         }
         return spark
     }

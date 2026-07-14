@@ -17,8 +17,13 @@ struct HeroAlertCard: View {
             if !monitor.sparkline.isEmpty {
                 Sparkline(points: monitor.sparkline, color: Theme.alert,
                           threshold: monitor.thresholdPosition,
-                          markers: monitor.deployMarkers)
+                          markers: monitor.deployMarkers,
+                          ghost: monitor.ghostSparkline,
+                          projection: monitor.projection())
                     .frame(height: 34)
+            }
+            if monitor.groupStates.count > 1 {
+                GroupHeatmap(states: monitor.groupStates)
             }
             if let suspect = store.suspectDeploy(for: monitor) {
                 suspectChip(suspect)
