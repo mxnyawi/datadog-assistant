@@ -156,11 +156,13 @@ private struct OnboardingView: View {
     private var apiKeysCard: some View {
         ChoiceCard(
             icon: "key.fill",
-            title: "Paste API keys",
+            title: "Paste an access token or API keys",
             badge: nil,
-            detail: "Use your own Datadog API + application keys. "
-                + "Stored in the macOS Keychain, never written to disk.",
-            buttonTitle: "Enter Keys…",
+            detail: "Use a personal access token (ddpat_…) — Datadog's "
+                + "recommended credential for personal tools — or the classic "
+                + "API + application key pair. Validated, then stored in the "
+                + "macOS Keychain, never written to disk.",
+            buttonTitle: "Enter Credentials…",
             prominent: false
         ) {
             showKeyEntry = true
@@ -221,12 +223,16 @@ private struct ChoiceCard: View {
     }
 }
 
-/// Minimal key entry for the onboarding path: paste, validate against
-/// Datadog, save to the Keychain. The full editor stays in Settings.
+/// Minimal credential entry for the onboarding path: paste an access token
+/// (Datadog's recommended credential for personal tools since 2026) or the
+/// classic key pair, validate against Datadog, save to the Keychain. The
+/// full editor stays in Settings.
 private struct APIKeyEntryView: View {
     let onSaved: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var useAccessToken = true
+    @State private var accessToken = ""
     @State private var apiKey = ""
     @State private var appKey = ""
     @State private var site = Credentials.currentSite()
@@ -235,18 +241,34 @@ private struct APIKeyEntryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Connect with API keys")
+            Text("Connect to Datadog")
                 .font(.title3.bold())
-            Text("Create keys in Datadog under Organization Settings → API Keys "
-                 + "and Application Keys. The app key needs monitors_read "
-                 + "(plus monitors_write to mute from the app).")
+
+            Picker("", selection: $useAccessToken) {
+                Text("Access token").tag(true)
+                Text("API + App keys").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            Text(useAccessToken
+                 ? "Create one under Personal Settings → Access Tokens with scopes: "
+                   + "monitors_read, monitors_downtime, events_read, incident_read, "
+                   + "dashboards_read, timeseries_query. One credential, no key pair."
+                 : "Create keys in Datadog under Organization Settings → API Keys "
+                   + "and Application Keys. The app key needs monitors_read "
+                   + "(plus monitors_write to mute from the app).")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Form {
-                SecureField("API key", text: $apiKey)
-                SecureField("Application key", text: $appKey)
+                if useAccessToken {
+                    SecureField("Access token (ddpat_… or ddsat_…)", text: $accessToken)
+                } else {
+                    SecureField("API key", text: $apiKey)
+                    SecureField("Application key", text: $appKey)
+                }
                 Picker("Datadog site", selection: $site) {
                     ForEach(Credentials.knownSites, id: \.self) { Text($0) }
                 }
@@ -266,18 +288,23 @@ private struct APIKeyEntryView: View {
                 Button("Connect") { connect() }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(busy || apiKey.isEmpty || appKey.isEmpty)
+                    .disabled(busy || (useAccessToken
+                        ? accessToken.trimmingCharacters(in: .whitespaces).isEmpty
+                        : apiKey.isEmpty || appKey.isEmpty))
             }
         }
         .padding(20)
-        .frame(width: 420)
+        .frame(width: 440)
     }
 
     private func connect() {
         busy = true; error = nil
-        let api = apiKey, app = appKey, site = self.site
+        let token = accessToken.trimmingCharacters(in: .whitespaces)
+        let api = apiKey, app = appKey, site = self.site, useToken = useAccessToken
         Task.detached {
-            let result = LastPassSetup.validateDatadog(apiKey: api, appKey: app, site: site)
+            let result = useToken
+                ? LastPassSetup.validateAccessToken(token, site: site)
+                : LastPassSetup.validateDatadog(apiKey: api, appKey: app, site: site)
             await MainActor.run {
                 busy = false
                 guard result.ok else {
@@ -285,7 +312,11 @@ private struct APIKeyEntryView: View {
                     return
                 }
                 do {
-                    try Credentials(apiKey: api, appKey: app, site: site).save()
+                    if useToken {
+                        try Credentials.saveAccessToken(token, site: site)
+                    } else {
+                        try Credentials(apiKey: api, appKey: app, site: site).save()
+                    }
                     dismiss()
                     onSaved()
                 } catch {

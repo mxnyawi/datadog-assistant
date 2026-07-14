@@ -66,16 +66,27 @@ On first launch a welcome window offers three paths:
    (Field names are remappable; an optional `githubToken` powers deploy
    correlation, `jiraToken` powers one-tap Jira tickets.)
 
-2. **Paste API keys.** Your own Datadog API + application keys, validated and
-   stored in the macOS Keychain.
+2. **Paste an access token or API keys.** A Datadog **access token**
+   (`ddpat_…` personal token — Datadog's recommended credential for personal
+   tools since mid-2026 — or a non-expiring `ddsat_…` service-account token)
+   is one scoped credential that replaces the API + app key pair. Create it
+   under *Personal Settings → Access Tokens* with scopes `monitors_read,
+   monitors_downtime, events_read, incident_read, dashboards_read,
+   timeseries_query`. The classic API + application key pair works too.
+   Either way it's validated first and stored in the macOS Keychain.
+   Note: personal tokens expire (max 1 year) — the app will show 401/403
+   when that happens; paste a fresh one in Settings.
 
 3. **Sample data.** Explore the full UI offline first; connect later from
    Settings.
 
 Every Datadog site works (US1/EU/US3/US5/AP1/Gov). Power users can override
-everything with env vars (`DD_API_KEY`, `DD_APP_KEY`, `DD_SITE`,
-`DD_LASTPASS_ENTRY`, …) or a password-manager command (`op read …`,
-`lpass show …`) — see [swift/README.md](swift/README.md).
+everything with env vars (`DD_BEARER_TOKEN`, `DD_API_KEY`, `DD_APP_KEY`,
+`DD_SITE`, `DD_LASTPASS_ENTRY`, …) or a password-manager command
+(`op read …`, `lpass show …`) — see [swift/README.md](swift/README.md).
+Teams on the LastPass vault can switch to a shared token by adding it to the
+secure note and setting the token field name (`DD_LASTPASS_TOKEN_FIELD` or
+the `lastpassAccessTokenField` default).
 
 ## ✨ What it does
 

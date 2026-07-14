@@ -35,6 +35,20 @@ through Settings go to the macOS Keychain under the same service names the
 Python app uses (`datadog-assistant-api-key` / `-app-key`), so an existing
 install carries over automatically.
 
+**Access tokens (2026).** Alongside the classic API + Application key pair,
+the app accepts a single scoped Datadog **access token** — personal
+(`ddpat_…`, expires ≤ 1 year) or service-account (`ddsat_…`, can be
+non-expiring) — sent as `Authorization: Bearer`. Pick *Access token* in
+Settings → Source (or in the onboarding sheet), or export `DD_BEARER_TOKEN`
+(alias `DD_ACCESS_TOKEN`). Required scopes: `monitors_read`,
+`monitors_downtime`, `events_read`, `incident_read`, `dashboards_read`,
+`timeseries_query`. Token validation probes `GET /api/v1/monitor?page_size=1`
+(the classic `/api/v1/validate` endpoint only understands API keys). A
+LastPass note can hold the token too: set the field name via
+`DD_LASTPASS_TOKEN_FIELD` (empty by default, so existing key-pair notes are
+untouched). Saving a token clears stored keys and vice versa — the two
+shapes never shadow each other.
+
 Settings has a **Credential source** selector — *Sample data*, *Keychain*, or
 *LastPass* — and the choice is remembered. The app reads from the selected
 source only: pick *LastPass* and it never touches (or prompts for) the

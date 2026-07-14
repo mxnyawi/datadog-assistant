@@ -594,8 +594,7 @@ final class DatadogClient: DataSource {
 
     private func authedRequest(url: URL) -> URLRequest {
         var request = URLRequest(url: url)
-        request.setValue(credentials.apiKey, forHTTPHeaderField: "DD-API-KEY")
-        request.setValue(credentials.appKey, forHTTPHeaderField: "DD-APPLICATION-KEY")
+        credentials.authorize(&request)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         return request
     }

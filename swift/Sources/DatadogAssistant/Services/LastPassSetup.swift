@@ -350,6 +350,55 @@ enum LastPassSetup {
         return (ok, lines.joined(separator: "\n"))
     }
 
+    /// Validate a Datadog access token (ddpat_/ddsat_). `/api/v1/validate`
+    /// only understands API keys, so probe the cheapest call the app actually
+    /// needs: one monitor under the monitors_read scope. A 200 proves the
+    /// token is live, on the right site, and scoped for our main read path.
+    static func validateAccessToken(_ token: String, site: String)
+        -> (ok: Bool, detail: String) {
+        guard let url = URL(string: "https://api.\(site)/api/v1/monitor?page_size=1") else {
+            return (false, "→ invalid site “\(site)”.")
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 15
+        let result = probeHTTP(request)
+        switch result.code {
+        case 200:
+            return (true, "→ 200 OK — token is valid for site \(site) and can read monitors.")
+        case 403:
+            return (false, "→ 403 Forbidden — the token was rejected for site \(site). "
+                + "Check the site, that the token hasn't expired, and that it has the "
+                + "monitors_read scope (plus monitors_downtime, events_read, incident_read, "
+                + "dashboards_read, timeseries_query for full features).")
+        case 401:
+            return (false, "→ 401 Unauthorized — the token is invalid for site \(site).")
+        case -1:
+            return (false, result.detail)
+        default:
+            return (false, "→ HTTP \(result.code).")
+        }
+    }
+
+    /// Run one request synchronously and report the status code (or a network
+    /// error as code -1). Callers are already off the main thread.
+    private static func probeHTTP(_ request: URLRequest) -> (code: Int, detail: String) {
+        let semaphore = DispatchSemaphore(value: 0)
+        var code = -1
+        var detail = "→ no response"
+        let task = URLSession.shared.dataTask(with: request) { _, response, error in
+            defer { semaphore.signal() }
+            if let error {
+                detail = "→ network error: \(error.localizedDescription)"
+                return
+            }
+            code = (response as? HTTPURLResponse)?.statusCode ?? -1
+        }
+        task.resume()
+        _ = semaphore.wait(timeout: .now() + 20)
+        return (code, detail)
+    }
+
     /// Call Datadog's key-validation endpoint. Runs synchronously (caller is
     /// already off the main thread) so it can fold into the transcript.
     /// Internal so the onboarding window can validate pasted keys the same way.

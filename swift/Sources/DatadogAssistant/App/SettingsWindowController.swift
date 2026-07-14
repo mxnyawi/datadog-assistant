@@ -71,6 +71,9 @@ private struct SourceSettingsTab: View {
     @State private var browser = LinkOpener.currentBrowser()
     @State private var apiKeyCmd = UserDefaults.standard.string(forKey: "apiKeyCmd") ?? ""
     @State private var appKeyCmd = UserDefaults.standard.string(forKey: "appKeyCmd") ?? ""
+    @State private var useAccessToken = Credentials.hasStoredAccessToken()
+    @State private var accessToken = ""
+    @State private var accessTokenCmd = UserDefaults.standard.string(forKey: "accessTokenCmd") ?? ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -135,7 +138,26 @@ private struct SourceSettingsTab: View {
 
     private var keychainSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(hasExistingKeys
+            // Two credential shapes since Datadog's 2026 auth modernization:
+            // the classic pair, or one scoped access token.
+            Picker("", selection: $useAccessToken) {
+                Text("API + App keys").tag(false)
+                Text("Access token").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            if useAccessToken {
+                accessTokenFields
+            } else {
+                keyPairFields
+            }
+        }
+    }
+
+    private var keyPairFields: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(hasExistingKeys && !Credentials.hasStoredAccessToken()
                  ? "Keys are stored in the macOS Keychain. Enter new values to replace them."
                  : "Stored in the macOS Keychain, never written to disk in plain text. "
                    + "App key needs monitors_read (plus monitors_write for mute, "
@@ -166,6 +188,47 @@ private struct SourceSettingsTab: View {
                 Button("Save keys") { saveKeys() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(apiKey.isEmpty || appKey.isEmpty)
+            }
+        }
+    }
+
+    private var accessTokenFields: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(Credentials.hasStoredAccessToken()
+                 ? "An access token is stored in the macOS Keychain. Paste a new one to replace it."
+                 : "One scoped credential instead of a key pair — create it under "
+                   + "Personal Settings → Access Tokens (or on a service account for a "
+                   + "non-expiring token). Scopes needed: monitors_read, monitors_downtime, "
+                   + "events_read, incident_read, dashboards_read, timeseries_query.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Form {
+                SecureField("Access token (ddpat_… or ddsat_…)", text: $accessToken)
+                Picker("Site", selection: $site) {
+                    ForEach(Credentials.knownSites, id: \.self) { Text($0) }
+                }
+                TextField("Token command (optional, e.g. op read op://…)", text: $accessTokenCmd)
+                    .onSubmit { saveCommands() }
+            }
+            Text("Personal tokens expire (up to 1 year) — you'll re-paste one when "
+                 + "Datadog reports 401/403. Service-account tokens can be non-expiring.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                if Credentials.hasStoredAccessToken() {
+                    Button("Remove token", role: .destructive) {
+                        Credentials.clear()
+                        hasExistingKeys = false
+                        useAccessToken = false
+                        setMode(.sample)
+                    }
+                }
+                Spacer()
+                Button("Save token") { saveAccessToken() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(accessToken.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
     }
@@ -234,7 +297,9 @@ private struct SourceSettingsTab: View {
         case .sample:
             return "Running on sample data. Choose Keychain or LastPass to connect real data."
         case .keychain:
-            return "Using keys stored in the macOS Keychain."
+            return Credentials.hasStoredAccessToken()
+                ? "Using an access token stored in the macOS Keychain."
+                : "Using keys stored in the macOS Keychain."
         case .lastPass:
             return lastPassLoggedIn
                 ? "Using the shared LastPass vault — keys are fetched at runtime, nothing is stored locally."
@@ -252,6 +317,7 @@ private struct SourceSettingsTab: View {
     private func saveCommands() {
         UserDefaults.standard.set(apiKeyCmd, forKey: "apiKeyCmd")
         UserDefaults.standard.set(appKeyCmd, forKey: "appKeyCmd")
+        UserDefaults.standard.set(accessTokenCmd, forKey: "accessTokenCmd")
         onSave()
     }
 
@@ -261,6 +327,18 @@ private struct SourceSettingsTab: View {
             hasExistingKeys = true
             apiKey = ""
             appKey = ""
+            setMode(.keychain)
+        } catch {
+            self.error = "Keychain write failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func saveAccessToken() {
+        do {
+            try Credentials.saveAccessToken(
+                accessToken.trimmingCharacters(in: .whitespaces), site: site)
+            hasExistingKeys = true
+            accessToken = ""
             setMode(.keychain)
         } catch {
             self.error = "Keychain write failed: \(error.localizedDescription)"
