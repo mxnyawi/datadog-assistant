@@ -59,11 +59,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: .reloadCredentials, object: nil)
     }
 
-    /// Show the connect prompt when there's nothing to show real data with and
-    /// the user hasn't explicitly chosen sample mode — better than silently
-    /// pretending sample data is their org.
+    /// Show the connect prompt only in device mode with no stored credential —
+    /// the fresh-install case. A LastPass-configured install with a locked
+    /// vault keeps the normal panel (it just needs `lpass login`, reachable
+    /// from Settings), and sample mode is an explicit choice; neither should be
+    /// told to "paste a token."
     private static func needsSetup(credentials: Credentials?) -> Bool {
-        credentials == nil && AuthMode.current != .sample
+        credentials == nil && AuthMode.current == .device
     }
 
     @objc private func openSettings() {

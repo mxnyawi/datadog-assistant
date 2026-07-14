@@ -24,6 +24,16 @@ import CryptoKit
 /// encrypted at rest, but the key is co-located — obfuscation, not true
 /// confidentiality, against a process running as you).
 ///
+/// **Key scheme is pinned.** Whichever scheme seals the file first (Enclave or
+/// random) is the one used forever after, identified by which key file exists.
+/// The store never silently switches schemes or mints a new key over an
+/// existing store — that was the source of a data-loss class of bug. If the
+/// key genuinely can't be reproduced (e.g. the file was restored onto a
+/// *different* Mac whose Enclave can't unwrap it — the intended security
+/// property), the unreadable ciphertext is dropped and the store starts fresh
+/// on the next save; nothing *recoverable* is ever destroyed, because
+/// undecryptable data is already unrecoverable on this machine.
+///
 /// **Honest threat model.** This defeats casual disk inspection, backup/cloud
 /// leakage, other local users, and (with the Enclave) physical theft. It does
 /// **not** stop another process running as you or malware in your account —
@@ -57,7 +67,7 @@ enum SecretStore {
         try? persist(dict)
     }
 
-    // MARK: Storage
+    // MARK: Storage locations
 
     private static var directory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -68,15 +78,27 @@ enum SecretStore {
     private static var enclaveKeyURL: URL { directory.appendingPathComponent("secrets.se") }
     private static var enclavePubURL: URL { directory.appendingPathComponent("secrets.sepub") }
 
-    /// Decrypt the secrets file into memory (cached until the next write).
+    // MARK: Load / persist
+
+    /// Decrypt the secrets file into memory (cached until the next write). An
+    /// absent *or* unreadable file yields an empty store; an unreadable file is
+    /// also dropped, so the next save starts clean rather than failing forever.
     private static func load() -> [String: String] {
         if let cache { return cache }
+        guard let blob = try? Data(contentsOf: secretsURL), !blob.isEmpty else {
+            cache = [:]
+            return [:]
+        }
         guard let key = try? symmetricKey(),
-              let blob = try? Data(contentsOf: secretsURL), !blob.isEmpty,
               let sealed = try? AES.GCM.SealedBox(combined: blob),
               let plain = try? AES.GCM.open(sealed, using: key),
               let dict = try? JSONDecoder().decode([String: String].self, from: plain)
         else {
+            // The ciphertext exists but can't be decrypted with this machine's
+            // key (foreign Enclave after a cross-Mac restore, or corruption).
+            // Its plaintext is unrecoverable here, so drop it — this loses no
+            // *recoverable* secret and lets the user re-save.
+            try? FileManager.default.removeItem(at: secretsURL)
             cache = [:]
             return [:]
         }
@@ -86,61 +108,80 @@ enum SecretStore {
 
     private static func persist(_ dict: [String: String]) throws {
         try ensureDirectory()
-        cache = dict
         // An empty store means "no secrets" — remove the file rather than
         // leave an encrypted empty blob behind.
         guard !dict.isEmpty else {
             try? FileManager.default.removeItem(at: secretsURL)
+            cache = [:]
             return
         }
         let key = try symmetricKey()
         let plain = try JSONEncoder().encode(dict)
         let sealed = try AES.GCM.seal(plain, using: key)
         guard let combined = sealed.combined else { throw StoreError.seal }
-        try combined.write(to: secretsURL, options: .atomic)
+        try combined.write(to: secretsURL, options: .atomic)   // may throw → cache stays in sync with disk
+        cache = dict
         setOwnerOnly(secretsURL)
         excludeFromBackup(secretsURL)
     }
 
-    // MARK: Key management — Secure Enclave preferred, random-key fallback
+    // MARK: Key management — one pinned scheme, self-healing
 
-    /// The AES key used to seal the secrets file. Established on first use and
-    /// reused thereafter. Prefers a Secure-Enclave-wrapped key (device-bound,
-    /// non-exportable); falls back to a random key on a `0600` file when the
-    /// Enclave isn't usable (older/VM hardware, or ad-hoc signing that blocks
-    /// key creation).
+    /// The AES key that seals the secrets file. Deterministic and idempotent:
+    /// it returns the key of whichever scheme is already established (identified
+    /// by the key file on disk), restoring it. If an established key can't be
+    /// reproduced, its stale material is wiped and a fresh key is established —
+    /// but a fresh key is *never* minted while a usable one exists, so the
+    /// Enclave and random paths can never disagree.
     private static func symmetricKey() throws -> SymmetricKey {
         try ensureDirectory()
-        if let key = try? enclaveSymmetricKey() { return key }
-        return try randomSymmetricKey()
+        let fm = FileManager.default
+
+        // Established: random scheme (the key file is the literal key bytes).
+        if let raw = try? Data(contentsOf: randomKeyURL), raw.count == 32 {
+            return SymmetricKey(data: raw)
+        }
+        // Established: Enclave scheme (secrets.se is the wrapped-key marker).
+        if fm.fileExists(atPath: enclaveKeyURL.path) {
+            if let key = try? restoreEnclaveKey() { return key }
+            // Marker present but unrestorable (foreign Enclave / lost) — wipe
+            // and re-establish below.
+            try? fm.removeItem(at: enclaveKeyURL)
+            try? fm.removeItem(at: enclavePubURL)
+        }
+        // First use (or post-wipe): pick the strongest scheme that works and
+        // pin it by creating exactly one key file.
+        if let key = try? createEnclaveKey() { return key }
+        return try createRandomKey()
     }
 
-    /// Derive a stable symmetric key from a Secure-Enclave private key via ECDH
-    /// against a persisted counterpart public key, then HKDF. The Enclave blob
-    /// only decrypts on this Mac's Enclave, so the secrets file can't be read
-    /// off-device even if both files are copied. Throws if the Enclave is
-    /// unavailable or key material can't be created/restored.
-    private static func enclaveSymmetricKey() throws -> SymmetricKey {
+    /// Restore the symmetric key from an existing Secure-Enclave key pair.
+    private static func restoreEnclaveKey() throws -> SymmetricKey {
         guard SecureEnclave.isAvailable else { throw StoreError.noEnclave }
+        let keyBlob = try Data(contentsOf: enclaveKeyURL)
+        let pubBlob = try Data(contentsOf: enclavePubURL)
+        let privateKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: keyBlob)
+        let counterpart = try P256.KeyAgreement.PublicKey(rawRepresentation: pubBlob)
+        return try derive(privateKey: privateKey, counterpart: counterpart)
+    }
 
-        let privateKey: SecureEnclave.P256.KeyAgreement.PrivateKey
-        let counterpart: P256.KeyAgreement.PublicKey
+    /// Mint and persist a new Secure-Enclave key + counterpart public key. The
+    /// marker file (`secrets.se`) is written **last**, so a partial failure
+    /// leaves no marker and the next launch cleanly retries first-use.
+    private static func createEnclaveKey() throws -> SymmetricKey {
+        guard SecureEnclave.isAvailable else { throw StoreError.noEnclave }
+        let privateKey = try SecureEnclave.P256.KeyAgreement.PrivateKey()
+        let counterpart = P256.KeyAgreement.PrivateKey().publicKey
+        let key = try derive(privateKey: privateKey, counterpart: counterpart)
+        try counterpart.rawRepresentation.write(to: enclavePubURL, options: .atomic)
+        setOwnerOnly(enclavePubURL); excludeFromBackup(enclavePubURL)
+        try privateKey.dataRepresentation.write(to: enclaveKeyURL, options: .atomic)
+        setOwnerOnly(enclaveKeyURL); excludeFromBackup(enclaveKeyURL)
+        return key
+    }
 
-        if let keyBlob = try? Data(contentsOf: enclaveKeyURL),
-           let pubBlob = try? Data(contentsOf: enclavePubURL) {
-            privateKey = try SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: keyBlob)
-            counterpart = try P256.KeyAgreement.PublicKey(rawRepresentation: pubBlob)
-        } else {
-            // First use on this device: mint the Enclave key + a throwaway
-            // software key whose *public* half is the fixed ECDH counterpart.
-            privateKey = try SecureEnclave.P256.KeyAgreement.PrivateKey()
-            counterpart = P256.KeyAgreement.PrivateKey().publicKey
-            try privateKey.dataRepresentation.write(to: enclaveKeyURL, options: .atomic)
-            try counterpart.rawRepresentation.write(to: enclavePubURL, options: .atomic)
-            setOwnerOnly(enclaveKeyURL); excludeFromBackup(enclaveKeyURL)
-            setOwnerOnly(enclavePubURL); excludeFromBackup(enclavePubURL)
-        }
-
+    private static func derive(privateKey: SecureEnclave.P256.KeyAgreement.PrivateKey,
+                               counterpart: P256.KeyAgreement.PublicKey) throws -> SymmetricKey {
         let shared = try privateKey.sharedSecretFromKeyAgreement(with: counterpart)
         return shared.hkdfDerivedSymmetricKey(
             using: SHA256.self,
@@ -149,11 +190,8 @@ enum SecretStore {
             outputByteCount: 32)
     }
 
-    /// Fallback: a random 256-bit key persisted `0600`, created on first use.
-    private static func randomSymmetricKey() throws -> SymmetricKey {
-        if let raw = try? Data(contentsOf: randomKeyURL), raw.count == 32 {
-            return SymmetricKey(data: raw)
-        }
+    /// Fallback: a random 256-bit key persisted `0600`.
+    private static func createRandomKey() throws -> SymmetricKey {
         let key = SymmetricKey(size: .bits256)
         let raw = key.withUnsafeBytes { Data($0) }
         try raw.write(to: randomKeyURL, options: .atomic)

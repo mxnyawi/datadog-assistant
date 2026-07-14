@@ -133,7 +133,13 @@ final class MenuBarController: NSObject {
         dismissMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] _ in
-            self?.hidePanel()
+            guard let self else { return }
+            // While the connect prompt is up, don't dismiss on outside clicks —
+            // the user has to switch to a browser/password manager to copy the
+            // token, and that click shouldn't hide the panel out from under
+            // them. They can still close it with the menu bar icon or Esc.
+            if self.store.needsSetup { return }
+            self.hidePanel()
         }
     }
 
