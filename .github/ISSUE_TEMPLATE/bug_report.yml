@@ -50,10 +50,10 @@ body:
     id: install
     attributes:
       label: How are you running it?
-      placeholder: "install.sh + LaunchAgent  /  manual python3 datadog_assistant.py"
+      placeholder: "release DMG / Homebrew cask / built from source (swift/) / legacy Python app"
   - type: textarea
     id: logs
     attributes:
       label: Relevant log output
-      description: From `~/.datadog-assistant/stderr.log`. This is automatically formatted as code.
+      description: "From Console.app (filter: Datadog Assistant), or `~/.datadog-assistant/stderr.log` for the legacy Python app. This is automatically formatted as code."
       render: shell

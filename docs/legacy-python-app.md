@@ -1,4 +1,13 @@
-# 🐶 Datadog Assistant — macOS menu bar app
+# 🐶 Datadog Assistant — legacy Python app (archived)
+
+> **⚠️ Archived.** This documents the original Python/rumps implementation,
+> which is retired and preserved under [`legacy/python-app/`](../legacy/python-app/)
+> (last root-level state: the `python-final` tag). It receives no new features
+> or fixes. **The actively-developed app is the native Swift app** — see the
+> [root README](../README.md) for the 2-minute install.
+>
+> Paths in this document (`install.sh`, `datadog_assistant.py`, `installer/`…)
+> now live under `legacy/python-app/`.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Platform: macOS](https://img.shields.io/badge/platform-macOS-black.svg)

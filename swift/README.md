@@ -1,14 +1,16 @@
-# Datadog Assistant — Swift rewrite
+# Datadog Assistant — the native Swift app
 
-A native Swift / SwiftUI rewrite of the menu-bar app, branched off `main` so
-the original Python app keeps working untouched. Self-contained SwiftPM
+The native Swift / SwiftUI menu-bar app — the one and only actively-developed
+implementation (the original Python app is archived in
+[`legacy/python-app/`](../legacy/python-app/)). Self-contained SwiftPM
 package that builds a menu-bar-only `.app` bundle.
 
-> Status: **feature-complete port** (see [PARITY.md](PARITY.md)) with a
-> native adaptive UI — system popover material, light/dark mode, HIG type
-> sizes, grouped-inset sections. First launch shows a welcome window that
-> sets up the team LastPass vault (recommended), pasted API keys, or sample
-> data. CI compiles the package on macOS on every PR.
+> Status: **the** Datadog Assistant — a feature-complete port of the original
+> Python app (see [PARITY.md](PARITY.md)) with a native adaptive UI — system
+> popover material, light/dark mode, HIG type sizes, grouped-inset sections.
+> First launch shows an in-panel **Connect to Datadog** prompt (access token
+> primary; API keys, a team LastPass vault, and sample data also available).
+> CI compiles the package on macOS on every PR.
 
 ## Prerequisites
 
@@ -71,15 +73,16 @@ same note. Right-click → Settings… → LastPass → **Set up…** opens a gu
 sheet that installs the `lpass` CLI (via Homebrew), logs you in (with
 authenticator support), and lets you pick and validate the entry — no
 terminal needed. **Test** reads the note the way the app will (capturing the
-environment and `lpass` stderr) and then calls Datadog's `/api/v1/validate`,
-printing the full transcript so a failure — a locked vault, a field-name
+environment and `lpass` stderr) and then probes Datadog's monitors endpoint
+(which exercises BOTH keys — the classic `/api/v1/validate` ignores the app
+key), printing the full transcript so a failure — a locked vault, a field-name
 mismatch, or a wrong-site 403 — is diagnosable right in the window before you
 save. Already logged in? Just type the entry name and hit *Use
 LastPass*, or export `DD_LASTPASS_ENTRY` before launching. The note holds
 `key=value` lines (or custom fields) named `datadogAPIKey` / `datadogAPPKey`
 by default (override with `DD_LASTPASS_API_FIELD` / `_APP_FIELD`); an optional
 `githubToken` field supplies the GitHub token for change correlation.
-Credential precedence is env vars → LastPass → Keychain.
+Credential precedence is env vars → the selected mode (LastPass vault, or this Mac's on-device store: password-manager command → access token → key pair).
 
 **Filters, notifications, Jira.** The panel's Monitors/List tabs carry a
 Filter dropdown — every tag the app has seen, grouped by key (team / env /
@@ -181,7 +184,7 @@ swift/
       DatadogClient.swift         # v1 monitors, v2 incidents, metric sparklines
       MockDataSource.swift        # sample data, no keys needed
       SnapshotStore.swift         # adaptive poll loop, disk cache, alert diffing
-      Credentials.swift           # Keychain (shared with Python app) + env vars
+      Credentials.swift           # auth modes, on-device store + env vars
       LastPass.swift              # shared-vault keys via the lpass CLI
       LastPassSetup.swift         # guided install + pty login + entry validate
       NotificationManager.swift   # actionable banners, recovery notices
@@ -232,8 +235,10 @@ Design mockups for review live in `docs/` (rendered with
 
 ## Still to port from the Python app
 
-- Jira auto-create for P1/P2 + dedupe (manual per-alert tickets work today)
-- DLQ grouping, No-Data triage, local rename
-- OAuth credential mode (Keychain, env, and LastPass work today)
-- Daily digest
+Ported since this list was first written: Jira auto-create for P1/P2 with
+open-ticket dedupe, DLQ grouping, No-Data triage, local rename, and the daily
+digest — see [PARITY.md](PARITY.md) for the current audit. Remaining:
+
+- Datadog OAuth credential mode (access tokens, key pair, env, and LastPass
+  cover every practical setup today)
 - Monitor create/delete

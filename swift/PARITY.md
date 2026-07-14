@@ -110,7 +110,7 @@ in this Swift app, and how the missing ones should be implemented. Legend:
 | Startup log for bundle diagnostics | 🟡 | LastPass has transcript logging; add a general `~/.datadog-assistant/startup.log` appender if launch issues appear |
 | Open config file | n/a | Swift persists via UserDefaults; expose `defaults export` hint or a JSON export if needed |
 | Onboarding GUI (first-run wizard) | 🟡 | Python has a pywebview onboarding app; Swift's Settings + LastPass setup sheet covers it — a first-launch "welcome" sheet pointing at Settings would close the gap |
-| Daily digest / demo mode / dog-themed copy | 🟡 | Demo mode exists in MockDataSource; digest missing (see Notifications) |
+| Daily digest / demo mode / dog-themed copy | ✅ | Demo mode in MockDataSource; daily digest shipped (hour picker in Settings → Notifications) |
 
 ## Remaining gaps (in value order)
 

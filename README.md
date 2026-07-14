@@ -84,6 +84,11 @@ everything with env vars (`DD_BEARER_TOKEN`, `DD_API_KEY`, `DD_APP_KEY`,
 `DD_SITE`, `DD_LASTPASS_ENTRY`, …) or a password-manager command
 (`op read …`, `lpass show …`) — see [swift/README.md](swift/README.md).
 
+**GitHub, without a token to mint:** if you're logged into the `gh` CLI, the
+app borrows its token automatically for the Changes tab. Settings → GitHub
+lists the orgs you belong to and can **auto-fill watched repos** by matching
+your monitors' `service:` tags against the org's repo names.
+
 ## ✨ What it does
 
 | | |
@@ -126,10 +131,11 @@ and publishes the DMG/zip with checksums.
 
 ### Legacy Python app
 
-This project started as a Python/rumps menu bar app; it still works and ships
-from the same repo (`datadog_assistant.py`, `install.sh`). Docs:
-[docs/legacy-python-app.md](docs/legacy-python-app.md). New features land in
-the Swift app.
+This project started as a Python/rumps menu bar app. It's archived under
+[`legacy/python-app/`](legacy/python-app/) (docs:
+[docs/legacy-python-app.md](docs/legacy-python-app.md), last state tagged
+`python-final`) for reference — it isn't an install option and doesn't gate
+CI. All development happens in the Swift app.
 
 ## 📄 License
 
