@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -34,6 +35,20 @@ jobs:
         run: |
           DD_DRY_RUN=1 python installer/test_engine.py
           DD_DRY_RUN=1 python test_onboarding.py
+
+  swift:
+    name: Swift app builds (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: swift build
+        run: swift build
+        working-directory: swift
+
+      - name: Assemble the .app bundle
+        run: CONFIG=debug ./Scripts/build-app.sh
+        working-directory: swift
 
   shell:
     name: Shell script checks

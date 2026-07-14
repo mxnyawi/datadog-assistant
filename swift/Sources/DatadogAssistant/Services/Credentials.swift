@@ -25,6 +25,12 @@ enum AuthMode: String {
     static func set(_ mode: AuthMode) {
         UserDefaults.standard.set(mode.rawValue, forKey: defaultsKey)
     }
+
+    /// True until the user (or a migration) has picked a mode explicitly —
+    /// the signal that first-run onboarding should appear.
+    static var currentIsUnset: Bool {
+        UserDefaults.standard.string(forKey: defaultsKey) == nil
+    }
 }
 
 /// Datadog API credentials. Stored in the macOS Keychain under the same

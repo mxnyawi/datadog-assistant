@@ -352,7 +352,8 @@ enum LastPassSetup {
 
     /// Call Datadog's key-validation endpoint. Runs synchronously (caller is
     /// already off the main thread) so it can fold into the transcript.
-    private static func validateDatadog(apiKey: String, appKey: String, site: String)
+    /// Internal so the onboarding window can validate pasted keys the same way.
+    static func validateDatadog(apiKey: String, appKey: String, site: String)
         -> (ok: Bool, detail: String) {
         guard let url = URL(string: "https://api.\(site)/api/v1/validate") else {
             return (false, "→ invalid site “\(site)”.")

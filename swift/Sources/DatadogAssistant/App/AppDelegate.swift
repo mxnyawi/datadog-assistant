@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var store: SnapshotStore!
     private var hotKey: HotKey?
     private var settingsController: SettingsWindowController?
+    private var onboardingController: OnboardingWindowController?
     /// Held for the app's lifetime so App Nap doesn't throttle the poll loop.
     private var activityToken: NSObjectProtocol?
 
@@ -46,6 +47,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(openSettings),
             name: .openSettingsWindow, object: nil)
+
+        // First launch with nothing configured: offer LastPass / keys / sample
+        // up front instead of silently running on sample data.
+        if OnboardingWindowController.isNeeded {
+            let onboarding = OnboardingWindowController { [weak self] in
+                self?.reloadCredentials()
+                self?.onboardingController = nil
+            }
+            onboardingController = onboarding
+            onboarding.show()
+        }
     }
 
     @objc private func openSettings() {
