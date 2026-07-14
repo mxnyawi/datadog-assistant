@@ -27,9 +27,12 @@ enum Priority: Int, Codable, Comparable {
 }
 
 struct Monitor: Identifiable, Hashable, Codable {
-    /// Time span every sparkline covers; shared by the client (fetch range)
-    /// and the store (mapping deploy timestamps to marker positions).
+    /// Default (and minimum) span a sparkline covers. A firing monitor's
+    /// sparkline stretches to cover how long it's been firing, so you see the
+    /// climb since it started instead of a flat last-hour plateau — capped at
+    /// `maxSparklineWindow` to keep the tiny chart readable and the query cheap.
     static let sparklineWindow: TimeInterval = 3600
+    static let maxSparklineWindow: TimeInterval = 24 * 3600
 
     let id: Int
     /// Display name — the Datadog name, or a local alias (see MonitorAliases,
@@ -73,6 +76,10 @@ struct Monitor: Identifiable, Hashable, Codable {
     /// "the line went vertical right after that tick" is the fastest possible
     /// change correlation. Filled by SnapshotStore.
     var deployMarkers: [Double] = []
+    /// The actual time span this monitor's sparkline covers (grows with firing
+    /// duration, up to `maxSparklineWindow`). Deploy-marker x-positions are
+    /// computed against this, not the fixed default.
+    var sparklineSpan: TimeInterval = sparklineWindow
 
     var firingDuration: String? {
         guard let since = firingSince else { return nil }

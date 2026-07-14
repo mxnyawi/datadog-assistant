@@ -10,6 +10,7 @@ final class DatadogClient: DataSource {
     /// Sparklines are one metrics query per firing monitor — cap the fan-out.
     private static let maxSparklines = 8
     private static let sparklineWindow = Monitor.sparklineWindow
+    private static let maxSparklineWindow = Monitor.maxSparklineWindow
 
     var sourceName: String { credentials.site }
 
@@ -352,6 +353,7 @@ final class DatadogClient: DataSource {
         var lastValue: Double?
         var delta: Double?
         var thresholdPosition: Double?
+        var span: TimeInterval = Monitor.sparklineWindow
     }
 
     private func attachSparklines(to monitors: [Monitor], previous: Snapshot?) async -> [Monitor] {
@@ -366,7 +368,8 @@ final class DatadogClient: DataSource {
             for monitor in active {
                 group.addTask { [self] in
                     (monitor.id, await fetchSparkline(forMonitorID: monitor.id,
-                                                      threshold: monitor.threshold))
+                                                      threshold: monitor.threshold,
+                                                      firingSince: monitor.firingSince))
                 }
             }
             for await (id, spark) in group {
@@ -375,6 +378,7 @@ final class DatadogClient: DataSource {
                 m.value = spark.lastValue
                 m.delta = spark.delta
                 m.thresholdPosition = spark.thresholdPosition
+                m.sparklineSpan = spark.span
                 byID[id] = m
             }
         }
@@ -385,14 +389,24 @@ final class DatadogClient: DataSource {
     /// monitor id, so sparkline fetches don't re-hit the monitors endpoint.
     private var queriesByID: [Int: String] = [:]
 
-    private func fetchSparkline(forMonitorID id: Int, threshold: Double?) async -> SparkData {
+    private func fetchSparkline(forMonitorID id: Int, threshold: Double?,
+                               firingSince: Date?) async -> SparkData {
         guard let metricQuery = queriesByID[id] else { return SparkData() }
-        let now = Int(Date().timeIntervalSince1970)
+        let now = Date()
+        let nowTS = Int(now.timeIntervalSince1970)
+        // Stretch the window to cover how long this monitor has been firing,
+        // with a 25% lead-in so the pre-alert baseline and the climb are both
+        // visible — instead of a fixed last-hour window that shows a flat
+        // plateau for anything firing longer than an hour. Clamped to
+        // [1h, 24h] so a brand-new alert still has context and a days-long one
+        // stays readable.
+        let firedFor = firingSince.map { max(0, now.timeIntervalSince($0)) } ?? 0
+        let span = min(max(firedFor * 1.25, Self.sparklineWindow), Self.maxSparklineWindow)
         let url = credentials.apiBaseURL
             .appendingPathComponent("/api/v1/query")
             .appending(queryItems: [
-                URLQueryItem(name: "from", value: String(now - Int(Self.sparklineWindow))),
-                URLQueryItem(name: "to", value: String(now)),
+                URLQueryItem(name: "from", value: String(nowTS - Int(span))),
+                URLQueryItem(name: "to", value: String(nowTS)),
                 URLQueryItem(name: "query", value: "\(metricQuery), week_before(\(metricQuery))"),
             ])
         guard let (data, response) = try? await session.data(for: authedRequest(url: url)),
@@ -407,6 +421,7 @@ final class DatadogClient: DataSource {
         let normalize = { (v: Double) in range > 0 ? (v - lo) / range * 0.8 + 0.1 : 0.5 }
 
         var spark = SparkData()
+        spark.span = span
         spark.series = values.map(normalize)
         spark.lastValue = values.last
 

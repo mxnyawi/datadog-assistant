@@ -223,11 +223,13 @@ final class SnapshotStore: ObservableObject {
     /// Deploys that fall inside a monitor's sparkline window become vertical
     /// ticks on that sparkline (0…1 x positions, service-matched).
     private static func attachDeployMarkers(in snapshot: inout Snapshot) {
-        let window = Monitor.sparklineWindow
         let now = snapshot.lastRefresh
         for index in snapshot.monitors.indices {
             guard !snapshot.monitors[index].sparkline.isEmpty else { continue }
             let monitor = snapshot.monitors[index]
+            // Position ticks against this monitor's own sparkline span, which
+            // stretches with firing duration.
+            let window = monitor.sparklineSpan
             snapshot.monitors[index].deployMarkers = snapshot.deploys.compactMap { deploy in
                 let age = now.timeIntervalSince(deploy.occurredAt)
                 guard age >= 0, age <= window else { return nil }
