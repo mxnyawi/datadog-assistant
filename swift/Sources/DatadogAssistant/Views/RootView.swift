@@ -1,8 +1,10 @@
 import SwiftUI
+import Combine
 
 struct RootView: View {
     @EnvironmentObject var store: SnapshotStore
     @State private var tab: Tab = .monitors
+    @State private var showPalette = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -48,6 +50,7 @@ struct RootView: View {
                             HeroAlertCard(monitor: hero)
                         }
                         StateSection(snapshot: snapshot, tab: $tab)
+                        FavoritesSection(snapshot: snapshot)
                         DLQSection(snapshot: snapshot)
                         ActiveMonitorsSection(snapshot: snapshot, excluding: hero?.id)
                         IncidentsSection(snapshot: snapshot)
@@ -78,6 +81,30 @@ struct RootView: View {
         .frame(width: 360)
         .background(Color.clear)   // material comes from the NSVisualEffectView behind us
         .animatedContent(snapshot, reduceMotion: reduceMotion)
+        .background(keyboardShortcuts)
+        .overlay {
+            if showPalette {
+                CommandPalette(monitors: snapshot.monitors, isPresented: $showPalette)
+            }
+        }
+        // A fresh panel open starts with no palette, whatever happened last time.
+        .onReceive(NotificationCenter.default.publisher(for: .panelDidShow)) { _ in
+            showPalette = false
+        }
+    }
+
+    /// Zero-opacity shortcut sinks that work anywhere in the panel: ⌘K opens
+    /// the command palette, ⌘R refreshes, ⌘F jumps to the searchable list.
+    private var keyboardShortcuts: some View {
+        Group {
+            Button("") { showPalette.toggle() }
+                .keyboardShortcut("k", modifiers: .command)
+            Button("") { Task { await store.refresh() } }
+                .keyboardShortcut("r", modifiers: .command)
+            Button("") { tab = .list }
+                .keyboardShortcut("f", modifiers: .command)
+        }
+        .opacity(0)
     }
 
     private func errorBar(_ message: String) -> some View {

@@ -223,29 +223,24 @@ enum JiraOAuth {
         if let cached = validCachedToken() { return cached }
         // Single-flight: Atlassian rotates refresh tokens, so two concurrent
         // refreshes with the same token can invalidate the grant entirely.
-        lock.lock()
-        let task: Task<String, Error>
-        if let running = refreshTask {
-            task = running
-        } else {
-            task = Task {
-                defer {
-                    lock.lock()
-                    refreshTask = nil
-                    lock.unlock()
-                }
+        // Scoped `withLock` rather than manual lock/unlock: NSLock's lock() is
+        // unavailable from async contexts (and an error in Swift 6 mode). The
+        // Task is only *scheduled* inside the critical section — its body runs
+        // after the lock is released, so its `defer` re-locks without deadlock.
+        let task: Task<String, Error> = lock.withLock {
+            if let running = refreshTask { return running }
+            let task = Task {
+                defer { lock.withLock { refreshTask = nil } }
                 return try await refreshAccessToken()
             }
             refreshTask = task
+            return task
         }
-        lock.unlock()
         return try await task.value
     }
 
     private static func refreshAccessToken() async throws -> String {
-        lock.lock()
-        let pending = unsavedRefreshToken
-        lock.unlock()
+        let pending = lock.withLock { unsavedRefreshToken }
         guard let creds = clientCredentials(),
               let refresh = pending ?? blob()?["refresh_token"], !refresh.isEmpty else {
             throw OAuthError.notConnected
@@ -264,14 +259,14 @@ enum JiraOAuth {
         if creds.ephemeral { stored.removeValue(forKey: "client_secret") }
         else { stored["client_secret"] = creds.secret }
         stored["refresh_token"] = rotated
-        lock.lock()
-        do {
-            try writeBlob(stored)
-            unsavedRefreshToken = nil
-        } catch {
-            unsavedRefreshToken = rotated
+        lock.withLock {
+            do {
+                try writeBlob(stored)
+                unsavedRefreshToken = nil
+            } catch {
+                unsavedRefreshToken = rotated
+            }
         }
-        lock.unlock()
         storeCachedToken(refreshed.accessToken, expiresIn: refreshed.expiresIn)
         return refreshed.accessToken
     }

@@ -104,6 +104,11 @@ your monitors' `service:` tags against the org's repo names.
 | 🪧 | Native notifications with per-priority rules (P1 → modal + nag, P3 → banner), recovery alerts, daily digest |
 | 🎫 | One-tap Jira ticket per alert (or auto-create for P1s) |
 | ✏️ | Local rename — relabel unwieldy monitor names just for yourself |
+| ⌨️ | **⌘K command palette** — fuzzy-find any monitor and open it, no mouse (⌘R refresh, ⌘F list) |
+| ⭐ | **Favorite monitors** — star the ones you own; they pin to the top whatever their state |
+| 📌 | **Pin the panel** open for a second display; **Compact** density for big fleets |
+| 🌙 | **Quiet hours** — a nightly window where only P1s break through |
+| 📋 | **Copy alert** as Markdown/Slack for an incident channel, in one tap |
 | 🔗 | Quick links to Dashboards / Monitors / Logs / APM / Incidents + your own dashboards |
 
 The panel follows the macOS design language — system materials, light & dark

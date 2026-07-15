@@ -9,10 +9,11 @@ in this Swift app, and how the missing ones should be implemented. Legend:
 | Feature | Status | Notes / implementation plan |
 |---|---|---|
 | API + App keys (Keychain, same service names) | ✅ | `Credentials.swift`; env `DD_API_KEY`/`DD_APP_KEY` win |
+| Datadog access tokens (`ddpat_…`/`ddsat_…`) | ✅ | Swift-only bonus — the primary credential (connect prompt + Settings, env `DD_BEARER_TOKEN`); one scoped token replaces the key pair |
 | LastPass CLI mode (shared secure note) | ✅ | Same note format/fields as Python; guided install/login/entry setup with Test diagnostics; entry looked up by lpass ID |
 | Explicit auth-source selection | ✅ | `AuthMode` (sample/keychain/lastpass) — no silent Keychain fallback (Python infers from config instead) |
 | `api_key_cmd`/`app_key_cmd` (any password-manager CLI) | ✅ | SecretCommand (sh -c, stdout = secret, 15-min cache); fields in Settings → Source (Keychain mode) |
-| Datadog OAuth (authorization-code + PKCE) | ❌ | Biggest auth gap. Port of `_datadog_oauth_browser_flow`: local callback server on 127.0.0.1:8918 (`NWListener` or `SwiftNIO`-free raw socket), S256 challenge, scopes list, region auto-detect from the redirect's `domain` param, refresh-token rotation in Keychain `datadog-assistant-oauth` |
+| Datadog OAuth (authorization-code + PKCE) | ❌ | Deprioritized — access tokens now cover the key-less use case. If ever needed: port of `_datadog_oauth_browser_flow`: local callback server on 127.0.0.1:8918 (`NWListener` or `SwiftNIO`-free raw socket), S256 challenge, scopes list, region auto-detect from the redirect's `domain` param, refresh-token rotation |
 | Connection test (mode, site, monitor count, incident scope) | 🟡 | LastPass Test button validates keys via `/api/v1/validate`; add a general "Test connection" to Settings → Source reporting monitor count + incidents scope |
 | Single-instance lock | ✅ | flock on Application Support/DatadogAssistant/app.lock at launch |
 
@@ -112,16 +113,30 @@ in this Swift app, and how the missing ones should be implemented. Legend:
 | Onboarding GUI (first-run wizard) | 🟡 | Python has a pywebview onboarding app; Swift's Settings + LastPass setup sheet covers it — a first-launch "welcome" sheet pointing at Settings would close the gap |
 | Daily digest / demo mode / dog-themed copy | ✅ | Demo mode in MockDataSource; daily digest shipped (hour picker in Settings → Notifications) |
 
+## UI/UX (Swift-only, no Python equivalent)
+
+| Feature | Status | Notes |
+|---|---|---|
+| ⌘K command palette (fuzzy-find + open a monitor) | ✅ | `CommandPalette`; ⌘R refresh, ⌘F list. keyboardShortcut sinks (macOS 13 has no `onKeyPress`) |
+| Favorite/star monitors → pinned Favorites section | ✅ | `UIPreferences.favorites`; `FavoritesSection` above the state groups |
+| Pin the panel open (second-display mode) | ✅ | Header pin + Settings → Appearance; pinned panels skip outside-click dismiss |
+| Compact row density | ✅ | Settings → Appearance; tighter rows/sparklines for large fleets |
+| Menu-bar badge modes + new-alert pulse | ✅ | All-alerting vs P1/P2-only; Reduce-Motion-aware pulse on a rising count |
+| Copy alert as Markdown / Slack | ✅ | `AlertClipboard`; row + hero action, for incident channels/tickets |
+| Sparkline scrub cursor (time-ago on hover) | ✅ | `Sparkline` `onContinuousHover`; historical vs projection aware |
+| Quiet hours (P1-only window) | ✅ | Stand-in for system Focus (unreadable without private APIs on macOS 13); gates deliver()/nag() |
+| Accessibility: VoiceOver labels on charts/tiles/rows | ✅ | Sparkline trend summary, state-tile labels, heatmap hidden as decorative |
+| Richer status-item right-click (Open Datadog, Snooze) | ✅ | `MenuBarController` context menu |
+
 ## Remaining gaps (in value order)
 
 1. **Service context** (Software Catalog repo/runbook/on-call links, message
    links, version/commit) — the biggest remaining port; own milestone.
-2. **Datadog OAuth PKCE** — only needed for key-less orgs (LastPass/keys
-   cover today's use).
-3. **Notify when a mute lifts and the monitor is still firing** — small store
+2. **Notify when a mute lifts and the monitor is still firing** — small store
    diff addition.
-4. **Monitor create / delete** — rarely used from a menu bar; delete needs a
-   typed-DELETE confirmation.
-5. Cosmetics/config nits: subdomain guess from GET /org, custom quick-links
+3. Cosmetics/config nits: subdomain guess from GET /org, custom quick-links
    list UI, group order / max-per-group / hide-OK settings, general Datadog
    connection test button.
+4. **Datadog OAuth PKCE** — deprioritized: access tokens cover key-less orgs.
+5. **Monitor create / delete** — rarely used from a menu bar; delete needs a
+   typed-DELETE confirmation.

@@ -28,7 +28,8 @@ open "build/Datadog Assistant.app"
 
 A pawprint appears in the menu bar (with a red count when anything is
 alerting). Click it — or press **⌥⌘D** anywhere — to open the panel.
-Right-click the icon for Refresh / Settings / Quit.
+Right-click the icon for Refresh / Open Datadog / Snooze all / Settings /
+Quit.
 
 With no credentials configured the panel shows a **Connect to Datadog**
 prompt — paste a token right there — instead of silently serving sample data
@@ -94,6 +95,29 @@ instant preview), and a "re-notify while still alerting" nag interval;
 configuring Jira (site, email, project, issue type, API token — or the
 LastPass note's `jiraToken` field) adds a one-tap "Jira ticket" action to
 every alert row.
+
+**Panel UX.** Beyond the data, the panel is built to run hands-free and stay
+out of your way:
+
+- **⌘K command palette** — fuzzy-find any monitor by name or service; Return
+  opens it in Datadog, Up/Down move the selection (top match pre-selected).
+  ⌘R refreshes, ⌘F jumps to the searchable list.
+- **Favorites** — ★ a monitor from its row and it pins to a Favorites section
+  at the top of the Monitors tab, whatever its state.
+- **Pin the panel** — the header pin (or Settings → Appearance) keeps the
+  panel up when you click elsewhere, for parking it on a second display.
+- **Density** — Compact tightens rows for watching large fleets.
+- **Menu-bar count** — show all alerting or only P1/P2, with an optional
+  Reduce-Motion-aware pulse when a new alert lands.
+- **Copy alert** — one action on a row or the hero card copies a Markdown or
+  Slack summary (state, value vs threshold, duration, hosts, suspect deploy,
+  deep link) for pasting into an incident channel.
+- **Sparkline scrub** — hovering a sparkline reads out the time-ago under the
+  pointer.
+- **Quiet hours** — a daily window (Settings → Notifications) during which only
+  P1 alerts break through; P2/P3, warnings, No-Data, recoveries, and nags wait
+  it out. (A public-API stand-in for system Focus, which macOS 13 doesn't
+  expose without private APIs.)
 
 `swift run` also works for a fast dev loop, but notifications require a real
 `.app` bundle, so they're disabled in that mode.

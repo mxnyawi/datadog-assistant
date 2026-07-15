@@ -62,9 +62,17 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         guard available else { return }
         let settings = NotificationSettings.load()
         guard settings.enabled else { return }
+        // Quiet hours: only a P1 going wrong pages — a fresh fire or a stop-
+        // reporting (No-Data). P1 warnings/recoveries and everything P2+ wait.
+        let quiet = settings.inQuietHours()
         let center = UNUserNotificationCenter.current()
         for transition in transitions {
             let monitor = transition.monitor
+            if quiet {
+                let isCriticalPage = monitor.priority <= .p1
+                    && (transition.kind == .fired || transition.kind == .wentNoData)
+                guard isCriticalPage else { continue }
+            }
             let content = UNMutableNotificationContent()
             var wantsSound = false
             switch transition.kind {
@@ -138,9 +146,12 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         guard available else { return }
         let settings = NotificationSettings.load()
         guard settings.enabled else { return }
+        // Quiet hours: only P1s keep nagging; everything else waits it out.
+        let quiet = settings.inQuietHours()
         let center = UNUserNotificationCenter.current()
         let now = Date()
         for monitor in alerting {
+            if quiet, monitor.priority > .p1 { continue }
             // Per-priority renotify interval (P1 nags fastest).
             let renotifyMinutes = settings.effective(for: monitor.priority).renotifyMinutes
             guard renotifyMinutes > 0 else { continue }

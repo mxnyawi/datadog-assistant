@@ -45,6 +45,24 @@ struct NotificationSettings: Equatable {
     /// Post a morning summary at/after this hour; -1 = off.
     var digestHour = -1
 
+    /// Quiet hours: during this daily window, only P1 alerts break through —
+    /// P2/P3, warnings, No-Data, recoveries, and nags are held. A stand-in for
+    /// following the system Focus, which isn't readable without private APIs.
+    var quietHoursEnabled = false
+    var quietStartHour = 22
+    var quietEndHour = 8
+
+    /// Whether `date` falls inside the quiet-hours window. Handles a window
+    /// that wraps past midnight (start > end, e.g. 22:00 → 08:00).
+    func inQuietHours(at date: Date = Date()) -> Bool {
+        guard quietHoursEnabled, quietStartHour != quietEndHour else { return false }
+        let hour = Calendar.current.component(.hour, from: date)
+        if quietStartHour < quietEndHour {
+            return hour >= quietStartHour && hour < quietEndHour
+        }
+        return hour >= quietStartHour || hour < quietEndHour
+    }
+
     static let renotifyChoices = [0, 10, 30, 60, 120]
 
     /// Style + renotify for a given priority after severity-rule overrides.
@@ -68,6 +86,9 @@ struct NotificationSettings: Equatable {
         settings.soundName = dict["soundName"] as? String ?? ""
         settings.renotifyMinutes = dict["renotifyMinutes"] as? Int ?? 30
         settings.digestHour = dict["digestHour"] as? Int ?? -1
+        settings.quietHoursEnabled = dict["quietHoursEnabled"] as? Bool ?? false
+        settings.quietStartHour = dict["quietStartHour"] as? Int ?? 22
+        settings.quietEndHour = dict["quietEndHour"] as? Int ?? 8
         if let rules = dict["severityRules"] as? [String: [String: Any]] {
             settings.severityRules = [:]
             for (rawPriority, rule) in rules {
@@ -98,6 +119,9 @@ struct NotificationSettings: Equatable {
             "soundName": soundName,
             "renotifyMinutes": renotifyMinutes,
             "digestHour": digestHour,
+            "quietHoursEnabled": quietHoursEnabled,
+            "quietStartHour": quietStartHour,
+            "quietEndHour": quietEndHour,
             "severityRules": rules,
         ] as [String: Any], forKey: Self.key)
     }
