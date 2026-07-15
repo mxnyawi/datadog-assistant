@@ -44,6 +44,23 @@ struct Sparkline: View {
     var body: some View {
         canvas
             .overlay { if scrubbable { scrubCursor } }
+            .accessibilityElement()
+            .accessibilityLabel(accessibilitySummary)
+    }
+
+    /// VoiceOver reads the shape as a sentence, not a pile of numbers.
+    private var accessibilitySummary: String {
+        guard points.count > 1, let first = points.first, let last = points.last else {
+            return "Trend chart"
+        }
+        let direction = last > first + 0.05 ? "rising"
+            : (last < first - 0.05 ? "falling" : "steady")
+        var parts = ["Trend chart, \(direction)"]
+        if threshold != nil { parts.append("threshold marked") }
+        if !markers.isEmpty {
+            parts.append("\(markers.count) deploy marker\(markers.count == 1 ? "" : "s")")
+        }
+        return parts.joined(separator: ", ")
     }
 
     /// A vertical cursor + a small "~2h ago" chip that follows the pointer, so

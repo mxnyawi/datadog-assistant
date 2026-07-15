@@ -90,6 +90,16 @@ Homebrew cask.
 
 ## 4. UI/UX feature backlog (new, beyond parity)
 
+> **Update (built on `claude/swiftui-migration-review-v7zz5i`):** 10 of the 12
+> items below shipped — command palette + shortcuts (1), pin (2), favorites
+> (3), sparkline scrub (5, time-ago), badge modes + pulse (6), richer
+> right-click (7), copy-as-Markdown/Slack (8), quiet hours in place of system
+> Focus (9), an accessibility pass (11), and Compact density (12). **Not
+> built:** the alert timeline (4) — deferred as its own branch — and the
+> Notification Center widget (10), which a SwiftPM-only package can't bundle
+> (a WidgetKit extension needs an Xcode project target). See
+> [`swift/PARITY.md`](../swift/PARITY.md) for the shipped-feature table.
+
 The panel already has hover states, press micro-interactions (Reduce-Motion
 aware), a group heatmap, cluster chips, and an MTTR strip — these ideas build
 on that baseline. Ranked by value-per-effort; none duplicate existing UI.

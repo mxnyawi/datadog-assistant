@@ -39,6 +39,9 @@ struct GroupHeatmap: View {
                         .frame(width: cell, height: cell)
                 }
             }
+            // The grid is a visual encoding of the same counts the header line
+            // already states — hide the individual cells from VoiceOver.
+            .accessibilityHidden(true)
         }
     }
 

@@ -113,6 +113,21 @@ in this Swift app, and how the missing ones should be implemented. Legend:
 | Onboarding GUI (first-run wizard) | 🟡 | Python has a pywebview onboarding app; Swift's Settings + LastPass setup sheet covers it — a first-launch "welcome" sheet pointing at Settings would close the gap |
 | Daily digest / demo mode / dog-themed copy | ✅ | Demo mode in MockDataSource; daily digest shipped (hour picker in Settings → Notifications) |
 
+## UI/UX (Swift-only, no Python equivalent)
+
+| Feature | Status | Notes |
+|---|---|---|
+| ⌘K command palette (fuzzy-find + open a monitor) | ✅ | `CommandPalette`; ⌘R refresh, ⌘F list. keyboardShortcut sinks (macOS 13 has no `onKeyPress`) |
+| Favorite/star monitors → pinned Favorites section | ✅ | `UIPreferences.favorites`; `FavoritesSection` above the state groups |
+| Pin the panel open (second-display mode) | ✅ | Header pin + Settings → Appearance; pinned panels skip outside-click dismiss |
+| Compact row density | ✅ | Settings → Appearance; tighter rows/sparklines for large fleets |
+| Menu-bar badge modes + new-alert pulse | ✅ | All-alerting vs P1/P2-only; Reduce-Motion-aware pulse on a rising count |
+| Copy alert as Markdown / Slack | ✅ | `AlertClipboard`; row + hero action, for incident channels/tickets |
+| Sparkline scrub cursor (time-ago on hover) | ✅ | `Sparkline` `onContinuousHover`; historical vs projection aware |
+| Quiet hours (P1-only window) | ✅ | Stand-in for system Focus (unreadable without private APIs on macOS 13); gates deliver()/nag() |
+| Accessibility: VoiceOver labels on charts/tiles/rows | ✅ | Sparkline trend summary, state-tile labels, heatmap hidden as decorative |
+| Richer status-item right-click (Open Datadog, Snooze) | ✅ | `MenuBarController` context menu |
+
 ## Remaining gaps (in value order)
 
 1. **Service context** (Software Catalog repo/runbook/on-call links, message

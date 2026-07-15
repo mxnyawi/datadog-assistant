@@ -42,5 +42,7 @@ struct StateCard: View {
         .buttonStyle(.pressable)
         .onHover { hovering = $0 }
         .help("Show all monitors")
+        .accessibilityLabel("\(title): \(value)")
+        .accessibilityHint("Show all monitors")
     }
 }
