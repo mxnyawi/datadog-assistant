@@ -48,6 +48,7 @@ struct RootView: View {
                             HeroAlertCard(monitor: hero)
                         }
                         StateSection(snapshot: snapshot, tab: $tab)
+                        FavoritesSection(snapshot: snapshot)
                         DLQSection(snapshot: snapshot)
                         ActiveMonitorsSection(snapshot: snapshot, excluding: hero?.id)
                         IncidentsSection(snapshot: snapshot)

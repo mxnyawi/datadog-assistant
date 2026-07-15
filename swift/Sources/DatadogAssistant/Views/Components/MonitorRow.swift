@@ -7,6 +7,7 @@ import AppKit
 /// firing details, and the fast actions — mute / open — inline.
 struct MonitorRow: View {
     @EnvironmentObject var store: SnapshotStore
+    @ObservedObject private var prefs = UIPreferences.shared
     let monitor: Monitor
     @State private var expanded = false
     @State private var hovering = false
@@ -18,17 +19,36 @@ struct MonitorRow: View {
 
     private var tint: Color { Theme.color(for: monitor.state) }
 
+    // Density-driven metrics: Compact tightens the row for people watching
+    // dozens of monitors on a laptop screen.
+    private var compact: Bool { prefs.density == .compact }
+    private var nameSize: CGFloat { compact ? 12 : 13 }
+    private var rowVPad: CGFloat { compact ? 3 : 5 }
+    private var sparkHeight: CGFloat { compact ? 22 : 30 }
+    private var isFavorite: Bool { prefs.isFavorite(monitor.id) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button {
-                withAnimation(reduceMotion ? .easeOut(duration: 0.2)
-                                           : .spring(response: 0.3, dampingFraction: 0.8)) {
-                    expanded.toggle()
+            // The star and chevron live *outside* the expand button — an
+            // interactive control nested in a Button's label doesn't reliably
+            // receive its own taps.
+            HStack(alignment: expanded ? .top : .center, spacing: 6) {
+                Button {
+                    withAnimation(reduceMotion ? .easeOut(duration: 0.2)
+                                               : .spring(response: 0.3, dampingFraction: 0.8)) {
+                        expanded.toggle()
+                    }
+                } label: {
+                    header
                 }
-            } label: {
-                header
+                .buttonStyle(.pressable)
+                starButton
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundColor(Theme.textMuted)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .opacity(hovering || expanded ? 1 : 0)
             }
-            .buttonStyle(.pressable)
 
             if expanded {
                 if !monitor.sparkline.isEmpty {
@@ -37,8 +57,10 @@ struct MonitorRow: View {
                               breachBelow: monitor.isBelowThreshold,
                               markers: monitor.deployMarkers,
                               ghost: monitor.ghostSparkline,
-                              projection: monitor.projection())
-                        .frame(height: 30)
+                              projection: monitor.projection(),
+                              endDate: store.snapshot.lastRefresh,
+                              span: monitor.sparklineSpan)
+                        .frame(height: sparkHeight)
                         .padding(.leading, 24)
                 }
                 details
@@ -46,7 +68,7 @@ struct MonitorRow: View {
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 5)
+        .padding(.vertical, rowVPad)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(hovering || expanded ? Theme.hover : Color.clear)
@@ -55,15 +77,35 @@ struct MonitorRow: View {
         .onHover { hovering = $0 }
     }
 
+    /// Star toggle — hidden until hover unless already favorited, so the row
+    /// stays clean. Layout is held with opacity so nothing shifts on hover.
+    private var starButton: some View {
+        Button {
+            prefs.toggleFavorite(monitor.id)
+        } label: {
+            Image(systemName: isFavorite ? "star.fill" : "star")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(isFavorite ? Theme.warn : Theme.textMuted)
+        }
+        .buttonStyle(.pressable)
+        .opacity(isFavorite || hovering ? 1 : 0)
+        .allowsHitTesting(isFavorite || hovering)
+        .help(isFavorite ? "Remove from favorites" : "Add to favorites")
+        .accessibilityLabel(isFavorite
+                            ? "Remove \(monitor.name) from favorites"
+                            : "Add \(monitor.name) to favorites")
+    }
+
     private var header: some View {
         // Expanded: the name wraps to as many lines as it needs so a long,
         // unwieldy monitor title is fully readable; collapsed, it stays one
-        // truncated line. Trailing value/chevron align to the first line.
+        // truncated line. Trailing value aligns to the first line.
         HStack(alignment: expanded ? .top : .center, spacing: 8) {
             Image(systemName: Theme.symbol(for: monitor.state))
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(tint)
                 .frame(width: 16)
+                .accessibilityLabel(monitor.state.label)
             if monitor.priority <= .p2 {
                 Text(monitor.priority.label)
                     .font(.system(size: 9, weight: .bold))
@@ -75,7 +117,7 @@ struct MonitorRow: View {
                     )
             }
             Text(monitor.name)
-                .font(.system(size: 13))
+                .font(.system(size: nameSize))
                 .foregroundColor(Theme.textPrimary)
                 .lineLimit(expanded ? nil : 1)
                 .truncationMode(.middle)
@@ -93,11 +135,7 @@ struct MonitorRow: View {
                 .monospacedDigit()
                 .foregroundColor(tint)
                 .contentTransition(.numericText())
-            Image(systemName: "chevron.right")
-                .font(.system(size: 8, weight: .semibold))
-                .foregroundColor(Theme.textMuted)
-                .rotationEffect(.degrees(expanded ? 90 : 0))
-                .opacity(hovering || expanded ? 1 : 0)
+                .accessibilityLabel(monitor.value != nil ? "value \(rightLabel)" : rightLabel)
         }
         .contentShape(Rectangle())
     }
@@ -195,6 +233,17 @@ struct MonitorRow: View {
                         .foregroundColor(Theme.textMuted)
                 }
                 .buttonStyle(.pressable)
+                Button {
+                    AlertClipboard.copy(monitor: monitor,
+                                        suspect: store.suspectDeploy(for: monitor),
+                                        format: prefs.copyFormat)
+                } label: {
+                    Label("Copy alert", systemImage: "doc.on.doc")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Theme.textMuted)
+                }
+                .buttonStyle(.pressable)
+                .help("Copy a \(prefs.copyFormat.label) summary for Slack or a ticket")
                 if let original = monitor.originalName {
                     Button {
                         MonitorAliases.reset(monitorID: monitor.id)

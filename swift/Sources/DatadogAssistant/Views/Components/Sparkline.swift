@@ -24,6 +24,13 @@ struct Sparkline: View {
     /// Projected continuation (already normalized) — dashed, in a reserved
     /// right strip after a "now" divider.
     var projection: [Double] = []
+    /// End of the historical window (usually the last refresh). With `span`,
+    /// enables a scrub cursor that reads out the time at the pointer.
+    var endDate: Date? = nil
+    /// How much wall-clock time the historical part of the line covers.
+    var span: TimeInterval = 0
+
+    @State private var hoverFraction: CGFloat?
 
     private static let bayer: [[Double]] = {
         let m = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]
@@ -32,7 +39,64 @@ struct Sparkline: View {
     private let cell: CGFloat = 3.0
     private let dot: CGFloat = 1.6
 
+    private var scrubbable: Bool { endDate != nil && span > 0 }
+
     var body: some View {
+        canvas
+            .overlay { if scrubbable { scrubCursor } }
+    }
+
+    /// A vertical cursor + a small "~2h ago" chip that follows the pointer, so
+    /// you can read *when* along the tiny chart without leaving the panel.
+    private var scrubCursor: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                if let fraction = hoverFraction {
+                    let x = geo.size.width * fraction
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.3))
+                        .frame(width: 1)
+                        .offset(x: x)
+                    Text(timeLabel(fraction))
+                        .font(.system(size: 9, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundColor(Theme.textSecondary)
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(.thinMaterial))
+                        .fixedSize()
+                        .offset(x: min(max(0, x - 22), max(0, geo.size.width - 46)), y: -3)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let point):
+                    hoverFraction = max(0, min(1, point.x / max(1, geo.size.width)))
+                case .ended:
+                    hoverFraction = nil
+                }
+            }
+        }
+    }
+
+    /// Map a 0…1 x-fraction of the full width back to a time-ago label,
+    /// accounting for the reserved projection strip (which is the future).
+    private func timeLabel(_ fraction: CGFloat) -> String {
+        let projFrac: CGFloat = projection.count > 1 ? 0.28 : 0
+        let histFraction = fraction / (1 - projFrac)
+        if histFraction > 1 { return "projected" }
+        let age = span * Double(1 - histFraction)
+        if age < 60 { return "now" }
+        let mins = Int(age / 60)
+        if mins < 60 { return "~\(mins)m ago" }
+        if mins < 60 * 24 { return "~\(mins / 60)h \(mins % 60)m ago" }
+        return "~\(mins / (60 * 24))d ago"
+    }
+
+    private var canvas: some View {
         Canvas { ctx, size in
             guard points.count > 1, size.width > 0, size.height > 0 else { return }
             let h = size.height

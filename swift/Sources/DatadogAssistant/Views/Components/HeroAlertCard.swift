@@ -7,6 +7,7 @@ import AppKit
 /// change, and the two actions that matter. The whole incident, one card.
 struct HeroAlertCard: View {
     @EnvironmentObject var store: SnapshotStore
+    @ObservedObject private var prefs = UIPreferences.shared
     let monitor: Monitor
     @State private var pulsing = false
 
@@ -20,7 +21,9 @@ struct HeroAlertCard: View {
                           breachBelow: monitor.isBelowThreshold,
                           markers: monitor.deployMarkers,
                           ghost: monitor.ghostSparkline,
-                          projection: monitor.projection())
+                          projection: monitor.projection(),
+                          endDate: store.snapshot.lastRefresh,
+                          span: monitor.sparklineSpan)
                     .frame(height: 34)
             }
             if monitor.groupStates.count > 1 {
@@ -56,6 +59,18 @@ struct HeroAlertCard: View {
                 .tracking(0.8)
                 .foregroundColor(Theme.alert)
             Spacer()
+            Button {
+                AlertClipboard.copy(monitor: monitor,
+                                    suspect: store.suspectDeploy(for: monitor),
+                                    format: prefs.copyFormat)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Theme.alert)
+            }
+            .buttonStyle(.pressable)
+            .help("Copy a \(prefs.copyFormat.label) summary for Slack or a ticket")
+            .accessibilityLabel("Copy alert summary")
             TimelineView(.periodic(from: .now, by: 1)) { _ in
                 Text(firingLabel)
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
