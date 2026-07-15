@@ -12,7 +12,11 @@ import Combine
 /// controllers (MenuBarController) reach `.shared` directly, panel views hold
 /// `@ObservedObject private var prefs = UIPreferences.shared`. Same instance
 /// either way, so a toggle in one place is seen everywhere.
-@MainActor
+///
+/// Deliberately not `@MainActor`: it's only ever touched from the main thread
+/// (SwiftUI views + the menu-bar controller), and staying actor-agnostic lets
+/// a View use `= UIPreferences.shared` as a stored-property default without an
+/// isolation dance.
 final class UIPreferences: ObservableObject {
     static let shared = UIPreferences()
 

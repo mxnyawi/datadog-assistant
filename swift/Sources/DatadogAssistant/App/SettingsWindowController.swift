@@ -58,6 +58,7 @@ struct SettingsView: View {
         TabView {
             tab("Source", "key.fill") { SourceSettingsTab(onSave: onSave) }
             tab("Filters", "line.3.horizontal.decrease.circle") { FilterSettingsTab(onSave: onSave) }
+            tab("Appearance", "paintbrush.fill") { AppearanceSettingsTab() }
             tab("Notifications", "bell.badge.fill") { NotificationSettingsTab() }
             tab("Jira", "ticket.fill") { JiraSettingsTab() }
             tab("GitHub", "arrow.triangle.pull") {
@@ -500,6 +501,72 @@ private struct FilterSettingsTab: View {
     }
 }
 
+// MARK: - Appearance
+
+private struct AppearanceSettingsTab: View {
+    @ObservedObject private var prefs = UIPreferences.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Appearance & behavior")
+                .font(.headline)
+            Text("Changes apply immediately.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Form {
+                Picker("Row density", selection: $prefs.density) {
+                    ForEach(UIPreferences.Density.allCases, id: \.self) {
+                        Text($0.label).tag($0)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Divider()
+
+                Picker("Menu-bar count", selection: $prefs.badgeMode) {
+                    ForEach(UIPreferences.BadgeMode.allCases, id: \.self) {
+                        Text($0.label).tag($0)
+                    }
+                }
+                Toggle("Pulse the menu-bar icon on a new alert", isOn: $prefs.pulseOnAlert)
+
+                Divider()
+
+                Toggle("Pin the panel open", isOn: $prefs.pinned)
+                Picker("Copy alert format", selection: $prefs.copyFormat) {
+                    ForEach(UIPreferences.CopyFormat.allCases, id: \.self) {
+                        Text($0.label).tag($0)
+                    }
+                }
+            }
+
+            Text("Compact density tightens rows for watching many monitors. "
+                 + "Pin keeps the panel up when you click away (also toggled by the "
+                 + "pin in the panel header). Favorite a monitor with the ★ on its "
+                 + "row to keep it at the top of the Monitors tab.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !prefs.favorites.isEmpty {
+                HStack {
+                    Text("\(prefs.favorites.count) favorite\(prefs.favorites.count == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Clear favorites") { prefs.favorites = [] }
+                        .controlSize(.small)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(minHeight: 430)
+    }
+}
+
 // MARK: - Notifications
 
 private struct NotificationSettingsTab: View {
@@ -554,7 +621,27 @@ private struct NotificationSettingsTab: View {
                     ForEach([7, 8, 9, 10, 11], id: \.self) { Text("\($0):00").tag($0) }
                 }
                 .disabled(!settings.enabled)
+
+                Divider()
+
+                Toggle("Quiet hours (P1 only)", isOn: $settings.quietHoursEnabled)
+                    .disabled(!settings.enabled)
+                Picker("From", selection: $settings.quietStartHour) {
+                    ForEach(0..<24, id: \.self) { Text(String(format: "%02d:00", $0)).tag($0) }
+                }
+                .disabled(!settings.enabled || !settings.quietHoursEnabled)
+                Picker("Until", selection: $settings.quietEndHour) {
+                    ForEach(0..<24, id: \.self) { Text(String(format: "%02d:00", $0)).tag($0) }
+                }
+                .disabled(!settings.enabled || !settings.quietHoursEnabled)
             }
+
+            Text("During quiet hours only P1 alerts break through — P2/P3, "
+                 + "warnings, No-Data, recoveries, and nags wait it out. "
+                 + "A window like 22:00 → 08:00 wraps past midnight.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             DisclosureGroup("Per-priority overrides") {
                 Form {
