@@ -5,6 +5,7 @@ import SwiftUI
 /// zeros are a worse look than absence.
 struct ResponseStrip: View {
     let stats: SnapshotStore.ResponseStats
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if stats.hasData {
@@ -20,6 +21,11 @@ struct ResponseStrip: View {
                          value: "\(median)m", label: "median recovery")
                 }
             }
+            // Rides the dashboard's snapshot spring (RootView.animatedContent)
+            // so the strip fades/slides in when stats first arrive.
+            .transition(reduceMotion
+                ? .opacity
+                : .opacity.combined(with: .move(edge: .top)))
         }
     }
 

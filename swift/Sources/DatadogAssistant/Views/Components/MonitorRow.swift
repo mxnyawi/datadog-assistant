@@ -86,6 +86,7 @@ struct MonitorRow: View {
             Image(systemName: isFavorite ? "star.fill" : "star")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundColor(isFavorite ? Theme.warn : Theme.textMuted)
+                .symbolBounceIfAvailable(on: isFavorite, reduceMotion: reduceMotion)
         }
         .buttonStyle(.pressable)
         .opacity(isFavorite || hovering ? 1 : 0)

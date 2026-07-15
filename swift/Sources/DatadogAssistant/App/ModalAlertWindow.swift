@@ -33,9 +33,29 @@ final class ModalAlertWindow {
         } else {
             window?.contentViewController = host
         }
+        // A newer alert can replace the content while the window is already
+        // up — in that case the card re-runs its scale-in beat (desirable),
+        // but the window must NOT re-fade.
+        let alreadyVisible = window?.isVisible == true
         window?.center()
         NSApp.activate(ignoringOtherApps: true)
-        window?.makeKeyAndOrderFront(nil)
+
+        if let window {
+            if alreadyVisible {
+                window.makeKeyAndOrderFront(nil)
+            } else if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                window.alphaValue = 1
+                window.makeKeyAndOrderFront(nil)
+            } else {
+                window.alphaValue = 0
+                window.makeKeyAndOrderFront(nil)
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.18
+                    ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    window.animator().alphaValue = 1
+                }
+            }
+        }
 
         // Give up after 5 minutes, like the Python modal.
         dismissWork?.cancel()
@@ -47,7 +67,20 @@ final class ModalAlertWindow {
     private func close() {
         dismissWork?.cancel()
         dismissWork = nil
-        window?.orderOut(nil)
+        guard let window else { return }
+        // Symmetric with the entrance: fade out rather than blink, unless the
+        // user asked for reduced motion (then just dismiss).
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            window.orderOut(nil)
+        } else {
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.14
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                window.animator().alphaValue = 0
+            }, completionHandler: {
+                window.orderOut(nil)
+            })
+        }
     }
 }
 
@@ -56,6 +89,8 @@ private struct ModalAlertView: View {
     let message: String
     let onOpen: () -> Void
     let onDismiss: () -> Void
+    @State private var appeared = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -63,6 +98,7 @@ private struct ModalAlertView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 24))
                     .foregroundStyle(.red)
+                    .symbolBounceOnAppearIfAvailable(reduceMotion: reduceMotion)
                 Text(title)
                     .font(.headline)
                     .fixedSize(horizontal: false, vertical: true)
@@ -80,5 +116,9 @@ private struct ModalAlertView: View {
         }
         .padding(20)
         .frame(width: 380)
+        // Settle in from 98% rather than popping — never from scale(0).
+        .scaleEffect(appeared || reduceMotion ? 1 : 0.98)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: appeared)
+        .onAppear { appeared = true }
     }
 }
