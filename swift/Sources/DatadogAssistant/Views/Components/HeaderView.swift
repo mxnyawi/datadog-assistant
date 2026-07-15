@@ -6,6 +6,7 @@ import SwiftUI
 /// and onboarding windows instead.
 struct HeaderView: View {
     @EnvironmentObject var store: SnapshotStore
+    @ObservedObject private var prefs = UIPreferences.shared
 
     private var snapshot: Snapshot { store.snapshot }
 
@@ -31,6 +32,20 @@ struct HeaderView: View {
             }
 
             Spacer()
+
+            Button {
+                prefs.pinned.toggle()
+            } label: {
+                Image(systemName: prefs.pinned ? "pin.fill" : "pin")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(prefs.pinned ? Theme.info : Theme.textSecondary)
+                    .rotationEffect(.degrees(prefs.pinned ? 0 : 45))
+            }
+            .buttonStyle(.pressable)
+            .help(prefs.pinned
+                  ? "Panel is pinned open — click to unpin"
+                  : "Pin the panel open (stays up when you click away)")
+            .accessibilityLabel(prefs.pinned ? "Unpin panel" : "Pin panel open")
 
             Button {
                 Task { await store.refresh() }

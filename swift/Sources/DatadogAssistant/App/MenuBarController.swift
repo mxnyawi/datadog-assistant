@@ -14,8 +14,15 @@ final class MenuBarController: NSObject {
     private let statusItem: NSStatusItem
     private let panel: FloatingPanel
     private let store: SnapshotStore
+    private let prefs = UIPreferences.shared
     private var subscriptions = Set<AnyCancellable>()
     private var dismissMonitor: Any?
+    /// Last count shown in the badge — so a *rising* count can pulse while a
+    /// falling one (recoveries) stays calm.
+    private var lastBadgeCount = 0
+    /// Kept so a badge-mode change in Settings can re-render without waiting
+    /// for the next poll.
+    private var lastSnapshot: Snapshot = .empty
 
     init(store: SnapshotStore) {
         self.store = store
@@ -41,13 +48,26 @@ final class MenuBarController: NSObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] snap in self?.refreshBadge(snap) }
             .store(in: &subscriptions)
+        // A badge-mode change (Settings → Appearance) should re-count the
+        // current snapshot immediately, not after the next poll.
+        prefs.$badgeMode
+            .receive(on: RunLoop.main)
+            .dropFirst()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.refreshBadge(self.lastSnapshot)
+            }
+            .store(in: &subscriptions)
     }
 
     // MARK: - Status item
 
     private func refreshBadge(_ snapshot: Snapshot) {
+        lastSnapshot = snapshot
         guard let button = statusItem.button else { return }
-        let count = snapshot.alerting.count
+        let count = prefs.badgeMode.count(in: snapshot)
+        if count > lastBadgeCount, prefs.pulseOnAlert { pulse(button) }
+        lastBadgeCount = count
         if count > 0 {
             button.attributedTitle = NSAttributedString(
                 string: " \(count)",
@@ -57,6 +77,18 @@ final class MenuBarController: NSObject {
                 ])
         } else {
             button.title = ""
+        }
+    }
+
+    /// A single quick dim-and-restore of the status item — enough to catch the
+    /// eye when a new alert lands. Skipped under Reduce Motion.
+    private func pulse(_ button: NSStatusBarButton) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        button.alphaValue = 0.25
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.45
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            button.animator().alphaValue = 1
         }
     }
 
@@ -72,17 +104,62 @@ final class MenuBarController: NSObject {
         let menu = NSMenu()
         menu.addItem(withTitle: "Refresh now", action: #selector(refreshNow), keyEquivalent: "r")
             .target = self
+        menu.addItem(withTitle: "Open Datadog", action: #selector(openDatadog), keyEquivalent: "")
+            .target = self
+
+        // Snooze all — the same API-downtime snooze the panel offers, without
+        // opening it. A "Wake" item appears instead while a snooze is live.
+        menu.addItem(.separator())
+        if store.isSnoozed {
+            menu.addItem(withTitle: "Wake (cancel snooze)", action: #selector(wake), keyEquivalent: "")
+                .target = self
+        } else {
+            let snooze = NSMenuItem(title: "Snooze all", action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            for (title, seconds) in [("30 minutes", 1800), ("1 hour", 3600),
+                                     ("4 hours", 4 * 3600), ("Rest of the day", restOfDaySeconds())] {
+                let item = NSMenuItem(title: title, action: #selector(snoozeFromMenu(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = seconds
+                submenu.addItem(item)
+            }
+            snooze.submenu = submenu
+            menu.addItem(snooze)
+        }
+
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
             .target = self
-        menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Datadog Assistant", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil   // detach so left-click keeps toggling the panel
     }
 
+    /// Seconds from now until midnight — the "rest of the day" snooze.
+    private func restOfDaySeconds() -> Int {
+        let calendar = Calendar.current
+        guard let end = calendar.nextDate(after: Date(),
+                                          matching: DateComponents(hour: 0, minute: 0),
+                                          matchingPolicy: .nextTime) else { return 4 * 3600 }
+        return max(1800, Int(end.timeIntervalSinceNow))
+    }
+
     @objc private func refreshNow() {
         Task { await store.refresh() }
+    }
+
+    @objc private func openDatadog() {
+        LinkOpener.open(Credentials.currentAppBaseURL().appendingPathComponent("/monitors/manage"))
+    }
+
+    @objc private func snoozeFromMenu(_ sender: NSMenuItem) {
+        guard let seconds = sender.representedObject as? Int else { return }
+        Task { await store.snoozeAll(for: TimeInterval(seconds)) }
+    }
+
+    @objc private func wake() {
+        Task { await store.cancelSnooze() }
     }
 
     @objc private func openSettings() {
@@ -148,6 +225,9 @@ final class MenuBarController: NSObject {
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] _ in
             guard let self else { return }
+            // Pinned: the user asked the panel to stay put (e.g. parked on a
+            // second display). Only the menu-bar icon or Esc closes it.
+            if self.prefs.pinned { return }
             // While the connect prompt is up, don't dismiss on outside clicks —
             // the user has to switch to a browser/password manager to copy the
             // token, and that click shouldn't hide the panel out from under
