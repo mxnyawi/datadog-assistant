@@ -55,6 +55,13 @@ struct SettingsView: View {
         // whose content is taller than the window (Source with the scope
         // checklist, Notifications) overflows upward into the tab strip on
         // first open until a relayout — the "overlap" bug.
+        //
+        // Width must fit ALL tab items inline. If the tab strip is narrower
+        // than the combined item widths, macOS collapses the overflow into a
+        // ">>" "Navigation Tab Bar" dropdown — so every added tab needs the
+        // window widened to keep the tabs visible at all times. Six tabs
+        // (Notifications/Appearance are the widest labels) need ~600pt; 680
+        // leaves headroom.
         TabView {
             tab("Source", "key.fill") { SourceSettingsTab(onSave: onSave) }
             tab("Filters", "line.3.horizontal.decrease.circle") { FilterSettingsTab(onSave: onSave) }
@@ -65,7 +72,7 @@ struct SettingsView: View {
                 GitHubSettingsTab(onSave: onSave, monitoredServices: monitoredServices)
             }
         }
-        .frame(width: 470, height: 490)
+        .frame(width: 680, height: 490)
         .padding(12)
     }
 
