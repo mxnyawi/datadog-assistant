@@ -1,8 +1,10 @@
 import SwiftUI
 
-/// Starred monitors pinned to the top of the Monitors tab, whatever their
-/// state — the handful you actually own stay in view instead of scrolling
-/// away into their state groups. Hidden entirely when nothing is starred.
+/// Starred monitors surfaced at the top of the Monitors tab, whatever their
+/// state — the handful you actually own stay in view without scrolling. Like
+/// pinned items, a firing favorite also still appears in its normal state
+/// group below (that section counts the true total); this is the quick-access
+/// copy at the top. Hidden entirely when nothing is starred.
 struct FavoritesSection: View {
     let snapshot: Snapshot
     @ObservedObject private var prefs = UIPreferences.shared

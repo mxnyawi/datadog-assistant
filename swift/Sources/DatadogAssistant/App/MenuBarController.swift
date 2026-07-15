@@ -20,6 +20,9 @@ final class MenuBarController: NSObject {
     /// Last count shown in the badge — so a *rising* count can pulse while a
     /// falling one (recoveries) stays calm.
     private var lastBadgeCount = 0
+    /// False until the first badge render, so pre-existing cached alerts at
+    /// launch don't flash the icon.
+    private var hasRenderedBadge = false
     /// Kept so a badge-mode change in Settings can re-render without waiting
     /// for the next poll.
     private var lastSnapshot: Snapshot = .empty
@@ -55,18 +58,24 @@ final class MenuBarController: NSObject {
             .dropFirst()
             .sink { [weak self] _ in
                 guard let self else { return }
-                self.refreshBadge(self.lastSnapshot)
+                // A mode switch re-counts the same snapshot; never a "new alert".
+                self.refreshBadge(self.lastSnapshot, allowPulse: false)
             }
             .store(in: &subscriptions)
     }
 
     // MARK: - Status item
 
-    private func refreshBadge(_ snapshot: Snapshot) {
+    private func refreshBadge(_ snapshot: Snapshot, allowPulse: Bool = true) {
         lastSnapshot = snapshot
         guard let button = statusItem.button else { return }
         let count = prefs.badgeMode.count(in: snapshot)
-        if count > lastBadgeCount, prefs.pulseOnAlert { pulse(button) }
+        // Pulse only for a genuine new alert — a rising count from fresh data,
+        // not the first render after launch (cached alerts) or a mode switch.
+        if allowPulse, hasRenderedBadge, count > lastBadgeCount, prefs.pulseOnAlert {
+            pulse(button)
+        }
+        hasRenderedBadge = true
         lastBadgeCount = count
         if count > 0 {
             button.attributedTitle = NSAttributedString(

@@ -62,14 +62,16 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         guard available else { return }
         let settings = NotificationSettings.load()
         guard settings.enabled else { return }
-        // Quiet hours: hold everything except P1 alerts. A fresh P1 still pages.
+        // Quiet hours: only a P1 going wrong pages — a fresh fire or a stop-
+        // reporting (No-Data). P1 warnings/recoveries and everything P2+ wait.
         let quiet = settings.inQuietHours()
         let center = UNUserNotificationCenter.current()
         for transition in transitions {
             let monitor = transition.monitor
             if quiet {
-                let isCriticalFire = transition.kind == .fired && monitor.priority <= .p1
-                guard isCriticalFire else { continue }
+                let isCriticalPage = monitor.priority <= .p1
+                    && (transition.kind == .fired || transition.kind == .wentNoData)
+                guard isCriticalPage else { continue }
             }
             let content = UNMutableNotificationContent()
             var wantsSound = false
