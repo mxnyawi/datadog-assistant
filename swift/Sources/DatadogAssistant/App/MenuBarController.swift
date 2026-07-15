@@ -189,6 +189,7 @@ final class MenuBarController: NSObject {
             }
         }
         startDismissMonitor()
+        NotificationCenter.default.post(name: .panelDidShow, object: nil)
         Task { await store.refresh() }   // fresh data behind the instant cached render
     }
 
@@ -250,4 +251,7 @@ extension Notification.Name {
     /// Posted after credentials are saved or sample mode is chosen, so the
     /// AppDelegate rebuilds the data source and refreshes the setup state.
     static let reloadCredentials = Notification.Name("reloadCredentials")
+    /// Posted when the panel is shown, so the root view can reset transient
+    /// state (the command palette) for a fresh open.
+    static let panelDidShow = Notification.Name("panelDidShow")
 }
