@@ -87,3 +87,51 @@ Homebrew cask.
 6. **Deprioritized**: Datadog OAuth PKCE (access tokens cover it), monitor
    create/delete (rare from a menu bar; delete needs typed-DELETE
    confirmation).
+
+## 4. UI/UX feature backlog (new, beyond parity)
+
+The panel already has hover states, press micro-interactions (Reduce-Motion
+aware), a group heatmap, cluster chips, and an MTTR strip — these ideas build
+on that baseline. Ranked by value-per-effort; none duplicate existing UI.
+
+1. **Keyboard navigation + command palette.** Arrow keys to move through
+   rows, Return to expand, `m` to mute, `o` to open in Datadog; a ⌘K
+   fuzzy-find over monitor names that jumps to (or acts on) a monitor. The
+   panel already opens from anywhere via ⌥⌘D — power users should never need
+   the mouse once it's open. (`onKeyPress`/`focusable` on `MonitorListSection`;
+   palette as an overlay over `RootView`.)
+2. **Pin the panel open.** A pin toggle in `HeaderView` that keeps the
+   `FloatingPanel` up while clicking elsewhere (it already sets
+   `hidesOnDeactivate = false`; pinning means suppressing the close-on-
+   click-outside path) — an on-call "keep it on my second display" mode.
+3. **Pinned/favorite monitors.** Star a monitor to keep it at the top above
+   the state groups, persisted like local renames. Cheap, high daily value.
+4. **Alert timeline view.** A scrubbable "last 24 h" lane per monitor —
+   state transitions, deploy markers, mutes — built from `SnapshotStore`
+   history the app already persists. Answers "when did this start and what
+   happened around it" without opening Datadog.
+5. **Sparkline hover tooltips.** Value + timestamp under the cursor, and the
+   deploy marker's PR/commit on hover. The data is already in the view;
+   this is pure affordance.
+6. **Menu-bar badge preferences.** Choose what the count means (all alerting
+   vs P1/P2 only vs unmuted only) and an optional subtle pulse on a new
+   alert (respecting Reduce Motion). One person's signal is another's noise —
+   today's badge is fixed in `MenuBarController`.
+7. **Right-click quick menu on the status item.** Native NSMenu with
+   Refresh / Snooze 1 h / Open Datadog / Settings / Quit — actions without
+   opening the panel, matching how system status items behave.
+8. **Copy-as-Markdown/Slack for an alert.** One action on the expanded row
+   (and hero card) that copies name, state, duration, value vs threshold,
+   suspect deploy, and deep links — formatted for pasting into an incident
+   channel. Complements the existing Jira action.
+9. **macOS Focus / Do Not Disturb awareness.** Follow system Focus: while
+   on, downgrade banners per the per-priority rules (e.g. only P1 modals
+   break through). Cheaper than a scheduler and matches user expectations.
+10. **Notification Center widget.** A WidgetKit glance (worst state + counts
+    + top firing monitor). Note: needs a widget extension target, which
+    SwiftPM alone can't bundle cleanly — scope carefully before starting.
+11. **Accessibility pass.** VoiceOver labels for sparkline/heatmap/state
+    tiles (summarize the data, not the pixels), full keyboard reachability
+    (pairs with #1), and a contrast audit of the state colors in both themes.
+12. **Density setting.** Compact row mode (single-line, smaller sparklines)
+    for people watching 50+ monitors on a laptop screen.
