@@ -12,8 +12,10 @@ struct ConnectPromptView: View {
     @State private var appKey = ""
     @State private var site = Credentials.currentSite()
     @State private var busy = false
+    @State private var succeeded = false
     @State private var error: String?
     @State private var showScopes = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -53,15 +55,21 @@ struct ConnectPromptView: View {
             }
 
             HStack(spacing: 8) {
-                if busy { ProgressView().controlSize(.small) }
+                if succeeded {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Theme.ok)
+                        .symbolBounceOnAppearIfAvailable(reduceMotion: reduceMotion)
+                } else if busy {
+                    ProgressView().controlSize(.small)
+                }
                 Button(action: connect) {
-                    Text(busy ? "Connecting…" : "Connect")
+                    Text(succeeded ? "Connected" : (busy ? "Connecting…" : "Connect"))
                         .frame(maxWidth: .infinity)
                 }
                 .controlSize(.large)
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(busy || primaryDisabled)
+                .disabled(busy || succeeded || primaryDisabled)
             }
 
             HStack {
@@ -118,9 +126,17 @@ struct ConnectPromptView: View {
                     } else {
                         try Credentials(apiKey: api, appKey: app, site: site).save()
                     }
-                    NotificationCenter.default.post(name: .reloadCredentials, object: nil)
                 } catch {
                     self.error = "Couldn't save: \(error.localizedDescription)"
+                    return
+                }
+                // Success beat: flash a ✓ for ~0.4s before the root swaps to
+                // the dashboard. The delay lives ONLY on the happy path —
+                // errors above return immediately with no added latency.
+                succeeded = true
+                Task {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    NotificationCenter.default.post(name: .reloadCredentials, object: nil)
                 }
             }
         }

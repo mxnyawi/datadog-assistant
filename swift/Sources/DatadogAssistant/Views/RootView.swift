@@ -8,11 +8,16 @@ struct RootView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        if store.needsSetup {
-            setupBody
-        } else {
-            dashboardBody
+        ZStack {
+            if store.needsSetup {
+                setupBody
+                    .transition(.opacity)
+            } else {
+                dashboardBody
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+            }
         }
+        .animatedContent(store.needsSetup, reduceMotion: reduceMotion)
     }
 
     /// The connect prompt, shown when there are no usable credentials.
@@ -48,6 +53,9 @@ struct RootView: View {
                         ClusterChips(clusters: snapshot.clusters)
                         if let hero {
                             HeroAlertCard(monitor: hero)
+                                .transition(reduceMotion
+                                    ? .opacity
+                                    : .opacity.combined(with: .move(edge: .top)))
                         }
                         StateSection(snapshot: snapshot, tab: $tab)
                         FavoritesSection(snapshot: snapshot)

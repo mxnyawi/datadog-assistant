@@ -10,6 +10,7 @@ struct HeroAlertCard: View {
     @ObservedObject private var prefs = UIPreferences.shared
     let monitor: Monitor
     @State private var pulsing = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -51,8 +52,11 @@ struct HeroAlertCard: View {
             Circle()
                 .fill(Theme.alert)
                 .frame(width: 8, height: 8)
-                .opacity(pulsing ? 0.35 : 1.0)
-                .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true),
+                // Under Reduce Motion the dot holds at full opacity — a static
+                // signal instead of a repeating pulse.
+                .opacity(pulsing && !reduceMotion ? 0.35 : 1.0)
+                .animation(reduceMotion ? nil
+                           : .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
                            value: pulsing)
             Text("\(monitor.priority.label) · ALERTING")
                 .font(.system(size: 10, weight: .heavy))

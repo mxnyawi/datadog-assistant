@@ -7,6 +7,7 @@ import SwiftUI
 struct DLQSection: View {
     let snapshot: Snapshot
     @State private var showHealthy = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let dlq = snapshot.dlq
@@ -34,7 +35,10 @@ struct DLQSection: View {
 
                 if healthy > 0 {
                     Button {
-                        withAnimation { showHealthy.toggle() }
+                        withAnimation(reduceMotion ? .easeOut(duration: 0.2)
+                                                   : .spring(response: 0.3, dampingFraction: 0.8)) {
+                            showHealthy.toggle()
+                        }
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: showHealthy ? "chevron.down" : "chevron.right")
@@ -51,6 +55,7 @@ struct DLQSection: View {
                         InsetCard {
                             ForEach(dlq.filter { $0.state == .ok }) { MonitorRow(monitor: $0) }
                         }
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
             }

@@ -6,6 +6,7 @@ import AppKit
 /// actions every menu-bar app ends with.
 struct FooterView: View {
     @Binding var tab: Tab
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 4) {
@@ -39,7 +40,8 @@ struct FooterView: View {
     }
 
     private func toggleList() {
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+        withAnimation(reduceMotion ? .easeOut(duration: 0.2)
+                                   : .spring(response: 0.3, dampingFraction: 0.85)) {
             tab = tab == .list ? .monitors : .list
         }
     }

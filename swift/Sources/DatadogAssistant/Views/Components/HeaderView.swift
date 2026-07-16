@@ -7,6 +7,7 @@ import SwiftUI
 struct HeaderView: View {
     @EnvironmentObject var store: SnapshotStore
     @ObservedObject private var prefs = UIPreferences.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var snapshot: Snapshot { store.snapshot }
 
@@ -40,6 +41,9 @@ struct HeaderView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(prefs.pinned ? Theme.info : Theme.textSecondary)
                     .rotationEffect(.degrees(prefs.pinned ? 0 : 45))
+                    .animation(reduceMotion ? nil
+                               : .spring(response: 0.3, dampingFraction: 0.8),
+                               value: prefs.pinned)
             }
             .buttonStyle(.pressable)
             .help(prefs.pinned
@@ -70,5 +74,8 @@ struct HeaderView: View {
             .help("Settings…")
         }
         .padding(.horizontal, 2)
+        // Connection state cross-fades: the dot color and the org/"Reconnecting…"
+        // text swap ease over 0.2s instead of snapping.
+        .animation(.easeOut(duration: 0.2), value: snapshot.connected)
     }
 }
